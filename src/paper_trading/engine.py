@@ -27,7 +27,7 @@ class PaperTradingEngine:
         sl_pct: float | None = None,
         tp_pct: float | None = None,
         horizon: int = 5,
-        trade_allocation: float = 1000.0,
+        trade_allocation: float | None = None,  # Изменено по умолчанию на None
     ) -> str | None:
         """
         Основной рабочий цикл движка:
@@ -91,14 +91,31 @@ class PaperTradingEngine:
             if signal == 1:
                 portfolio = await self.repo.get_portfolio()
 
+                # Рассчитываем динамический объем сделки, если он не задан принудительно
+                effective_trade_allocation = trade_allocation
+                if effective_trade_allocation is None:
+                    effective_trade_allocation = portfolio.balance * self.settings.PAPER_RISK_PCT
+
+                # Проверяем ограничение на минимальный объем сделки
+                if effective_trade_allocation < self.settings.PAPER_MIN_ALLOCATION:
+                    msg = (
+                        f"⚠️ [PAPER] Расчитанный объем сделки ({effective_trade_allocation:.2f}$) "
+                        f"меньше минимально допустимого ({self.settings.PAPER_MIN_ALLOCATION:.2f}$)."
+                    )
+                    logger.warning(msg)
+                    return msg
+
                 # Проверяем наличие свободного кэша
-                if portfolio.cash < trade_allocation:
-                    msg = f"⚠️ [PAPER] Недостаточно кэша для сделки по {symbol}. Нужно: {trade_allocation}$, Свободно: {portfolio.cash:.2f}$"
+                if portfolio.cash < effective_trade_allocation:
+                    msg = (
+                        f"⚠️ [PAPER] Недостаточно кэша для сделки по {symbol}. "
+                        f"Нужно: {effective_trade_allocation:.2f}$, Свободно: {portfolio.cash:.2f}$"
+                    )
                     logger.warning(msg)
                     return msg
 
                 # Расчет объема покупки монет
-                amount = trade_allocation / latest_close
+                amount = effective_trade_allocation / latest_close
 
                 # Применяем параметры из настроек, если они не переданы явно
                 effective_sl_pct = sl_pct if sl_pct is not None else self.settings.PAPER_SL_PCT
@@ -118,6 +135,7 @@ class PaperTradingEngine:
 
                 msg = (
                     f"🚀 [PAPER] Открыта виртуальная Long-позиция по {symbol} по цене {latest_close:.2f}. "
+                    f"Размер сделки: {effective_trade_allocation:.2f}$ ({self.settings.PAPER_RISK_PCT:.1%} от баланса). "
                     f"Количество монет: {amount:.6f}. SL: {sl_price:.2f}, TP: {tp_price:.2f}"
                 )
                 logger.info(msg)

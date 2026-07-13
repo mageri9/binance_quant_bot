@@ -52,6 +52,12 @@ class PaperTradingRepository:
         portfolio = await self.get_portfolio()
         cost = entry_price * amount
 
+        # Проверка на наличие достаточного количества свободного кэша
+        if portfolio.cash < cost:
+            raise ValueError(
+                f"Недостаточно свободного кэша в портфеле. Требуется: {cost:.2f}$, Доступно: {portfolio.cash:.2f}$"
+            )
+
         # Списываем свободный кэш портфеля
         portfolio.cash -= cost
 

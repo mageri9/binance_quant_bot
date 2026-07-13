@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     PAPER_SL_PCT: float = 0.02
     PAPER_TP_PCT: float = 0.04
 
+    # Paper Trading Position Sizing
+    PAPER_RISK_PCT: float = 0.10
+    PAPER_MIN_ALLOCATION: float = 1.0
+
     class Config:
         env_file = get_env_path()
         env_file_encoding = "utf-8"

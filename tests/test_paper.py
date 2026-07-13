@@ -153,3 +153,110 @@ async def test_paper_trading_default_sl_tp(temp_db_session):
     # Используем pytest.approx для безопасного сравнения дробных чисел
     assert active_trade.sl_price == pytest.approx(98.5)
     assert active_trade.tp_price == pytest.approx(103.5)
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_dynamic_position_sizing(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+
+    # Переопределяем настройки для теста (риск 15% от баланса)
+    engine.settings.PAPER_RISK_PCT = 0.15
+    engine.settings.PAPER_MIN_ALLOCATION = 50.0
+
+    # Начальный баланс портфеля = 10000.0, свободный кэш = 10000.0
+    portfolio = await repo.get_portfolio()
+    assert portfolio.balance == 10000.0
+
+    dummy_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+
+    predictor = MockPredictor(signal=1)
+
+    # Запускаем без принудительного указания объема
+    msg = await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=dummy_candles,
+        predictor=predictor,
+        horizon=5,
+    )
+
+    assert msg is not None
+    assert "Открыта виртуальная Long-позиция" in msg
+
+    # Ожидаемый объем: 10000 * 15% = 1500.0$
+    # Количество монет: 1500.0 / 100.0 = 15.0
+    active_trade = await repo.get_active_trade("BTC/USDT")
+    assert active_trade is not None
+    assert active_trade.amount == pytest.approx(15.0)
+
+    # Проверяем списание кэша: 10000 - 1500 = 8500
+    portfolio = await repo.get_portfolio()
+    assert portfolio.cash == pytest.approx(8500.0)
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_min_allocation_warning(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+
+    # Задаем условия: риск 1% от баланса (= 100$), но минимальный лимит сделки 200$
+    engine.settings.PAPER_RISK_PCT = 0.01
+    engine.settings.PAPER_MIN_ALLOCATION = 200.0
+
+    dummy_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+
+    predictor = MockPredictor(signal=1)
+
+    msg = await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=dummy_candles,
+        predictor=predictor,
+        horizon=5,
+    )
+
+    # Сделка должна отмениться, так как 100$ < 200$
+    assert msg is not None
+    assert "меньше минимально допустимого" in msg
+
+    # Сделка не должна быть создана
+    active_trade = await repo.get_active_trade("BTC/USDT")
+    assert active_trade is None
+
+
+@pytest.mark.asyncio
+async def test_paper_repository_insufficient_cash_exception(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+
+    # Имитируем покупку на сумму 15 000$, когда на балансе только 10 000$
+    # Репозиторий должен прервать операцию и выбросить ValueError
+    with pytest.raises(ValueError) as exc_info:
+        await repo.create_trade(
+            symbol="BTC/USDT",
+            entry_price=100.0,
+            amount=150.0,  # 150 монет * 100$ = 15000$
+            sl_price=None,
+            tp_price=None,
+            entry_candle_time=1000,
+        )
+
+    assert "Недостаточно свободного кэша" in str(exc_info.value)
