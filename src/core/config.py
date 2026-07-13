@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
+    # Retraining
+    RETRAIN_INTERVAL_SECONDS: int = 86400  # раз в сутки
+    MIN_KLINES_FOR_TRAIN: int = 1200  # train_size + test_size с запасом
+    TRAIN_SIZE: int = 1000
+    TEST_SIZE: int = 200
+    LABEL_HORIZON: int = 5
+    LABEL_THRESHOLD: float = 0.01
+
     class Config:
         env_file = get_env_path()
         env_file_encoding = "utf-8"

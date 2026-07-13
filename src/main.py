@@ -2,6 +2,7 @@ import asyncio
 import sys
 import os
 import pandas as pd
+import shutil
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -98,6 +99,94 @@ async def paper_trading_loop(bot: Bot):
 nexus = None
 
 
+async def retrain_loop(bot: Bot):
+    """
+    Фоновая служба периодического переобучения модели.
+    Новая LightGBM-модель продвигается в продакшн только если её f1
+    превосходит baseline того же прогона — иначе это сигнал искать
+    проблему (leakage, смена режима рынка), а не молча подменять модель.
+    """
+    from src.core.db import AsyncSessionFactory
+    from src.crud.kline import KlineRepository
+    from src.datasets.build import build_and_save_dataset
+    from src.models.baseline import run_baseline_experiment
+    from src.models.train import run_lgbm_experiment
+    from datetime import datetime, timezone
+
+    settings = get_settings()
+    logger.info("Фоновая служба автообучения запущена.")
+
+    while True:
+        try:
+            await asyncio.sleep(settings.RETRAIN_INTERVAL_SECONDS)
+
+            async with AsyncSessionFactory() as session:
+                kline_repo = KlineRepository(session)
+                klines = await kline_repo.get_klines(
+                    "BTC/USDT", "1h", limit=settings.MIN_KLINES_FOR_TRAIN
+                )
+                if len(klines) < settings.MIN_KLINES_FOR_TRAIN:
+                    logger.info(
+                        f"[Retrain] Недостаточно данных: {len(klines)}/{settings.MIN_KLINES_FOR_TRAIN}"
+                    )
+                    continue
+
+                version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+
+                parquet_path = await build_and_save_dataset(
+                    session,
+                    symbol="BTC/USDT",
+                    timeframe="1h",
+                    version=version,
+                    horizon=settings.LABEL_HORIZON,
+                    threshold=settings.LABEL_THRESHOLD,
+                )
+                json_path = parquet_path.replace(".parquet", ".json")
+
+                baseline_result = await run_baseline_experiment(
+                    session, parquet_path, json_path,
+                    train_size=settings.TRAIN_SIZE, test_size=settings.TEST_SIZE,
+                )
+                lgbm_result = await run_lgbm_experiment(
+                    session, parquet_path, json_path,
+                    train_size=settings.TRAIN_SIZE, test_size=settings.TEST_SIZE,
+                    models_dir="models/staging",
+                )
+
+                baseline_f1 = baseline_result["metrics"]["f1"]
+                new_f1 = lgbm_result["metrics"]["f1"]
+
+                if new_f1 <= baseline_f1:
+                    msg = (
+                        f"⚠️ [Retrain v{version}] Новая модель НЕ превзошла baseline "
+                        f"(LGBM f1={new_f1:.3f} vs baseline f1={baseline_f1:.3f}). "
+                        f"В продакшн НЕ продвигается."
+                    )
+                    logger.warning(msg)
+                else:
+                    os_dir = os.path.dirname(settings.MODEL_PATH)
+                    if os_dir:
+                        os.makedirs(os_dir, exist_ok=True)
+                    shutil.copy(lgbm_result["model_path"], settings.MODEL_PATH)
+
+                    msg = (
+                        f"✅ [Retrain v{version}] Модель обновлена в продакшне.\n"
+                        f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
+                        f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})"
+                    )
+                    logger.info(msg)
+
+                for admin_id in settings.ADMIN_IDS:
+                    try:
+                        await bot.send_message(chat_id=admin_id, text=msg)
+                    except Exception as e:
+                        logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"Ошибка в цикле автообучения: {e}")
+            await asyncio.sleep(60)
+
+
 async def on_startup(bot: Bot):
     bot_info = await bot.get_me()
     logger.info(
@@ -109,6 +198,7 @@ async def on_startup(bot: Bot):
 
     # Запускаем фоновую службу бумажной торговли
     asyncio.create_task(paper_trading_loop(bot))
+    asyncio.create_task(retrain_loop(bot))
 
 
 async def on_shutdown(bot: Bot):

@@ -31,3 +31,5 @@ logs/
 *.njsproj
 *.sln
 *.swp
+
+models/staging/
