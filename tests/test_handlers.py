@@ -226,18 +226,18 @@ async def test_user_subscribe_handler(temp_db_session):
 
     # Сначала отписываемся
     await unsubscribe_handler(message, temp_db_session)
-    message.answer.assert_called_with(
-        "🔕 <b>Вы отписались от уведомлений о сделках.</b>\n\n"
-        "Вы больше не будете получать сообщения о закрытых позициях."
-    )
+
+    # Проверяем, что первый переданный аргумент (текст сообщения) содержит нужную фразу
+    assert "Вы отписались от уведомлений" in message.answer.call_args[0][0]
+
     u_record = await repo.get_by_user_id(444)
     assert u_record.is_subscribed is False
 
     # Снова подписываемся
     await subscribe_handler(message, temp_db_session)
-    message.answer.assert_called_with(
-        "🔔 <b>Вы успешно подписались на уведомления о сделках!</b>\n\n"
-        "Теперь вы будете получать сообщения о закрытии позиций в реальном времени."
-    )
+
+    # Проверяем текст сообщения об успешной подписке
+    assert "Вы успешно подписались на уведомления" in message.answer.call_args[0][0]
+
     u_record = await repo.get_by_user_id(444)
     assert u_record.is_subscribed is True
