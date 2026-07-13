@@ -2,7 +2,13 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from aiogram.types import Message, Chat, User
 
-from src.handlers.user.message import status_handler, signals_handler, report_handler
+from src.handlers.user.message import (
+    status_handler,
+    signals_handler,
+    report_handler,
+    subscribe_handler,
+    unsubscribe_handler
+)
 import html
 
 from aiogram import Router
@@ -201,3 +207,37 @@ async def test_report_handler_with_trades(temp_db_session):
     answer_text = message.answer.call_args[0][0]
     assert "Отчёт по стратегии" in answer_text
     assert "Win rate" in answer_text
+
+
+@pytest.mark.asyncio
+async def test_user_subscribe_handler(temp_db_session):
+    from src.crud.user import UserRepository
+
+    repo = UserRepository(temp_db_session)
+    # Создаем пользователя (по умолчанию он подписан)
+    await repo.create(user_id=444, username="test_sub", full_name="Sub User")
+
+    chat = Chat(id=444, type="private")
+    user = User(id=444, is_bot=False, first_name="Sub User")
+    message = AsyncMock(spec=Message)
+    message.chat = chat
+    message.from_user = user
+    message.answer = AsyncMock()
+
+    # Сначала отписываемся
+    await unsubscribe_handler(message, temp_db_session)
+    message.answer.assert_called_with(
+        "🔕 <b>Вы отписались от уведомлений о сделках.</b>\n\n"
+        "Вы больше не будете получать сообщения о закрытых позициях."
+    )
+    u_record = await repo.get_by_user_id(444)
+    assert u_record.is_subscribed is False
+
+    # Снова подписываемся
+    await subscribe_handler(message, temp_db_session)
+    message.answer.assert_called_with(
+        "🔔 <b>Вы успешно подписались на уведомления о сделках!</b>\n\n"
+        "Теперь вы будете получать сообщения о закрытии позиций в реальном времени."
+    )
+    u_record = await repo.get_by_user_id(444)
+    assert u_record.is_subscribed is True

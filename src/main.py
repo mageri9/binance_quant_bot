@@ -83,6 +83,7 @@ async def paper_trading_loop(bot: Bot):
                 )
 
                 if log_msg:
+                    # 1. Отправляем ВСЕ логи сделок администраторам (открытие, закрытие, отмена)
                     for admin_id in settings.ADMIN_IDS:
                         try:
                             await bot.send_message(chat_id=admin_id, text=log_msg)
@@ -90,6 +91,28 @@ async def paper_trading_loop(bot: Bot):
                             logger.error(
                                 f"Не удалось отправить уведомление админу {admin_id}: {e}"
                             )
+
+                    # 2. Обычным подписчикам отправляем ТОЛЬКО закрытие сделок
+                    # Отличить закрытие легко — лог начинается с красного, зеленого или синего кружка
+                    is_closure = any(
+                        log_msg.startswith(prefix) for prefix in ["🔴", "🟢", "🔵"]
+                    )
+                    if is_closure:
+                        from src.crud.user import UserRepository
+
+                        user_repo = UserRepository(session)
+                        subscribed_users = await user_repo.get_all_subscribed()
+
+                        for u in subscribed_users:
+                            # Пропускаем администраторов, чтобы не дублировать им сообщения
+                            if u.user_id in settings.ADMIN_IDS:
+                                continue
+                            try:
+                                await bot.send_message(chat_id=u.user_id, text=log_msg)
+                            except Exception as e:
+                                logger.error(
+                                    f"Не удалось отправить сигнал подписчику {u.user_id}: {e}"
+                                )
 
         except Exception as e:
             logger.error(f"Ошибка в цикле бумажной торговли: {e}")

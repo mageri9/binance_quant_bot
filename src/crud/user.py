@@ -52,3 +52,21 @@ class UserRepository:
             select(User).where(User.is_active == True, User.is_blocked == False)  # noqa: E712
         )
         return list(result.scalars().all())
+
+    async def set_subscribed(self, user_id: int, subscribed: bool) -> None:
+        """Включает или выключает подписку пользователя на уведомления."""
+        await self.session.execute(
+            update(User).where(User.user_id == user_id).values(is_subscribed=subscribed)
+        )
+        await self.session.commit()
+
+    async def get_all_subscribed(self) -> list[User]:
+        """Возвращает список всех активных подписчиков бота."""
+        result = await self.session.execute(
+            select(User).where(
+                User.is_active == True,  # noqa: E712
+                User.is_blocked == False,  # noqa: E712
+                User.is_subscribed == True,  # noqa: E712
+            )
+        )
+        return list(result.scalars().all())

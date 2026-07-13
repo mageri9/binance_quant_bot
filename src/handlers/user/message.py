@@ -15,6 +15,7 @@ from src.crud.paper import PaperTradingRepository
 from src.crud.kline import KlineRepository
 from src.models.predictor import Predictor
 from src.strategy.signals import calculate_strategy_metrics
+from src.crud.user import UserRepository
 
 router = Router()
 
@@ -184,9 +185,33 @@ async def start_handler(message: Message, session: AsyncSession, redis: Redis):
         reply_markup=kb.main_menu(),
     )
 
+@router.message(Command("subscribe"))
+async def subscribe_handler(message: Message, session: AsyncSession):
+    """Команда подписки."""
+    repo = UserRepository(session)
+    await repo.set_subscribed(message.from_user.id, True)
+    await message.answer(
+        "🔔 <b>Вы успешно подписались на уведомления о сделках!</b>\n\n"
+        "Теперь вы будете получать сообщения о закрытии позиций в реальном времени."
+    )
+
+
+@router.message(Command("unsubscribe"))
+async def unsubscribe_handler(message: Message, session: AsyncSession):
+    """Команда отписки."""
+    repo = UserRepository(session)
+    await repo.set_subscribed(message.from_user.id, False)
+    await message.answer(
+        "🔕 <b>Вы отписались от уведомлений о сделках.</b>\n\n"
+        "Вы больше не будете получать сообщения о закрытых позициях."
+    )
+
+
 
 def register_handlers():
     router.message.register(start_handler, CommandStart())
+    router.message.register(subscribe_handler, Command("subscribe"))
+    router.message.register(unsubscribe_handler, Command("unsubscribe"))
     router.message.register(status_handler, Command("status"))
     router.message.register(status_handler, F.text == "📊 Статус портфеля")
     router.message.register(signals_handler, Command("signals"))
