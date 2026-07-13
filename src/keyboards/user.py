@@ -9,6 +9,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 def main_menu() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
+    # Верхний ряд — основные функции количественного анализа
+    builder.row(
+        KeyboardButton(text="📊 Статус портфеля"),
+        KeyboardButton(text="🤖 Торговый сигнал"),
+    )
+    # Нижний ряд — меню шаблона и связь
     builder.row(
         KeyboardButton(text="📋 Меню"),
         KeyboardButton(text="💬 Обратная связь"),

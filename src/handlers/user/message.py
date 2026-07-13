@@ -184,12 +184,15 @@ async def feedback_cancel(message: Message, state: FSMContext):
 
 def register_handlers():
     router.message.register(start_handler, CommandStart())
-    router.message.register(
-        status_handler, Command("status")
-    )  # Добавили хендлер статуса
-    router.message.register(
-        signals_handler, Command("signals")
-    )  # Добавили хендлер сигналов
+
+    # Связываем команду /status и кнопку "📊 Статус портфеля" с одним обработчиком
+    router.message.register(status_handler, Command("status"))
+    router.message.register(status_handler, F.text == "📊 Статус портфеля")
+
+    # Связываем команду /signals и кнопку "🤖 Торговый сигнал" с одним обработчиком
+    router.message.register(signals_handler, Command("signals"))
+    router.message.register(signals_handler, F.text == "🤖 Торговый сигнал")
+
     router.message.register(menu_handler, Command("menu"))
     router.message.register(menu_handler, F.text == "📋 Меню")
     router.message.register(feedback_start, F.text == "💬 Обратная связь")
