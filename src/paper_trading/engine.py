@@ -22,10 +22,10 @@ class PaperTradingEngine:
         timeframe: str,
         latest_candles: pd.DataFrame,
         predictor,
-        sl_pct: float = 0.02,
-        tp_pct: float = 0.04,
+        sl_pct: float = 0.02,  # TODO: не провалидировано через strategy/signals.simulate_strategy на бэктесте
+        tp_pct: float = 0.04,  # TODO: см. выше — сейчас просто дефолт "на глаз"
         horizon: int = 5,
-        trade_allocation: float = 1000.0,  # Сумма входа на одну виртуальную сделку ($1000)
+        trade_allocation: float = 1000.0,
     ) -> str | None:
         """
         Основной рабочий цикл движка:

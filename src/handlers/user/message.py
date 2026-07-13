@@ -14,6 +14,7 @@ from src.core.config import get_settings
 from src.crud.paper import PaperTradingRepository
 from src.crud.kline import KlineRepository
 from src.models.predictor import Predictor
+from src.strategy.signals import calculate_strategy_metrics
 
 router = Router()
 
@@ -133,6 +134,41 @@ async def signals_handler(message: Message, session: AsyncSession):
         await message.answer(f"❌ Произошла ошибка при анализе рынка: {e}")
 
 
+@router.message(Command("report"))
+@router.message(F.text == "📈 Отчёт по стратегии")
+async def report_handler(message: Message, session: AsyncSession):
+    """
+    Команда /report: реальные стратегические метрики (Sharpe, Profit Factor,
+    Max Drawdown и т.д.) по фактическим закрытым сделкам paper trading —
+    не по бэктесту, а по тому, что бот действительно "наторговал".
+    """
+    repo = PaperTradingRepository(session)
+    closed_trades = await repo.get_closed_trades("BTC/USDT")
+
+    if not closed_trades:
+        await message.answer(
+            "📭 <i>Пока нет ни одной закрытой сделки. Отчёт появится после первых результатов.</i>"
+        )
+        return
+
+    trade_returns = [
+        (t.exit_price - t.entry_price) / t.entry_price for t in closed_trades
+    ]
+    metrics = calculate_strategy_metrics(trade_returns)
+
+    await message.answer(
+        f"📈 <b>Отчёт по стратегии (Paper Trading)</b>\n\n"
+        f"🔢 Всего сделок: <code>{metrics['total_trades']}</code>\n"
+        f"✅ Win rate: <code>{metrics['win_rate']:.1%}</code>\n"
+        f"💹 Profit Factor: <code>{metrics['profit_factor']:.2f}</code>\n"
+        f"📊 Sharpe: <code>{metrics['sharpe_ratio']:.3f}</code>\n"
+        f"📊 Sortino: <code>{metrics['sortino_ratio']:.3f}</code>\n"
+        f"📉 Max Drawdown: <code>{metrics['max_drawdown']:.1%}</code>\n"
+        f"🎯 Expectancy: <code>{metrics['expectancy']:.3%}</code> на сделку\n"
+        f"💰 Суммарная доходность: <code>{metrics['total_return']:.1%}</code>"
+    )
+
+
 async def start_handler(message: Message, session: AsyncSession, redis: Redis):
     service = UserService(session, redis)
     user, is_new = await service.register_or_update(
@@ -155,3 +191,5 @@ def register_handlers():
     router.message.register(status_handler, F.text == "📊 Статус портфеля")
     router.message.register(signals_handler, Command("signals"))
     router.message.register(signals_handler, F.text == "🤖 Торговый сигнал")
+    router.message.register(report_handler, Command("report"))
+    router.message.register(report_handler, F.text == "📈 Отчёт по стратегии")

@@ -92,3 +92,27 @@ async def test_paper_trading_flow(temp_db_session):
 
     # В базе данных больше нет открытых позиций
     assert await repo.get_active_trade("BTC/USDT") is None
+
+@pytest.mark.asyncio
+async def test_get_closed_trades_returns_history(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+
+    trade1 = await repo.create_trade(
+        symbol="BTC/USDT", entry_price=100.0, amount=1.0,
+        sl_price=98.0, tp_price=104.0, entry_candle_time=1000,
+    )
+    await repo.close_trade(trade1, exit_price=104.0, pnl=4.0)
+
+    trade2 = await repo.create_trade(
+        symbol="BTC/USDT", entry_price=110.0, amount=1.0,
+        sl_price=108.0, tp_price=114.0, entry_candle_time=2000,
+    )
+    await repo.close_trade(trade2, exit_price=108.0, pnl=-2.0)
+
+    closed = await repo.get_closed_trades("BTC/USDT")
+
+    assert len(closed) == 2
+    assert closed[0].entry_candle_time == 1000
+    assert closed[1].entry_candle_time == 2000
+    assert closed[0].pnl == 4.0
+    assert closed[1].pnl == -2.0

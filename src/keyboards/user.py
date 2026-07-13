@@ -11,4 +11,7 @@ def main_menu() -> ReplyKeyboardMarkup:
         KeyboardButton(text="📊 Статус портфеля"),
         KeyboardButton(text="🤖 Торговый сигнал"),
     )
+    builder.row(
+        KeyboardButton(text="📈 Отчёт по стратегии"),
+    )
     return builder.as_markup(resize_keyboard=True)

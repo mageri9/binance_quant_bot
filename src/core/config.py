@@ -34,6 +34,7 @@ class Settings(BaseSettings):
         env_file = get_env_path()
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"   # добавлено: Nexus SRE переменные читаются напрямую через os.getenv в main.py
 
     @field_validator("ADMIN_IDS", mode="before")
     @classmethod

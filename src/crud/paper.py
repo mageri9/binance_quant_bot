@@ -86,3 +86,20 @@ class PaperTradingRepository:
         portfolio.balance += pnl
 
         await self.session.commit()
+
+    async def get_closed_trades(
+        self, symbol: str, limit: int = 500
+    ) -> list[PaperTrade]:
+        """
+        Возвращает историю закрытых сделок по паре (от старых к новым).
+        Используется для расчёта стратегических метрик (Sharpe, Drawdown и т.д.)
+        по фактическим результатам paper trading, а не по бэктесту.
+        """
+        stmt = (
+            select(PaperTrade)
+            .where(PaperTrade.symbol == symbol, PaperTrade.status == "CLOSED")
+            .order_by(PaperTrade.entry_candle_time.asc())
+            .limit(limit)
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
