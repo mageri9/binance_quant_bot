@@ -63,3 +63,38 @@ class Experiment(Base):
 
     def __repr__(self) -> str:
         return f"<Experiment id={self.id} model={self.model_name} metrics={self.metrics}>"
+
+
+class PaperPortfolio(Base):
+    __tablename__ = "paper_portfolios"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    balance: Mapped[float] = mapped_column(default=10000.0, nullable=False)
+    cash: Mapped[float] = mapped_column(default=10000.0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PaperTrade(Base):
+    __tablename__ = "paper_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), default="OPEN", nullable=False)  # "OPEN" или "CLOSED"
+    entry_price: Mapped[float] = mapped_column(nullable=False)
+    entry_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    exit_price: Mapped[float] = mapped_column(nullable=True)
+    exit_time: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    amount: Mapped[float] = mapped_column(nullable=False)  # купленное количество монет
+    sl_price: Mapped[float] = mapped_column(nullable=True)
+    tp_price: Mapped[float] = mapped_column(nullable=True)
+    pnl: Mapped[float] = mapped_column(nullable=True)      # профит / лосс в долларах
+    entry_candle_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PaperTrade symbol={self.symbol} status={self.status} pnl={self.pnl}>"
