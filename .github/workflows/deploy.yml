@@ -17,6 +17,10 @@ jobs:
   # 1. ЗАПУСК ТЕСТОВ ПЕРЕД СБОРКОЙ
   test:
     runs-on: ubuntu-latest
+    # Передаем фейковые переменные окружения для прохождения валидации Pydantic в тестах
+    env:
+      BOT_TOKEN: "123456:fake_token_for_ci_tests"
+      ADMIN_IDS: "[12345678]" # Передаем как валидный JSON-массив строк
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -79,7 +83,7 @@ jobs:
             OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
             GHCR_IMAGE_NAME="ghcr.io/${OWNER_LOWER}/binance_quant_bot"
 
-            # Записываем актуальное имя образа в файл .env
+            # Записываем имя образа в .env
             grep -q '^GHCR_IMAGE_NAME=' .env \
               && sed -i "s|^GHCR_IMAGE_NAME=.*|GHCR_IMAGE_NAME=${GHCR_IMAGE_NAME}|" .env \
               || echo "GHCR_IMAGE_NAME=${GHCR_IMAGE_NAME}" >> .env
