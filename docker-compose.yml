@@ -6,9 +6,9 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./src/db:/app/src/db        # База данных SQLite (свечи и сделки)
-      - ./logs:/app/logs            # Логи бота
-      - ./models/saved_models:/app/models/saved_models  # Папка для файлов ИИ-моделей
+      - ./src/db/db.db:/app/src/db/db.db
+      - ./logs:/app/logs
+      - ./models/saved_models:/app/models/saved_models
     depends_on:
       redis:
         condition: service_healthy
