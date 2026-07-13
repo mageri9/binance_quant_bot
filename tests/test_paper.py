@@ -296,7 +296,7 @@ async def test_paper_trading_short_tp_hit(temp_db_session):
     )
 
     assert msg is not None
-    assert "Открыта виртуальная SHORT-позиция" in msg
+    assert "Открыта виртуальная Short-позиция" in msg
 
     active_trade = await repo.get_active_trade("BTC/USDT")
     assert active_trade is not None

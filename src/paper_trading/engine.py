@@ -159,19 +159,33 @@ class PaperTradingEngine:
                 amount = effective_trade_allocation / latest_close
 
                 effective_sl_pct = sl_pct if sl_pct is not None else self.settings.PAPER_SL_PCT
-                effective_tp_pct = tp_pct if tp_pct is not None else self.settings.PAPER_TP_PCT
+                effective_tp_pct = (
+                    tp_pct if tp_pct is not None else self.settings.PAPER_TP_PCT
+                )
 
                 # Рассчитываем уровни SL/TP в зависимости от направления
                 if signal == 1:
                     # LONG: стоп-лосс внизу, тейк-профит вверху
-                    sl_price = latest_close * (1.0 - effective_sl_pct) if effective_sl_pct else None
-                    tp_price = latest_close * (1.0 + effective_tp_pct) if effective_tp_pct else None
-                    pos_type = "LONG"
+                    sl_price = (
+                        latest_close * (1.0 - effective_sl_pct)
+                        if effective_sl_pct
+                        else None
+                    )
+                    tp_price = (
+                        latest_close * (1.0 + effective_tp_pct)
+                        if effective_tp_pct
+                        else None
+                    )
+                    pos_type = "Long"  # Было "LONG"
                 else:
                     # SHORT: стоп-лосс вверху, тейк-профит внизу
-                    sl_price = latest_close * (1.0 + effective_sl_pct) if effective_sl_pct else None
+                    sl_price = (
+                        latest_close * (1.0 + effective_sl_pct)
+                        if effective_sl_pct
+                        else None
+                    )
                     tp_price = latest_close * (1.0 - effective_tp_pct) if effective_tp_pct else None
-                    pos_type = "SHORT"
+                    pos_type = "Short"  # Было "SHORT"
 
                 await self.repo.create_trade(
                     symbol=symbol,

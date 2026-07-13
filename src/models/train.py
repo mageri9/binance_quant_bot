@@ -11,6 +11,7 @@ from loguru import logger
 from src.models.backtest import TimeSeriesWalkForwardSplitter
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
+from src.core.config import get_settings  # Импортируем аккуратно сверху
 
 
 async def run_lgbm_experiment(
@@ -26,18 +27,19 @@ async def run_lgbm_experiment(
 ) -> dict:
     """
     Запускает эксперимент с продвинутой моделью LightGBM.
-    Обучает модель на Walk-Forward нарезках и записывает результаты в 'experiments'.
-    Также сохраняет финальную обученную модель в файл для использования в Predictor.
     """
     # 1. Загружаем датасет и его описание
     df = pd.read_parquet(dataset_path)
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
 
-    from src.core.config import get_settings
-
     settings = get_settings()
     target_col = settings.TARGET_COL
+
+    # Защитный механизм: автоматический откат на target_binary при отсутствии target_triple
+    if target_col not in df.columns and "target_binary" in df.columns:
+        target_col = "target_binary"
+
     feature_cols = metadata["features"]
 
     # Удаляем строки с пустыми значениями
@@ -57,7 +59,7 @@ async def run_lgbm_experiment(
     # Сюда сохраним модель на самом последнем шаге как наиболее актуальную
     final_model = None
 
-    is_multiclass = target_col == "target_triple"
+    is_multiclass = (target_col == "target_triple")
     avg_method = "macro" if is_multiclass else "binary"
 
     # 2. Walk-Forward цикл обучения
@@ -101,15 +103,9 @@ async def run_lgbm_experiment(
     # 3. Рассчитываем метрики точности
     metrics = {
         "accuracy": float(accuracy_score(all_y_true, all_y_pred)),
-        "precision": float(
-            precision_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
-        ),
-        "recall": float(
-            recall_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
-        ),
-        "f1": float(
-            f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
-        ),
+        "precision": float(precision_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)),
+        "recall": float(recall_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)),
+        "f1": float(f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)),
         "total_folds": fold_count,
         "total_test_samples": len(all_y_true),
     }
@@ -147,20 +143,8 @@ async def run_lgbm_experiment(
         "symbol": metadata["symbol"],
         "timeframe": metadata["timeframe"],
         "version": metadata["version"],
-        "target_col": target_col,  # Сохраняем имя целевой переменной для предиктора
+        "target_col": target_col,
     }
 
     with open(model_path, "wb") as f:
         pickle.dump(saved_data, f)
-
-    logger.info(
-        f"Модель LightGBM успешно обучена и сохранена в {model_path}. "
-        f"Accuracy: {metrics['accuracy']:.4f}, F1-score: {metrics['f1']:.4f}"
-    )
-
-    return {
-        "experiment_id": experiment.id,
-        "model_path": model_path,
-        "parameters": parameters,
-        "metrics": metrics,
-    }
