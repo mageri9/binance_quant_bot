@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     BOT_TOKEN: str
     ADMIN_IDS: list[int]
 
+    # Model
+    MODEL_PATH: str = "models/saved_models/lgbm_BTCUSDT_1h.pkl"
+
     # Redis
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
