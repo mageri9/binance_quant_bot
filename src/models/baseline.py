@@ -7,6 +7,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
+from core.config import get_settings
 from src.models.backtest import TimeSeriesWalkForwardSplitter
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
@@ -32,9 +33,10 @@ async def run_baseline_experiment(
 
     # Определяем признаки и целевую переменную
     feature_cols = metadata["features"]
-    target_col = "target_binary"
+    settings = get_settings()
+    target_col = settings.TARGET_COL
 
-    # Удаляем строки с пропусками (в начале таблицы из-за индикаторов, и в конце из-за горизонта будущего)
+    # Удаляем строки с пропусками
     df_clean = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
 
     if len(df_clean) < (train_size + test_size):
@@ -49,27 +51,37 @@ async def run_baseline_experiment(
     all_y_pred = []
     fold_count = 0
 
+    is_multiclass = target_col == "target_triple"
+    avg_method = "macro" if is_multiclass else "binary"
+
     # 3. Запускаем обучение по шагам (фолдам)
     for train_df, test_df, info in splitter.split(df_clean):
         X_train = train_df[feature_cols]
-        y_train = train_df[target_col].astype(int)
+        y_train = train_df[target_col]
 
         X_test = test_df[feature_cols]
-        y_test = test_df[target_col].astype(int)
+        y_test = test_df[target_col]
 
-        # Масштабируем признаки (Логистическая регрессия очень чувствительна к разным масштабам чисел)
+        # Для тройной классификации маппим метки в [0, 1, 2]
+        if is_multiclass:
+            y_train = y_train.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+            y_test = y_test.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+        else:
+            y_train = y_train.astype(int)
+            y_test = y_test.astype(int)
+
+        # Масштабируем признаки
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
 
-        # Обучаем модель на прошлом
+        # Обучаем модель
         model = LogisticRegression(C=c_parameter, random_state=42, max_iter=1000)
         model.fit(X_train_scaled, y_train)
 
-        # Предсказываем результаты на будущем
+        # Предсказываем результаты
         y_pred = model.predict(X_test_scaled)
 
-        # Накапливаем правильные ответы и предсказания для итогового расчета
         all_y_true.extend(y_test.tolist())
         all_y_pred.extend(y_pred.tolist())
 
@@ -80,12 +92,18 @@ async def run_baseline_experiment(
             "Разделитель не создал ни одного фолда. Увеличьте размер датасета или уменьшите окна."
         )
 
-    # 4. Рассчитываем итоговые метрики по всей цепочке тестирования
+    # 4. Рассчитываем итоговые метрики
     metrics = {
         "accuracy": float(accuracy_score(all_y_true, all_y_pred)),
-        "precision": float(precision_score(all_y_true, all_y_pred, zero_division=0)),
-        "recall": float(recall_score(all_y_true, all_y_pred, zero_division=0)),
-        "f1": float(f1_score(all_y_true, all_y_pred, zero_division=0)),
+        "precision": float(
+            precision_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
+        "recall": float(
+            recall_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
+        "f1": float(
+            f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
         "total_folds": fold_count,
         "total_test_samples": len(all_y_true),
     }

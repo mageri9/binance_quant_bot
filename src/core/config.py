@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     TEST_SIZE: int = 200
     LABEL_HORIZON: int = 5
     LABEL_THRESHOLD: float = 0.01
+    TARGET_COL: str = "target_triple"
 
     # Paper Trading Defaults
     PAPER_SL_PCT: float = 0.02

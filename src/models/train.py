@@ -34,8 +34,11 @@ async def run_lgbm_experiment(
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
 
+    from src.core.config import get_settings
+
+    settings = get_settings()
+    target_col = settings.TARGET_COL
     feature_cols = metadata["features"]
-    target_col = "target_binary"
 
     # Удаляем строки с пустыми значениями
     df_clean = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
@@ -54,21 +57,32 @@ async def run_lgbm_experiment(
     # Сюда сохраним модель на самом последнем шаге как наиболее актуальную
     final_model = None
 
+    is_multiclass = target_col == "target_triple"
+    avg_method = "macro" if is_multiclass else "binary"
+
     # 2. Walk-Forward цикл обучения
     for train_df, test_df, info in splitter.split(df_clean):
         X_train = train_df[feature_cols]
-        y_train = train_df[target_col].astype(int)
+        y_train = train_df[target_col]
 
         X_test = test_df[feature_cols]
-        y_test = test_df[target_col].astype(int)
+        y_test = test_df[target_col]
 
-        # LightGBM не требует масштабирования признаков, обучаем напрямую
+        # Для тройной классификации переводим метки в [0, 1, 2]
+        if is_multiclass:
+            y_train = y_train.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+            y_test = y_test.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+        else:
+            y_train = y_train.astype(int)
+            y_test = y_test.astype(int)
+
+        # Обучаем модель LightGBM
         model = LGBMClassifier(
             learning_rate=learning_rate,
             n_estimators=n_estimators,
             max_depth=max_depth,
             random_state=42,
-            verbosity=-1,  # Отключаем лишний вывод логов в консоль
+            verbosity=-1,
         )
         model.fit(X_train, y_train)
 
@@ -87,9 +101,15 @@ async def run_lgbm_experiment(
     # 3. Рассчитываем метрики точности
     metrics = {
         "accuracy": float(accuracy_score(all_y_true, all_y_pred)),
-        "precision": float(precision_score(all_y_true, all_y_pred, zero_division=0)),
-        "recall": float(recall_score(all_y_true, all_y_pred, zero_division=0)),
-        "f1": float(f1_score(all_y_true, all_y_pred, zero_division=0)),
+        "precision": float(
+            precision_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
+        "recall": float(
+            recall_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
+        "f1": float(
+            f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
         "total_folds": fold_count,
         "total_test_samples": len(all_y_true),
     }
@@ -123,10 +143,11 @@ async def run_lgbm_experiment(
     saved_data = {
         "model": final_model,
         "features": feature_cols,
-        "scaler": None,  # LightGBM не использует StandardScaler
+        "scaler": None,
         "symbol": metadata["symbol"],
         "timeframe": metadata["timeframe"],
         "version": metadata["version"],
+        "target_col": target_col,  # Сохраняем имя целевой переменной для предиктора
     }
 
     with open(model_path, "wb") as f:

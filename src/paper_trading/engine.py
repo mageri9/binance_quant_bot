@@ -11,7 +11,7 @@ from src.db.models import PaperTrade
 class PaperTradingEngine:
     """
     Движок виртуальной торговли (Paper trading).
-    Выполняет сделки на основе входящих свечей и логирует их в БД.
+    Поддерживает как LONG, так и SHORT позиции.
     """
 
     def __init__(self, session: AsyncSession):
@@ -27,13 +27,12 @@ class PaperTradingEngine:
         sl_pct: float | None = None,
         tp_pct: float | None = None,
         horizon: int = 5,
-        trade_allocation: float | None = None,  # Изменено по умолчанию на None
+        trade_allocation: float | None = None,
     ) -> str | None:
         """
         Основной рабочий цикл движка:
         - Проверяет открытые сделки на выход по SL / TP / Horizon.
-        - При отсутствии открытой сделки опрашивает модель и открывает Long при сигнале '1'.
-        Возвращает строку-лог совершенной операции.
+        - При отсутствии открытой сделки опрашивает модель и открывает LONG (1) или SHORT (-1).
         """
         if len(latest_candles) < 30:
             return None
@@ -49,37 +48,79 @@ class PaperTradingEngine:
 
         if active_trade:
             # --- Логика ведения открытой позиции ---
-            # 1. Проверяем Stop-Loss
-            if active_trade.sl_price and latest_low <= active_trade.sl_price:
-                pnl = (
-                    active_trade.sl_price - active_trade.entry_price
-                ) * active_trade.amount
-                await self.repo.close_trade(active_trade, active_trade.sl_price, pnl)
-                msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol}. Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
-                logger.info(msg)
-                return msg
+            # Математически определяем направление сделки без расширения схемы БД:
+            # Если SL выше цены входа (или TP ниже цены входа) — это SHORT.
+            is_short = False
+            if active_trade.sl_price is not None:
+                is_short = active_trade.sl_price > active_trade.entry_price
+            elif active_trade.tp_price is not None:
+                is_short = active_trade.tp_price < active_trade.entry_price
 
-            # 2. Проверяем Take-Profit
-            if active_trade.tp_price and latest_high >= active_trade.tp_price:
-                pnl = (
-                    active_trade.tp_price - active_trade.entry_price
-                ) * active_trade.amount
-                await self.repo.close_trade(active_trade, active_trade.tp_price, pnl)
-                msg = f"🟢 [PAPER] Сработал Take-Profit по {symbol}. Сделка закрыта по {active_trade.tp_price:.2f}. PnL: {pnl:.2f}$"
-                logger.info(msg)
-                return msg
+            if is_short:
+                # --- ЛОГИКА ДЛЯ SHORT-ПОЗИЦИИ ---
+                # 1. Проверяем Stop-Loss (для шорта это рост цены вверх)
+                if active_trade.sl_price and latest_high >= active_trade.sl_price:
+                    pnl = (
+                        active_trade.entry_price - active_trade.sl_price
+                    ) * active_trade.amount
+                    await self.repo.close_trade(active_trade, active_trade.sl_price, pnl)
+                    msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol} (SHORT). Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
+                    logger.info(msg)
+                    return msg
 
-            # 3. Проверяем выход по времени (Time Horizon)
-            # Берем количество свечей, прошедших с момента входа в сделку
-            candles_since_entry = latest_candles[
-                latest_candles["open_time"] >= active_trade.entry_candle_time
-            ]
-            if len(candles_since_entry) >= horizon:
-                pnl = (latest_close - active_trade.entry_price) * active_trade.amount
-                await self.repo.close_trade(active_trade, latest_close, pnl)
-                msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol}. Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
-                logger.info(msg)
-                return msg
+                # 2. Проверяем Take-Profit (для шорта это падение цены вниз)
+                if active_trade.tp_price and latest_low <= active_trade.tp_price:
+                    pnl = (
+                        active_trade.entry_price - active_trade.tp_price
+                    ) * active_trade.amount
+                    await self.repo.close_trade(active_trade, active_trade.tp_price, pnl)
+                    msg = f"🟢 [PAPER] Сработал Take-Profit по {symbol} (SHORT). Сделка закрыта по {active_trade.tp_price:.2f}. PnL: {pnl:.2f}$"
+                    logger.info(msg)
+                    return msg
+
+                # 3. Проверяем выход по времени (Time Horizon)
+                candles_since_entry = latest_candles[
+                    latest_candles["open_time"] >= active_trade.entry_candle_time
+                ]
+                if len(candles_since_entry) >= horizon:
+                    pnl = (active_trade.entry_price - latest_close) * active_trade.amount
+                    await self.repo.close_trade(active_trade, latest_close, pnl)
+                    msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol} (SHORT). Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
+                    logger.info(msg)
+                    return msg
+
+            else:
+                # --- ЛОГИКА ДЛЯ LONG-ПОЗИЦИИ (Базовая) ---
+                # 1. Проверяем Stop-Loss
+                if active_trade.sl_price and latest_low <= active_trade.sl_price:
+                    pnl = (
+                        active_trade.sl_price - active_trade.entry_price
+                    ) * active_trade.amount
+                    await self.repo.close_trade(active_trade, active_trade.sl_price, pnl)
+                    msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol}. Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
+                    logger.info(msg)
+                    return msg
+
+                # 2. Проверяем Take-Profit
+                if active_trade.tp_price and latest_high >= active_trade.tp_price:
+                    pnl = (
+                        active_trade.tp_price - active_trade.entry_price
+                    ) * active_trade.amount
+                    await self.repo.close_trade(active_trade, active_trade.tp_price, pnl)
+                    msg = f"🟢 [PAPER] Сработал Take-Profit по {symbol}. Сделка закрыта по {active_trade.tp_price:.2f}. PnL: {pnl:.2f}$"
+                    logger.info(msg)
+                    return msg
+
+                # 3. Проверяем выход по времени
+                candles_since_entry = latest_candles[
+                    latest_candles["open_time"] >= active_trade.entry_candle_time
+                ]
+                if len(candles_since_entry) >= horizon:
+                    pnl = (latest_close - active_trade.entry_price) * active_trade.amount
+                    await self.repo.close_trade(active_trade, latest_close, pnl)
+                    msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol}. Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
+                    logger.info(msg)
+                    return msg
 
             return None
 
@@ -88,15 +129,16 @@ class PaperTradingEngine:
             # Запрашиваем предсказание у модели
             signal = predictor.predict(latest_candles)
 
-            if signal == 1:
+            # Signal может быть: 1 (LONG) или -1 (SHORT)
+            if signal in [1, -1]:
                 portfolio = await self.repo.get_portfolio()
 
-                # Рассчитываем динамический объем сделки, если он не задан принудительно
+                # Рассчитываем объем сделки
                 effective_trade_allocation = trade_allocation
                 if effective_trade_allocation is None:
                     effective_trade_allocation = portfolio.balance * self.settings.PAPER_RISK_PCT
 
-                # Проверяем ограничение на минимальный объем сделки
+                # Проверка лимитов
                 if effective_trade_allocation < self.settings.PAPER_MIN_ALLOCATION:
                     msg = (
                         f"⚠️ [PAPER] Расчитанный объем сделки ({effective_trade_allocation:.2f}$) "
@@ -105,7 +147,7 @@ class PaperTradingEngine:
                     logger.warning(msg)
                     return msg
 
-                # Проверяем наличие свободного кэша
+                # Проверяем свободный кэш
                 if portfolio.cash < effective_trade_allocation:
                     msg = (
                         f"⚠️ [PAPER] Недостаточно кэша для сделки по {symbol}. "
@@ -114,15 +156,22 @@ class PaperTradingEngine:
                     logger.warning(msg)
                     return msg
 
-                # Расчет объема покупки монет
                 amount = effective_trade_allocation / latest_close
 
-                # Применяем параметры из настроек, если они не переданы явно
                 effective_sl_pct = sl_pct if sl_pct is not None else self.settings.PAPER_SL_PCT
                 effective_tp_pct = tp_pct if tp_pct is not None else self.settings.PAPER_TP_PCT
 
-                sl_price = latest_close * (1.0 - effective_sl_pct) if effective_sl_pct else None
-                tp_price = latest_close * (1.0 + effective_tp_pct) if effective_tp_pct else None
+                # Рассчитываем уровни SL/TP в зависимости от направления
+                if signal == 1:
+                    # LONG: стоп-лосс внизу, тейк-профит вверху
+                    sl_price = latest_close * (1.0 - effective_sl_pct) if effective_sl_pct else None
+                    tp_price = latest_close * (1.0 + effective_tp_pct) if effective_tp_pct else None
+                    pos_type = "LONG"
+                else:
+                    # SHORT: стоп-лосс вверху, тейк-профит внизу
+                    sl_price = latest_close * (1.0 + effective_sl_pct) if effective_sl_pct else None
+                    tp_price = latest_close * (1.0 - effective_tp_pct) if effective_tp_pct else None
+                    pos_type = "SHORT"
 
                 await self.repo.create_trade(
                     symbol=symbol,
@@ -134,8 +183,8 @@ class PaperTradingEngine:
                 )
 
                 msg = (
-                    f"🚀 [PAPER] Открыта виртуальная Long-позиция по {symbol} по цене {latest_close:.2f}. "
-                    f"Размер сделки: {effective_trade_allocation:.2f}$ ({self.settings.PAPER_RISK_PCT:.1%} от баланса). "
+                    f"🚀 [PAPER] Открыта виртуальная {pos_type}-позиция по {symbol} по цене {latest_close:.2f}. "
+                    f"Размер сделки: {effective_trade_allocation:.2f}$. "
                     f"Количество монет: {amount:.6f}. SL: {sl_price:.2f}, TP: {tp_price:.2f}"
                 )
                 logger.info(msg)

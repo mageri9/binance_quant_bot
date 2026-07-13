@@ -260,3 +260,129 @@ async def test_paper_repository_insufficient_cash_exception(temp_db_session):
         )
 
     assert "Недостаточно свободного кэша" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_short_tp_hit(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+
+    # Задаем фиксированный размер сделки для простоты расчетов
+    trade_allocation = 1000.0
+
+    dummy_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+
+    # Симулируем сигнал SHORT (-1)
+    predictor = MockPredictor(signal=-1)
+
+    # 1. Открываем SHORT
+    msg = await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=dummy_candles,
+        predictor=predictor,
+        sl_pct=0.02,
+        tp_pct=0.04,
+        trade_allocation=trade_allocation,
+    )
+
+    assert msg is not None
+    assert "Открыта виртуальная SHORT-позиция" in msg
+
+    active_trade = await repo.get_active_trade("BTC/USDT")
+    assert active_trade is not None
+    # При шорте от цены входа 100.0:
+    # TP должен быть ниже на 4% (96.0$)
+    # SL должен быть выше на 2% (102.0$)
+    assert active_trade.sl_price == pytest.approx(102.0)
+    assert active_trade.tp_price == pytest.approx(96.0)
+
+    # 2. Имитируем падение рынка (достижение TP по минимальной цене 95.0)
+    drop_candles = dummy_candles.copy()
+    drop_candles.loc[drop_candles.index[-1], "low"] = 95.0
+    drop_candles.loc[drop_candles.index[-1], "close"] = 96.0
+
+    close_msg = await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=drop_candles,
+        predictor=predictor,
+        sl_pct=0.02,
+        tp_pct=0.04,
+        trade_allocation=trade_allocation,
+    )
+
+    assert close_msg is not None
+    assert "Сработал Take-Profit" in close_msg
+    assert "SHORT" in close_msg
+
+    # Ожидаемый PnL: (100 - 96) * 10 монет = +40.0$
+    # Итоговый баланс: 10000 + 40 = 10040$
+    portfolio = await repo.get_portfolio()
+    assert portfolio.balance == pytest.approx(10040.0)
+    assert portfolio.cash == pytest.approx(10040.0)
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_short_sl_hit(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+
+    trade_allocation = 1000.0
+
+    dummy_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+
+    predictor = MockPredictor(signal=-1)
+
+    # 1. Открываем SHORT
+    await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=dummy_candles,
+        predictor=predictor,
+        sl_pct=0.02,
+        tp_pct=0.04,
+        trade_allocation=trade_allocation,
+    )
+
+    # 2. Имитируем резкий рост рынка вверх (достижение SL по максимальной цене 103.0)
+    pump_candles = dummy_candles.copy()
+    pump_candles.loc[pump_candles.index[-1], "high"] = 103.0
+    pump_candles.loc[pump_candles.index[-1], "close"] = 102.5
+
+    close_msg = await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=pump_candles,
+        predictor=predictor,
+        sl_pct=0.02,
+        tp_pct=0.04,
+        trade_allocation=trade_allocation,
+    )
+
+    assert close_msg is not None
+    assert "Сработал Stop-Loss" in close_msg
+
+    # Ожидаемый убыток (SL на 102.0): (100 - 102) * 10 монет = -20.0$
+    # Итоговый баланс: 10000 - 20 = 9980$
+    portfolio = await repo.get_portfolio()
+    assert portfolio.balance == pytest.approx(9980.0)
+    assert portfolio.cash == pytest.approx(9980.0)
