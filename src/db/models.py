@@ -46,3 +46,20 @@ class Kline(Base):
 
     def __repr__(self) -> str:
         return f"<Kline symbol={self.symbol} tf={self.timeframe} time={self.open_time} close={self.close}>"
+
+
+class Experiment(Base):
+    __tablename__ = "experiments"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    model_name: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    dataset_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    parameters: Mapped[str] = mapped_column(String(500), nullable=False)  # JSON-строка с параметрами
+    metrics: Mapped[str] = mapped_column(String(500), nullable=False)     # JSON-строка с метриками точности
+    git_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return f"<Experiment id={self.id} model={self.model_name} metrics={self.metrics}>"
