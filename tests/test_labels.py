@@ -110,6 +110,11 @@ def test_feature_leakage_protection():
         "macd_hist",
         "volatility",
         "volume_ratio",
+        "bb_upper",
+        "bb_middle",
+        "bb_lower",
+        "atr",
+        "adx",
     ]
 
     for col in feature_cols:

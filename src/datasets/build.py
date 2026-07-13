@@ -112,6 +112,11 @@ async def build_and_save_dataset(
             "macd_hist",
             "volatility",
             "volume_ratio",
+            "bb_upper",
+            "bb_middle",
+            "bb_lower",
+            "atr",
+            "adx",
         ],
         "targets": {
             "target_binary": {"type": "binary", "horizon": horizon, "threshold": 0.0},
