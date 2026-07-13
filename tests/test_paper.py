@@ -116,3 +116,40 @@ async def test_get_closed_trades_returns_history(temp_db_session):
     assert closed[1].entry_candle_time == 2000
     assert closed[0].pnl == 4.0
     assert closed[1].pnl == -2.0
+
+@pytest.mark.asyncio
+async def test_paper_trading_default_sl_tp(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+
+    # Явно переопределим дефолтные настройки для проверки в рамках теста
+    engine.settings.PAPER_SL_PCT = 0.015
+    engine.settings.PAPER_TP_PCT = 0.035
+
+    dummy_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+
+    predictor = MockPredictor(signal=1)
+
+    # Вызываем БЕЗ передачи sl_pct и tp_pct
+    await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=dummy_candles,
+        predictor=predictor,
+        horizon=5,
+    )
+
+    active_trade = await repo.get_active_trade("BTC/USDT")
+    assert active_trade is not None
+    # Используем pytest.approx для безопасного сравнения дробных чисел
+    assert active_trade.sl_price == pytest.approx(98.5)
+    assert active_trade.tp_price == pytest.approx(103.5)

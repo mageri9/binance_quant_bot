@@ -3,6 +3,7 @@ from loguru import logger
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import get_settings
 from src.crud.paper import PaperTradingRepository
 from src.db.models import PaperTrade
 
@@ -15,6 +16,7 @@ class PaperTradingEngine:
 
     def __init__(self, session: AsyncSession):
         self.repo = PaperTradingRepository(session)
+        self.settings = get_settings()
 
     async def process_market_update(
         self,
@@ -22,8 +24,8 @@ class PaperTradingEngine:
         timeframe: str,
         latest_candles: pd.DataFrame,
         predictor,
-        sl_pct: float = 0.02,  # TODO: не провалидировано через strategy/signals.simulate_strategy на бэктесте
-        tp_pct: float = 0.04,  # TODO: см. выше — сейчас просто дефолт "на глаз"
+        sl_pct: float | None = None,
+        tp_pct: float | None = None,
         horizon: int = 5,
         trade_allocation: float = 1000.0,
     ) -> str | None:
@@ -98,8 +100,12 @@ class PaperTradingEngine:
                 # Расчет объема покупки монет
                 amount = trade_allocation / latest_close
 
-                sl_price = latest_close * (1.0 - sl_pct) if sl_pct else None
-                tp_price = latest_close * (1.0 + tp_pct) if tp_pct else None
+                # Применяем параметры из настроек, если они не переданы явно
+                effective_sl_pct = sl_pct if sl_pct is not None else self.settings.PAPER_SL_PCT
+                effective_tp_pct = tp_pct if tp_pct is not None else self.settings.PAPER_TP_PCT
+
+                sl_price = latest_close * (1.0 - effective_sl_pct) if effective_sl_pct else None
+                tp_price = latest_close * (1.0 + effective_tp_pct) if effective_tp_pct else None
 
                 await self.repo.create_trade(
                     symbol=symbol,

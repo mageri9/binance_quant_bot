@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     LABEL_HORIZON: int = 5
     LABEL_THRESHOLD: float = 0.01
 
+    # Paper Trading Defaults
+    PAPER_SL_PCT: float = 0.02
+    PAPER_TP_PCT: float = 0.04
+
     class Config:
         env_file = get_env_path()
         env_file_encoding = "utf-8"

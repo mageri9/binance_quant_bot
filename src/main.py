@@ -144,12 +144,18 @@ async def retrain_loop(bot: Bot):
                 json_path = parquet_path.replace(".parquet", ".json")
 
                 baseline_result = await run_baseline_experiment(
-                    session, parquet_path, json_path,
-                    train_size=settings.TRAIN_SIZE, test_size=settings.TEST_SIZE,
+                    session,
+                    parquet_path,
+                    json_path,
+                    train_size=settings.TRAIN_SIZE,
+                    test_size=settings.TEST_SIZE,
                 )
                 lgbm_result = await run_lgbm_experiment(
-                    session, parquet_path, json_path,
-                    train_size=settings.TRAIN_SIZE, test_size=settings.TEST_SIZE,
+                    session,
+                    parquet_path,
+                    json_path,
+                    train_size=settings.TRAIN_SIZE,
+                    test_size=settings.TEST_SIZE,
                     models_dir="models/staging",
                 )
 
@@ -172,9 +178,29 @@ async def retrain_loop(bot: Bot):
                     msg = (
                         f"✅ [Retrain v{version}] Модель обновлена в продакшне.\n"
                         f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
-                        f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})"
+                        f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n"
                     )
                     logger.info(msg)
+
+                    # --- АВТОМАТИЧЕСКАЯ КАЛИБРОВКА (Способ 2) ---
+                    try:
+                        from scripts.calibrate import get_best_calibration
+
+                        best_sl, best_tp, cal_report = await get_best_calibration(
+                            "BTC/USDT", "1h"
+                        )
+
+                        # Обновляем настройки в оперативной памяти прямо "на лету"
+                        settings.PAPER_SL_PCT = best_sl
+                        settings.PAPER_TP_PCT = best_tp
+
+                        msg += f"\n{cal_report}"
+                        logger.info(
+                            f"[Retrain v{version}] Автокалибровка завершена: SL={best_sl:.1%}, TP={best_tp:.1%}"
+                        )
+                    except Exception as cal_err:
+                        logger.error(f"Ошибка автокалибровки: {cal_err}")
+                        msg += f"\n\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
 
                 for admin_id in settings.ADMIN_IDS:
                     try:
