@@ -1,0 +1,21 @@
+# Не копируем виртуальное окружение компьютера
+.venv/
+venv/
+
+# Не копируем кэш и временные файлы Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Не копируем локальные пароли и базу данных
+.env
+src/db/db.db
+logs/
+
+# Не копируем служебные файлы Git и тесты (они на сервере не нужны)
+.git/
+.gitignore
+.dockerignore
+tests/
+pytest.ini

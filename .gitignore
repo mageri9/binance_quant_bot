@@ -1,0 +1,33 @@
+# Временные файлы Python (кэш)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.cache/
+
+# Виртуальное окружение
+.venv/
+venv/
+ENV/
+env/
+
+# Конфиденциальные данные (ключи и токены)
+.env
+
+# Локальная база данных SQLite (чтобы не затереть историю)
+src/db/db.db
+src/db/*.db
+
+# Логи работы бота
+logs/
+*.log
+
+# Настройки сред разработки (VS Code, PyCharm)
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
