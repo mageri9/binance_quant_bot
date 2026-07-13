@@ -1,0 +1,96 @@
+name: Build and Deploy MarketMind to VPS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  MAINTENANCE_TTL_SECONDS: "180"
+
+jobs:
+  # 1. ЗАПУСК ТЕСТОВ ПЕРЕД СБОРКОЙ
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Run test suite
+        run: python -m pytest tests/
+
+  # 2. СБОРКА И ОТПРАВКА ОБРАЗА В GHCR
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Downcase repository owner
+        run: |
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "GHCR_IMAGE_NAME=ghcr.io/${OWNER_LOWER}/binance_quant_bot" >> $GITHUB_ENV
+
+      - name: Build and push Bot image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.GHCR_IMAGE_NAME }}:latest
+
+  # 3. БЕЗОПАСНЫЙ ДЕПЛОЙ НА VPS С ПОДАВЛЕНИЕМ ШУМА В NEXUS SRE
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build-and-push, test]
+    steps:
+      - name: Execute remote SSH commands to deploy Bot
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_KEY }}
+          envs: MAINTENANCE_TTL_SECONDS
+          script: |
+            cd ~/apps/binance_quant_bot
+            OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+            GHCR_IMAGE_NAME="ghcr.io/${OWNER_LOWER}/binance_quant_bot"
+
+            # Записываем актуальное имя образа в файл .env
+            grep -q '^GHCR_IMAGE_NAME=' .env \
+              && sed -i "s|^GHCR_IMAGE_NAME=.*|GHCR_IMAGE_NAME=${GHCR_IMAGE_NAME}|" .env \
+              || echo "GHCR_IMAGE_NAME=${GHCR_IMAGE_NAME}" >> .env
+
+            # Устанавливаем флаг обслуживания в Redis экосистемы Nexus, чтобы отключить ложные алерты на 3 минуты
+            docker exec nexus-redis redis-cli SET nexus:maintenance:binance_quant_bot 1 EX "${MAINTENANCE_TTL_SECONDS}" \
+              || echo "::warning::Could not set maintenance flag in Nexus Redis, continuing..."
+
+            # Обновляем образ и перезапускаем контейнеры
+            docker compose pull
+            docker compose up -d --force-recreate
+
+            # Очищаем неиспользуемые старые слои
+            docker image prune -f

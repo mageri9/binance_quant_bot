@@ -2,7 +2,6 @@ import html
 import os
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +9,6 @@ import pandas as pd
 
 import src.keyboards.user as kb
 from src.services.user import UserService
-from src.states.user import FeedbackForm
 
 from src.core.config import get_settings
 from src.crud.paper import PaperTradingRepository
@@ -21,10 +19,10 @@ router = Router()
 
 
 @router.message(Command("status"))
+@router.message(F.text == "📊 Статус портфеля")
 async def status_handler(message: Message, session: AsyncSession):
     """
-    Команда /status: Выводит текущее состояние виртуального баланса
-    и параметры открытой сделки с расчетом PnL в реальном времени.
+    Команда /status (или кнопка): Выводит текущее состояние виртуального кошелька.
     """
     repo = PaperTradingRepository(session)
     portfolio = await repo.get_portfolio()
@@ -37,7 +35,6 @@ async def status_handler(message: Message, session: AsyncSession):
     )
 
     if active_trade:
-        # Пытаемся взять последнюю свечу из БД для оценки текущей прибыли в реальном времени
         kline_repo = KlineRepository(session)
         klines = await kline_repo.get_klines("BTC/USDT", "1h", limit=1)
 
@@ -67,22 +64,21 @@ async def status_handler(message: Message, session: AsyncSession):
 
 
 @router.message(Command("signals"))
+@router.message(F.text == "🤖 Торговый сигнал")
 async def signals_handler(message: Message, session: AsyncSession):
     """
-    Команда /signals: Ручной принудительный опрос ML-модели по текущим свечам из БД.
+    Команда /signals (или кнопка): Ручной опрос ML-модели по текущим ценам в БД.
     """
     settings = get_settings()
 
-    # 1. Проверяем, обучена ли модель
     if not os.path.exists(settings.MODEL_PATH):
         await message.answer(
             "⚠️ <b>Модель еще не обучена.</b>\n\n"
-            "Пожалуйста, сначала соберите датасет и обучите модель (LGBM), "
+            "Пожалуйста, соберите датасет и запустите обучение модели (LGBM), "
             "чтобы файл модели сохранился на сервере."
         )
         return
 
-    # 2. Считываем свечи из БД
     kline_repo = KlineRepository(session)
     klines = await kline_repo.get_klines("BTC/USDT", "1h", limit=50)
 
@@ -93,7 +89,6 @@ async def signals_handler(message: Message, session: AsyncSession):
         )
         return
 
-    # Превращаем свечи в DataFrame для предсказателя
     data = []
     for k in klines:
         data.append(
@@ -108,7 +103,6 @@ async def signals_handler(message: Message, session: AsyncSession):
         )
     df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
 
-    # 3. Загружаем модель и вычисляем сигнал
     try:
         predictor = Predictor(settings.MODEL_PATH)
         prediction = predictor.predict(df)
@@ -139,9 +133,6 @@ async def signals_handler(message: Message, session: AsyncSession):
         await message.answer(f"❌ Произошла ошибка при анализе рынка: {e}")
 
 
-# --- Стандартные хендлеры шаблона ---
-
-
 async def start_handler(message: Message, session: AsyncSession, redis: Redis):
     service = UserService(session, redis)
     user, is_new = await service.register_or_update(
@@ -152,51 +143,15 @@ async def start_handler(message: Message, session: AsyncSession, redis: Redis):
     greeting = "Привет" if is_new else "С возвращением"
     await message.answer(
         f"{greeting}, {html.escape(message.from_user.full_name)}! 👋\n\n"
-        f"<b>Доступные команды торгового ИИ:</b>\n"
-        f"/status — Состояние виртуального портфеля\n"
-        f"/signals — Получить торговый сигнал ИИ",
+        f"<b>Доступные функции количественного ИИ:</b>\n"
+        f"👉 Нажмите на кнопки внизу для взаимодействия.",
         reply_markup=kb.main_menu(),
     )
 
 
-async def menu_handler(message: Message):
-    await message.answer("📋 Меню", reply_markup=kb.sub_menu())
-
-
-# --- FSM: Feedback flow ---
-
-
-async def feedback_start(message: Message, state: FSMContext):
-    await state.set_state(FeedbackForm.waiting_for_text)
-    await message.answer("✍️ Напишите ваш отзыв:")
-
-
-async def feedback_text_received(message: Message, state: FSMContext):
-    await state.update_data(text=message.text)
-    await state.set_state(FeedbackForm.waiting_for_rating)
-    await message.answer("⭐ Оцените нас от 1 до 5:", reply_markup=kb.rating_keyboard())
-
-
-async def feedback_cancel(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Отменено.", reply_markup=kb.main_menu())
-
-
 def register_handlers():
     router.message.register(start_handler, CommandStart())
-
-    # Связываем команду /status и кнопку "📊 Статус портфеля" с одним обработчиком
     router.message.register(status_handler, Command("status"))
     router.message.register(status_handler, F.text == "📊 Статус портфеля")
-
-    # Связываем команду /signals и кнопку "🤖 Торговый сигнал" с одним обработчиком
     router.message.register(signals_handler, Command("signals"))
     router.message.register(signals_handler, F.text == "🤖 Торговый сигнал")
-
-    router.message.register(menu_handler, Command("menu"))
-    router.message.register(menu_handler, F.text == "📋 Меню")
-    router.message.register(feedback_start, F.text == "💬 Обратная связь")
-    router.message.register(
-        feedback_text_received, FeedbackForm.waiting_for_text, F.text
-    )
-    router.message.register(feedback_cancel, F.text == "/cancel")

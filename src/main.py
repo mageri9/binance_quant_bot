@@ -19,12 +19,19 @@ from src.middlewares.logger import LoggerMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 
+# Мягкая интеграция с Nexus SRE SDK
+try:
+    from nexus_sdk import NexusSDK
+
+    NEXUS_AVAILABLE = True
+except ImportError:
+    NEXUS_AVAILABLE = False
+    logger.warning("NexusSDK не установлен в окружении. Запуск без Nexus SRE.")
+
 
 async def paper_trading_loop(bot: Bot):
     """
     Асинхронная фоновая служба бумажной торговли.
-    Раз в 1 час скачивает свечи, обновляет БД, опрашивает модель
-    и при совершении или закрытии сделки шлет красивый отчет админам.
     """
     from src.data.collector import DataCollector
     from src.models.predictor import Predictor
@@ -36,20 +43,17 @@ async def paper_trading_loop(bot: Bot):
 
     while True:
         try:
-            # Опрашиваем биржу раз в 1 час (3600 секунд)
+            # Опрашиваем биржу раз в 1 час
             await asyncio.sleep(3600)
 
             async with AsyncSessionFactory() as session:
-                # 1. Скачиваем последние свечи по BTC/USDT
                 collector = DataCollector(session)
                 await collector.fetch_and_save_klines("BTC/USDT", "1h", limit=5)
                 await collector.close()
 
-                # 2. Считываем свечи из БД
                 repo = KlineRepository(session)
                 klines = await repo.get_klines("BTC/USDT", "1h", limit=50)
 
-                # Переводим свечи в формат DataFrame
                 data = []
                 for k in klines:
                     data.append(
@@ -64,11 +68,9 @@ async def paper_trading_loop(bot: Bot):
                     )
                 df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
 
-                # 3. Проверяем наличие обученной модели на диске
                 if not os.path.exists(settings.MODEL_PATH):
                     continue
 
-                # 4. Запускаем торговый движок
                 predictor = Predictor(settings.MODEL_PATH)
                 engine_pt = PaperTradingEngine(session)
 
@@ -79,7 +81,6 @@ async def paper_trading_loop(bot: Bot):
                     predictor=predictor,
                 )
 
-                # Если сделка совершена, шлем уведомление всем админам из .env
                 if log_msg:
                     for admin_id in settings.ADMIN_IDS:
                         try:
@@ -91,7 +92,10 @@ async def paper_trading_loop(bot: Bot):
 
         except Exception as e:
             logger.error(f"Ошибка в цикле бумажной торговли: {e}")
-            await asyncio.sleep(60)  # В случае сбоя ждем 1 минуту перед перезапуском
+            await asyncio.sleep(60)
+
+
+nexus = None
 
 
 async def on_startup(bot: Bot):
@@ -108,13 +112,20 @@ async def on_startup(bot: Bot):
 
 
 async def on_shutdown(bot: Bot):
+    global nexus
     logger.info("Shutting down...")
+
+    if NEXUS_AVAILABLE and nexus:
+        await nexus.close()
+        logger.info("Nexus SRE сессия успешно завершена.")
+
     await close_redis()
     await engine.dispose()
     await bot.session.close()
 
 
 async def main():
+    global nexus
     settings = get_settings()
 
     logger.remove()
@@ -141,6 +152,27 @@ async def main():
     )
 
     dp = Dispatcher(storage=storage)
+
+    # Инициализируем Nexus SRE, если секрет приложения задан
+    if NEXUS_AVAILABLE:
+        app_secret = os.getenv("NEXUS_APP_SECRET")
+        if app_secret:
+            nexus = NexusSDK(
+                endpoint_url=os.getenv(
+                    "NEXUS_ENDPOINT_URL", "http://nexus-webhook:8000/events/app"
+                ),
+                app_secret=app_secret,
+                project_name=os.getenv("NEXUS_PROJECT_NAME", "binance_quant_bot"),
+            )
+            # Глобальный перехватчик ошибок в aiogram 3
+            nexus.register_aiogram_error_handler(dp)
+            # Запуск пульса (Heartbeat) раз в 15 секунд
+            nexus.start_heartbeat(interval_seconds=15)
+            logger.info("Nexus SRE мониторинг успешно инициализирован.")
+        else:
+            logger.warning(
+                "NEXUS_APP_SECRET не задан. Запуск без интеграции с Nexus SRE."
+            )
 
     dp.update.outer_middleware(LoggerMiddleware())
     dp.update.outer_middleware(RedisMiddleware(redis))

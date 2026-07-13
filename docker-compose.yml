@@ -1,19 +1,24 @@
 services:
   bot:
-    build: .
+    # Скачиваем готовый образ из GitHub Container Registry (GHCR)
+    image: ${GHCR_IMAGE_NAME:-ghcr.io/mageri9/binance_quant_bot}:latest
+    container_name: binance_quant_bot
     restart: unless-stopped
     env_file: .env
     volumes:
-      - ./src/db:/app/src/db        # persist SQLite
-      - ./logs:/app/logs            # persist logs
+      - ./src/db:/app/src/db        # База данных SQLite (свечи и сделки)
+      - ./logs:/app/logs            # Логи бота
+      - ./models/saved_models:/app/models/saved_models  # Папка для файлов ИИ-моделей
     depends_on:
       redis:
         condition: service_healthy
     networks:
       - bot_net
+      - nexus_shared
 
   redis:
     image: redis:7-alpine
+    container_name: bot-redis
     restart: unless-stopped
     command: >
       redis-server
@@ -36,3 +41,5 @@ volumes:
 networks:
   bot_net:
     driver: bridge
+  nexus_shared:
+    external: true
