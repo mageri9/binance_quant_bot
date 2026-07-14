@@ -62,6 +62,9 @@ class Settings(BaseSettings):
         ("SOL/USDT", "1h"),
     ]
 
+    ROLLBACK_MAX_DRAWDOWN_THRESHOLD: float = 0.15
+    CALIBRATION_MIN_TRADES: int = 10
+
     def get_model_path(self, symbol: str, timeframe: str) -> str:
         """Динамически рассчитывает путь к pkl-файлу модели."""
         clean_symbol = symbol.replace("/", "").replace(":", "")

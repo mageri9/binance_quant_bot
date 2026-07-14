@@ -22,21 +22,16 @@ def perform_grid_search(
     sl_grid: list[float],
     tp_grid: list[float],
     horizon: int,
+    min_trades: int = 10,
 ) -> list[dict]:
-    """
-    Прогоняет сетку параметров SL/TP через симулятор стратегии.
-    """
     results = []
     for sl in sl_grid:
         for tp in tp_grid:
             metrics = simulate_strategy(
-                df_valid,
-                predicted_col="predicted_signal",
-                horizon=horizon,
-                sl_pct=sl,
-                tp_pct=tp,
+                df_valid, predicted_col="predicted_signal",
+                horizon=horizon, sl_pct=sl, tp_pct=tp,
             )
-            if metrics["total_trades"] > 0:
+            if metrics["total_trades"] >= min_trades:
                 results.append({
                     "sl_pct": sl,
                     "tp_pct": tp,
@@ -125,10 +120,18 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
     sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
     tp_grid = [0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15]
 
-    results = perform_grid_search(df_valid, sl_grid, tp_grid, horizon=settings.LABEL_HORIZON)
+    results = perform_grid_search(
+        df_valid,
+        sl_grid,
+        tp_grid,
+        horizon=settings.LABEL_HORIZON,
+        min_trades=settings.CALIBRATION_MIN_TRADES,
+    )
 
     if not results:
-        raise ValueError("Не совершено ни одной сделки при симуляции.")
+        raise ValueError(
+            f"Ни одна комбинация SL/TP не набрала {settings.CALIBRATION_MIN_TRADES}+ сделок."
+        )
 
     res_df = pd.DataFrame(results)
 

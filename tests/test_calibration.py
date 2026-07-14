@@ -29,7 +29,7 @@ def test_perform_grid_search_success():
     sl_grid = [0.02]
     tp_grid = [0.029]  # (105 - 102) / 102 ≈ 2.94% (при tp=2.9% сработает TP на 102 * 1.029 = 104.958, что ниже high=105.5)
 
-    results = perform_grid_search(df_valid, sl_grid, tp_grid, horizon=3)
+    results = perform_grid_search(df_valid, sl_grid, tp_grid, horizon=3, min_trades=1)
 
     assert len(results) == 1
     best_res = results[0]
@@ -149,3 +149,15 @@ async def test_get_best_calibration_decodes_triple_model_classes():
 
         assert sl == 0.02
         assert tp == 0.04
+
+def test_perform_grid_search_filters_low_trade_count():
+    df_valid = pd.DataFrame({
+        "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+        "high": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+        "low": [99.5, 100.5, 101.5, 102.5, 103.5, 104.5],
+        "predicted_signal": [0, 0, 1, 0, 0, 0],
+    })
+    results = perform_grid_search(
+        df_valid, sl_grid=[0.02], tp_grid=[0.029], horizon=3, min_trades=5,
+    )
+    assert results == []
