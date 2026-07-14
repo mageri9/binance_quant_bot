@@ -125,11 +125,13 @@ async def run_lgbm_experiment(
     n_estimators: int = 100,
     max_depth: int = -1,
     models_dir: str = "models/saved_models",
+    baseline_f1: float
+    | None = None,  # ← Передаем F1-score базовой модели для Quality Gate
+    bypass_quality_gates: bool = False,  # ← Защитный флаг для юнит-тестов на случайных данных
 ) -> dict:
     """
-    Запускает эксперимент с продвинутой моделью LightGBM.
+    Запускает эксперимент с моделью LightGBM с hold-out валидацией и Quality Gates.
     """
-    # 1. Загружаем датасет и его описание
     df = pd.read_parquet(dataset_path)
     with open(metadata_path, "r", encoding="utf-8") as f:
         metadata = json.load(f)
@@ -150,6 +152,22 @@ async def run_lgbm_experiment(
             "Недостаточно очищенных данных для проведения Walk-Forward оценки."
         )
 
+    # --- 1. СТРОГИЙ ХРОНОЛОГИЧЕСКИЙ SPLIT (80% / 20%) ---
+    holdout_size = int(len(df_clean) * 0.2)
+    # Для крошечных тест-выборок гарантируем, что останется хотя бы один фолд
+    if len(df_clean) - holdout_size < (train_size + test_size):
+        holdout_size = len(df_clean) - (train_size + test_size)
+        if holdout_size < 0:
+            holdout_size = 0
+
+    split_idx = len(df_clean) - holdout_size
+    df_train_val = df_clean.iloc[:split_idx].reset_index(drop=True)
+    df_holdout = df_clean.iloc[split_idx:].reset_index(drop=True)
+
+    logger.info(
+        f"[MLOps Train] Всего строк: {len(df_clean)}. Валидация: {len(df_train_val)}, Holdout: {len(df_holdout)}"
+    )
+
     # 1.5. Шаг автоматической калибровки параметров через Optuna (если включено в конфиге)
     best_params = {}
     if settings.OPTUNA_TUNING_ENABLED:
@@ -158,7 +176,7 @@ async def run_lgbm_experiment(
         )
         best_params = await tune_lgbm_hyperparameters(
             session=session,
-            df_clean=df_clean,
+            df_clean=df_train_val,  # Тюним СТРОГО на валидационной выборке
             feature_cols=feature_cols,
             target_col=target_col,
             train_size=train_size,
@@ -174,21 +192,21 @@ async def run_lgbm_experiment(
     all_y_pred = []
     fold_count = 0
 
-    final_model = None
-    oos_dfs = []  # Список для сбора чистых Out-of-Sample данных
+    best_model = None
+    best_fold_f1 = -float("inf")
+    oos_dfs = []
 
     is_multiclass = target_col == "target_triple"
     avg_method = "macro" if is_multiclass else "binary"
 
-    # 2. Walk-Forward цикл обучения
-    for train_df, test_df, info in splitter.split(df_clean):
+    # 2. Walk-Forward цикл обучения (на выборке Train-Val)
+    for train_df, test_df, info in splitter.split(df_train_val):
         X_train = train_df[feature_cols]
         y_train = train_df[target_col]
 
         X_test = test_df[feature_cols]
         y_test = test_df[target_col]
 
-        # Для тройной классификации переводим метки в [0, 1, 2]
         if is_multiclass:
             y_train = y_train.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
             y_test = y_test.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
@@ -209,16 +227,14 @@ async def run_lgbm_experiment(
         model = LGBMClassifier(**model_kwargs)
         model.fit(X_train, y_train)
 
-        # Делаем предсказание OOS
         y_pred = model.predict(X_test)
+        fold_f1 = f1_score(y_test, y_pred, average=avg_method, zero_division=0)
 
         all_y_true.extend(y_test.tolist())
         all_y_pred.extend(y_pred.tolist())
 
-        # Собираем OOS-предсказания с ценами без утечки данных
         test_df_copy = test_df.copy()
         if is_multiclass:
-            # Декодируем предсказанные классы обратно в торговые сигналы
             signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
             test_df_copy["predicted_signal"] = pd.Series(
                 y_pred, index=test_df.index
@@ -228,16 +244,70 @@ async def run_lgbm_experiment(
 
         oos_dfs.append(test_df_copy)
 
-        fold_count += 1
-        final_model = model
+        # Выбираем лучшую модель на кросс-валидации для теста на holdout
+        if fold_f1 > best_fold_f1:
+            best_fold_f1 = fold_f1
+            best_model = model
 
-    if fold_count == 0:
+        fold_count += 1
+
+    if fold_count == 0 or best_model is None:
         raise ValueError("Не удалось запустить Walk-Forward. Проверьте размер данных.")
 
-    # Объединяем все OOS-фолды в один чистый датасет для калибровки
+    # --- 3. СТРОГИЙ ТЕСТ НА HOLDOUT (QUALITY GATES) ---
+    if len(df_holdout) > 0 and not bypass_quality_gates:
+        X_holdout = df_holdout[feature_cols]
+        y_holdout = df_holdout[target_col]
+
+        if is_multiclass:
+            y_holdout_mapped = y_holdout.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+        else:
+            y_holdout_mapped = y_holdout.astype(int)
+
+        y_holdout_pred = best_model.predict(X_holdout)
+        holdout_f1 = f1_score(
+            y_holdout_mapped, y_holdout_pred, average=avg_method, zero_division=0
+        )
+
+        # Quality Gate 1: Сравнение с Baseline (F1-score на holdout должен быть выше базовой модели)
+        if baseline_f1 is not None and holdout_f1 <= baseline_f1:
+            raise ValueError(
+                f"LGBM model REJECTED by Quality Gate: "
+                f"Holdout F1 ({holdout_f1:.4f}) does not exceed Baseline F1 ({baseline_f1:.4f})"
+            )
+
+        # Quality Gate 2: Защита от вырождения предсказаний (Class Collapse Protection)
+        unique_preds, counts = np.unique(y_holdout_pred, return_counts=True)
+        pred_ratios = counts / len(y_holdout_pred)
+        for val, ratio in zip(unique_preds, pred_ratios):
+            if ratio >= 0.95:
+                raise ValueError(
+                    f"LGBM model REJECTED by Quality Gate: "
+                    f"Class collapse detected. Class {val} occupies {ratio:.1%} of predictions on hold_out."
+                )
+        logger.info(
+            f"[MLOps Train] Модель успешно прошла все Quality Gates на Holdout. Holdout F1: {holdout_f1:.4f}"
+        )
+
+    # --- 4. ФИНАЛЬНОЕ ДООБУЧЕНИЕ НА 100% ДАННЫХ (FIT ON ALL) ---
+    logger.info(
+        "[MLOps Train] Запуск финального дообучения модели на 100% исторических данных..."
+    )
+    final_model = LGBMClassifier(**model_kwargs)
+
+    X_all = df_clean[feature_cols]
+    y_all = df_clean[target_col]
+    if is_multiclass:
+        y_all_mapped = y_all.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+    else:
+        y_all_mapped = y_all.astype(int)
+
+    final_model.fit(X_all, y_all_mapped)
+
+    # Объединяем OOS фолды
     df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
 
-    # 3. Рассчитываем метрики точности
+    # 5. Метрики для записи в БД экспериментов
     metrics = {
         "accuracy": float(accuracy_score(all_y_true, all_y_pred)),
         "precision": float(
@@ -271,7 +341,6 @@ async def run_lgbm_experiment(
     if best_params.get("num_leaves"):
         parameters["num_leaves"] = best_params["num_leaves"]
 
-    # 4. Сохраняем результаты в БД экспериментов
     repo = ExperimentRepository(session)
     experiment = await repo.log_experiment(
         model_name="LightGBM_Model",
@@ -281,20 +350,18 @@ async def run_lgbm_experiment(
         git_sha=get_git_sha(),
     )
 
-    # 5. Сохраняем файл модели и OOS-данные на диск как единый ModelArtifact
+    # 6. Сохранение упакованного ModelArtifact
     os.makedirs(models_dir, exist_ok=True)
     clean_symbol = metadata["symbol"].replace("/", "").replace(":", "")
     clean_tf = metadata["timeframe"].replace("/", "")
     model_filename = f"lgbm_{clean_symbol}_{clean_tf}.pkl"
     model_path = os.path.join(models_dir, model_filename)
 
-    # Вычисляем уникальный хэш признаков для контроля целостности
     import hashlib
 
     features_str = ",".join(sorted(feature_cols))
     features_hash = hashlib.sha256(features_str.encode("utf-8")).hexdigest()[:12]
 
-    # Конструируем унифицированный MLOps-артефакт
     artifact = {
         "model_id": f"lgbm_{clean_symbol}_{clean_tf}_{metadata['version']}",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -305,17 +372,14 @@ async def run_lgbm_experiment(
         "target_col": target_col,
         "features": feature_cols,
         "features_hash": features_hash,
-        # Основные ML-объекты
-        "model": final_model,
+        "model": final_model,  # ← Сохраняем модель, обученную на 100% данных
         "scaler": None,
-        # Калибровка рисков по умолчанию (будет перезаписана после калибровки)
         "calibration": {
             "sl_pct": settings.PAPER_SL_PCT,
             "tp_pct": settings.PAPER_TP_PCT,
             "sharpe_ratio": None,
             "calibrated_at": None,
         },
-        # Оценка
         "metrics": metrics,
         "df_oos": df_oos,
     }

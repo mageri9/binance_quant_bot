@@ -303,6 +303,7 @@ async def retrain_loop(bot: Bot, symbol: str, timeframe: str):
                     train_size=settings.TRAIN_SIZE,
                     test_size=settings.TEST_SIZE,
                     models_dir="models/staging",
+                    baseline_f1=baseline_f1,
                 )
 
                 baseline_f1 = baseline_result["metrics"]["f1"]

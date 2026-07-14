@@ -69,6 +69,7 @@ async def test_run_lgbm_and_predict_success(temp_db_session):
             learning_rate=0.1,
             n_estimators=10,
             models_dir=models_dir,
+            bypass_quality_gates=True,  # ← Исключаем случайные падения тестов на шуме
         )
 
         assert "experiment_id" in result
