@@ -63,3 +63,21 @@ def test_add_features_success():
 
     # 3. Индекс ADX математически ограничен пределами от 0 до 100
     assert df_features["adx"].dropna().between(0, 100).all()
+
+
+def test_drift_detection_success():
+    from src.features.drift import ConceptDriftDetector
+    import pandas as pd
+    import numpy as np
+
+    np.random.seed(42)
+    # Создаем два датасета с разным распределением признака 'rsi'
+    # Референсный сгенерирован вокруг среднего 50, текущий смещен к 70 (сильный дрейф)
+    ref_df = pd.DataFrame({"rsi": np.random.normal(loc=50, scale=10, size=100)})
+    cur_df = pd.DataFrame({"rsi": np.random.normal(loc=70, scale=10, size=100)})
+
+    report = ConceptDriftDetector.detect_drift(ref_df, cur_df, ["rsi"])
+
+    assert report["drift_detected"] is True
+    assert "rsi" in report["metrics"]
+    assert report["metrics"]["rsi"]["drift"] is True

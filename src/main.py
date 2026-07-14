@@ -395,6 +395,37 @@ async def retrain_loop(bot: Bot, symbol: str, timeframe: str):
                         logger.info(
                             f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}"
                         )
+
+                        # --- АВТОМАТИЧЕСКАЯ ДЕТЕКЦИЯ ДРЕЙФА ПРИЗНАКОВ (Concept Drift) ---
+                        try:
+                            if os.path.exists(model_path):
+                                with open(model_path, "rb") as f:
+                                    old_artifact = pickle.load(f)
+
+                                df_old_oos = old_artifact.get("df_oos")
+                                if df_old_oos is not None:
+                                    from src.features.drift import ConceptDriftDetector
+
+                                    df_new = pd.read_parquet(parquet_path)
+                                    old_features = old_artifact.get("features", [])
+
+                                    drift_report = ConceptDriftDetector.detect_drift(
+                                        reference_df=df_old_oos,
+                                        current_df=df_new,
+                                        features=old_features,
+                                    )
+
+                                    if drift_report["drift_detected"]:
+                                        drift_warning = f"📊 <b>[SRE] Обнаружен дрейф распределения признаков!</b> Рыночный цикл меняется."
+                                        logger.warning(
+                                            f"[SRE] Concept drift detected for {symbol}"
+                                        )
+                                        msg += f"\n\n{drift_warning}"
+                        except Exception as drift_err:
+                            logger.error(
+                                f"Не удалось выполнить проверку дрейфа признаков: {drift_err}"
+                            )
+
                     except Exception as cal_err:
                         logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
                         msg = (

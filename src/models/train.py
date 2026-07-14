@@ -45,6 +45,7 @@ async def tune_lgbm_hyperparameters(
             "num_leaves": trial.suggest_int("num_leaves", 10, 100),
             "random_state": 42,
             "verbosity": -1,
+            "n_jobs": 1,
         }
 
         splitter = TimeSeriesWalkForwardSplitter(
@@ -220,6 +221,7 @@ async def run_lgbm_experiment(
             "max_depth": max_depth,
             "random_state": 42,
             "verbosity": -1,
+            "n_jobs": 1,
         }
         if settings.OPTUNA_TUNING_ENABLED and best_params:
             model_kwargs.update(best_params)
