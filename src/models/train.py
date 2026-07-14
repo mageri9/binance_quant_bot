@@ -13,6 +13,7 @@ from src.models.backtest import TimeSeriesWalkForwardSplitter
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
 from src.core.config import get_settings
+from datetime import datetime, timezone
 
 # Отключаем избыточный вывод логов Optuna в консоль
 optuna.logging.set_verbosity(optuna.logging.WARNING)
