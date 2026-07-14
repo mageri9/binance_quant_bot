@@ -109,10 +109,15 @@ async def test_paper_trading_flow(temp_db_session):
     repo = PaperTradingRepository(temp_db_session)
     engine = PaperTradingEngine(temp_db_session)
 
+    # Явно устанавливаем риск для теста
+    engine.settings.PAPER_RISK_PCT = 0.10  # 10% от баланса
+    engine.settings.PAPER_MIN_ALLOCATION = 1.0
+
     # Изначально портфель создается со стартовыми $10000
     portfolio = await repo.get_portfolio()
     assert portfolio.balance == 10000.0
     assert portfolio.cash == 10000.0
+    assert portfolio.positions_value == 0.0
 
     # Создаем 35 свечей для тестирования
     dummy_candles = pd.DataFrame({
@@ -136,15 +141,17 @@ async def test_paper_trading_flow(temp_db_session):
         sl_pct=0.02,
         tp_pct=0.04,
         horizon=5
+        # Не передаем trade_allocation - используем PAPER_RISK_PCT
     )
 
     assert msg is not None
     assert "Открыта виртуальная Long-позиция" in msg
 
-    # Проверяем, что $1000 списались в свободный кэш
+    # Проверяем, что $1000 списались в свободный кэш (10% от 10000)
     portfolio = await repo.get_portfolio()
-    assert portfolio.cash == 9000.0
-    assert portfolio.balance == 10000.0  # Баланс не меняется до закрытия сделки
+    assert portfolio.cash == 9000.0  # 10000 - 1000 (10%)
+    assert portfolio.positions_value == 1000.0
+    assert portfolio.balance == 10000.0  # Баланс НЕ меняется до закрытия сделки
 
     # Проверяем параметры открытой сделки в БД
     active_trade = await repo.get_active_trade("BTC/USDT")
@@ -178,6 +185,7 @@ async def test_paper_trading_flow(temp_db_session):
     # Возврат кэша с фиксацией убытка: 9000$ + 1000$ - 20$ = 9980$
     portfolio = await repo.get_portfolio()
     assert portfolio.cash == 9980.0
+    assert portfolio.positions_value == 0.0
     assert portfolio.balance == 9980.0
 
     # В базе данных больше нет открытых позиций
