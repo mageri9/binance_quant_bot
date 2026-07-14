@@ -11,7 +11,7 @@ from loguru import logger
 from src.models.backtest import TimeSeriesWalkForwardSplitter
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
-from src.core.config import get_settings  # Импортируем аккуратно сверху
+from src.core.config import get_settings
 
 
 async def run_lgbm_experiment(
@@ -44,7 +44,7 @@ async def run_lgbm_experiment(
 
     feature_cols = metadata["features"]
 
-    # Удаляем строки с пустыми значениями
+    # ... остальная часть кода без изменений ...
     df_clean = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
 
     if len(df_clean) < (train_size + test_size):
@@ -58,10 +58,9 @@ async def run_lgbm_experiment(
     all_y_pred = []
     fold_count = 0
 
-    # Сюда сохраним модель на самом последнем шаге как наиболее актуальную
     final_model = None
 
-    is_multiclass = (target_col == "target_triple")
+    is_multiclass = target_col == "target_triple"
     avg_method = "macro" if is_multiclass else "binary"
 
     # 2. Walk-Forward цикл обучения
@@ -105,9 +104,15 @@ async def run_lgbm_experiment(
     # 3. Рассчитываем метрики точности
     metrics = {
         "accuracy": float(accuracy_score(all_y_true, all_y_pred)),
-        "precision": float(precision_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)),
-        "recall": float(recall_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)),
-        "f1": float(f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)),
+        "precision": float(
+            precision_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
+        "recall": float(
+            recall_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
+        "f1": float(
+            f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
+        ),
         "total_folds": fold_count,
         "total_test_samples": len(all_y_true),
     }
@@ -150,3 +155,10 @@ async def run_lgbm_experiment(
 
     with open(model_path, "wb") as f:
         pickle.dump(saved_data, f)
+
+    return {
+        "experiment_id": experiment.id,
+        "model_path": model_path,
+        "parameters": parameters,
+        "metrics": metrics,
+    }
