@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 
@@ -18,12 +18,27 @@ class PaperTradingRepository:
         portfolio = res.scalar_one_or_none()
 
         if not portfolio:
-            portfolio = PaperPortfolio(balance=10000.0, cash=10000.0)
+            portfolio = PaperPortfolio(
+                balance=10000.0, cash=10000.0, positions_value=0.0
+            )
             self.session.add(portfolio)
             await self.session.commit()
             await self.session.refresh(portfolio)
 
+        # Пересчитываем баланс на основе cash + positions_value
+        portfolio.balance = portfolio.cash + portfolio.positions_value
+
         return portfolio
+
+    async def get_all_open_trades(self) -> list[PaperTrade]:
+        """Возвращает все открытые сделки"""
+        stmt = (
+            select(PaperTrade)
+            .where(PaperTrade.status == "OPEN")
+            .order_by(PaperTrade.entry_candle_time)
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
 
     async def get_active_trade(self, symbol: str) -> PaperTrade | None:
         """
@@ -61,6 +76,12 @@ class PaperTradingRepository:
         # Списываем свободный кэш портфеля
         portfolio.cash -= cost
 
+        # Добавляем стоимость позиции
+        portfolio.positions_value += cost
+
+        # Обновляем баланс (он должен остаться неизменным, так как мы просто переместили средства)
+        portfolio.balance = portfolio.cash + portfolio.positions_value
+
         trade = PaperTrade(
             symbol=symbol,
             status="OPEN",
@@ -87,9 +108,18 @@ class PaperTradingRepository:
         trade.pnl = pnl
 
         portfolio = await self.get_portfolio()
-        # Возвращаем стоимость позиции и прибавляем PnL (профит / лосс)
-        portfolio.cash += (trade.entry_price * trade.amount) + pnl
-        portfolio.balance += pnl
+
+        # Получаем стоимость позиции
+        position_value = trade.entry_price * trade.amount
+
+        # Возвращаем стоимость позиции и прибавляем PnL
+        portfolio.cash += position_value + pnl
+
+        # Убираем стоимость позиции
+        portfolio.positions_value -= position_value
+
+        # Обновляем баланс
+        portfolio.balance = portfolio.cash + portfolio.positions_value
 
         await self.session.commit()
 
