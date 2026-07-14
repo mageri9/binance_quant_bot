@@ -8,6 +8,8 @@ import asyncio
 import os
 import pickle
 import pandas as pd
+from loguru import logger
+
 from src.core.db import AsyncSessionFactory
 from src.core.config import get_settings
 from src.crud.kline import KlineRepository
@@ -52,70 +54,71 @@ def perform_grid_search(
 async def get_best_calibration(symbol: str, timeframe: str) -> tuple[float, float, str]:
     """
     Проводит калибровку и возвращает: (best_sl, best_tp, formatted_report_text).
-    Используется программно внутри retrain_loop.
+    Использует чистые OOS-данные из файла модели для исключения утечек.
     """
     settings = get_settings()
+    model_path = settings.get_model_path(symbol, timeframe)
 
-    if not os.path.exists(settings.MODEL_PATH):
-        raise FileNotFoundError(f"Файл модели {settings.MODEL_PATH} не найден.")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Файл модели {model_path} не найден.")
 
-    async with AsyncSessionFactory() as session:
-        repo = KlineRepository(session)
-        klines = await repo.get_klines(symbol, timeframe, limit=10000)
-
-    if len(klines) < 100:
-        raise ValueError(f"Недостаточно исторических данных в БД ({len(klines)} свечей).")
-
-    # Формируем DataFrame
-    data = [
-        {
-            "open_time": k.open_time,
-            "open": k.open,
-            "high": k.high,
-            "low": k.low,
-            "close": k.close,
-            "volume": k.volume,
-        }
-        for k in klines
-    ]
-    df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
-
-    # Расчет признаков
-    df_feats = add_features(df)
-
-    with open(settings.MODEL_PATH, "rb") as f:
+    with open(model_path, "rb") as f:
         saved_data = pickle.load(f)
 
-    model = saved_data["model"]
-    features = saved_data["features"]
-    scaler = saved_data.get("scaler")
+    # 1. Пробуем получить чистые OOS-данные из файла модели
+    df_valid = saved_data.get("df_oos")
 
-    model = saved_data["model"]
-    features = saved_data["features"]
-    scaler = saved_data.get("scaler")
-    target_col = saved_data.get("target_col", "target_binary")
-
-    df_valid = df_feats.dropna(subset=features).copy()
-    if df_valid.empty:
-        raise ValueError("После расчета признаков не осталось валидных данных.")
-
-    X = df_valid[features]
-    if scaler is not None:
-        X = scaler.transform(X)
-
-    # Модель для target_triple обучена на classes {0,1,2}, замапленных из
-    # {-1.0, 0.0, 1.0} (см. train.py). model.predict() возвращает сырые классы,
-    # их нужно декодировать обратно в торговый сигнал так же, как это делает
-    # Predictor.predict() — иначе grid search калибрует SL/TP под класс "Hold"
-    # вместо реального Long/Short сигнала.
-    raw_pred = model.predict(X)
-    if target_col == "target_triple":
-        signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
-        df_valid["predicted_signal"] = pd.Series(raw_pred, index=df_valid.index).map(
-            signal_map
-        )
+    if df_valid is not None:
+        # --- НОВЫЙ БЕЗОПАСНЫЙ ПУТЬ (БЕЗ УТЕЧЕК) ---
+        # Данные уже содержат чистые 'predicted_signal' из Walk-Forward тест-сетов.
+        # Нам не нужно делать запросы к БД и пересчитывать признаки.
+        logger.info(f"Используются чистые Out-of-Sample данные ({len(df_valid)} строк) из {os.path.basename(model_path)}")
     else:
-        df_valid["predicted_signal"] = raw_pred
+        # --- СТАРЫЙ РЕЗЕРВНЫЙ ПУТЬ (для совместимости со старыми моделями и тестами) ---
+        logger.warning("Чистые OOS-данные не найдены в файле модели. Переход на резервный in-sample метод...")
+        async with AsyncSessionFactory() as session:
+            repo = KlineRepository(session)
+            klines = await repo.get_klines(symbol, timeframe, limit=10000)
+
+        if len(klines) < 100:
+            raise ValueError(f"Недостаточно исторических данных в БД ({len(klines)} свечей).")
+
+        data = [
+            {
+                "open_time": k.open_time,
+                "open": k.open,
+                "high": k.high,
+                "low": k.low,
+                "close": k.close,
+                "volume": k.volume,
+            }
+            for k in klines
+        ]
+        df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
+
+        df_feats = add_features(df)
+
+        model = saved_data["model"]
+        features = saved_data["features"]
+        scaler = saved_data.get("scaler")
+        target_col = saved_data.get("target_col", "target_binary")
+
+        df_valid = df_feats.dropna(subset=features).copy()
+        if df_valid.empty:
+            raise ValueError("После расчета признаков не осталось валидных данных.")
+
+        X = df_valid[features]
+        if scaler is not None:
+            X = scaler.transform(X)
+
+        raw_pred = model.predict(X)
+        if target_col == "target_triple":
+            signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
+            df_valid["predicted_signal"] = pd.Series(raw_pred, index=df_valid.index).map(
+                signal_map
+            )
+        else:
+            df_valid["predicted_signal"] = raw_pred
 
     # Набор сеток параметров
     sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]

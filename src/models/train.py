@@ -135,10 +135,8 @@ async def run_lgbm_experiment(
 
     settings = get_settings()
 
-    # Безопасное получение целевой переменной с защитой от None
     target_col = getattr(settings, "TARGET_COL", "target_triple") or "target_triple"
 
-    # Защитный механизм: автоматический откат на target_binary при отсутствии target_triple
     if target_col not in df.columns and "target_binary" in df.columns:
         target_col = "target_binary"
 
@@ -176,6 +174,7 @@ async def run_lgbm_experiment(
     fold_count = 0
 
     final_model = None
+    oos_dfs = []  # Список для сбора чистых Out-of-Sample данных
 
     is_multiclass = target_col == "target_triple"
     avg_method = "macro" if is_multiclass else "binary"
@@ -196,7 +195,6 @@ async def run_lgbm_experiment(
             y_train = y_train.astype(int)
             y_test = y_test.astype(int)
 
-        # Конструируем параметры модели (подменяем дефолтные на лучшие, если они были подобраны)
         model_kwargs = {
             "learning_rate": learning_rate,
             "n_estimators": n_estimators,
@@ -207,21 +205,36 @@ async def run_lgbm_experiment(
         if settings.OPTUNA_TUNING_ENABLED and best_params:
             model_kwargs.update(best_params)
 
-        # Обучаем модель LightGBM
         model = LGBMClassifier(**model_kwargs)
         model.fit(X_train, y_train)
 
-        # Делаем предсказание
+        # Делаем предсказание OOS
         y_pred = model.predict(X_test)
 
         all_y_true.extend(y_test.tolist())
         all_y_pred.extend(y_pred.tolist())
+
+        # Собираем OOS-предсказания с ценами без утечки данных
+        test_df_copy = test_df.copy()
+        if is_multiclass:
+            # Декодируем предсказанные классы обратно в торговые сигналы
+            signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
+            test_df_copy["predicted_signal"] = pd.Series(
+                y_pred, index=test_df.index
+            ).map(signal_map)
+        else:
+            test_df_copy["predicted_signal"] = y_pred
+
+        oos_dfs.append(test_df_copy)
 
         fold_count += 1
         final_model = model
 
     if fold_count == 0:
         raise ValueError("Не удалось запустить Walk-Forward. Проверьте размер данных.")
+
+    # Объединяем все OOS-фолды в один чистый датасет для калибровки
+    df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
 
     # 3. Рассчитываем метрики точности
     metrics = {
@@ -257,7 +270,7 @@ async def run_lgbm_experiment(
     if best_params.get("num_leaves"):
         parameters["num_leaves"] = best_params["num_leaves"]
 
-    # 4. Сохраняем модель в БД экспериментов
+    # 4. Сохраняем результаты в БД экспериментов
     repo = ExperimentRepository(session)
     experiment = await repo.log_experiment(
         model_name="LightGBM_Model",
@@ -267,7 +280,7 @@ async def run_lgbm_experiment(
         git_sha=get_git_sha(),
     )
 
-    # 5. Сохраняем файл модели на диск для использования в Predictor
+    # 5. Сохраняем файл модели и OOS-данные на диск
     os.makedirs(models_dir, exist_ok=True)
     clean_symbol = metadata["symbol"].replace("/", "").replace(":", "")
     model_filename = f"lgbm_{clean_symbol}_{metadata['timeframe'].replace('/', '')}.pkl"
@@ -281,6 +294,7 @@ async def run_lgbm_experiment(
         "timeframe": metadata["timeframe"],
         "version": metadata["version"],
         "target_col": target_col,
+        "df_oos": df_oos,  # ← СОХРАНЯЕМ ЧИСТЫЕ OOS ДАННЫЕ В МОДЕЛЬ
     }
 
     with open(model_path, "wb") as f:
