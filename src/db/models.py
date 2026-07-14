@@ -72,6 +72,7 @@ class PaperPortfolio(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     balance: Mapped[float] = mapped_column(default=10000.0, nullable=False)
     cash: Mapped[float] = mapped_column(default=10000.0, nullable=False)
+    positions_value: Mapped[float] = mapped_column(default=0.0, nullable=False)  # ← НОВОЕ
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
