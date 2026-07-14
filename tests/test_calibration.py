@@ -104,6 +104,8 @@ async def test_get_best_calibration_decodes_triple_model_classes():
 
         mock_settings = MagicMock()
         mock_settings.MODEL_PATH = model_path
+        # Обучаем мок возвращать реальный путь к нашему временному файлу pickle
+        mock_settings.get_model_path.return_value = model_path
         mock_settings.LABEL_HORIZON = 5
 
         # perform_grid_search мокаем, чтобы изолированно проверить только
