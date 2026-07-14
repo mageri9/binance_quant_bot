@@ -396,8 +396,11 @@ async def on_shutdown(bot: Bot):
     logger.info("Shutting down...")
 
     if NEXUS_AVAILABLE and nexus:
-        await nexus.close()
-        logger.info("Nexus SRE сессия успешно завершена.")
+        try:
+            await nexus.close()
+            logger.info("Nexus SRE сессия успешно завершена.")
+        except Exception as e:
+            logger.error(f"Ошибка при остановке Nexus SDK: {e}")
 
     await close_redis()
     await engine.dispose()
