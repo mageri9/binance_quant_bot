@@ -18,13 +18,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Безопасная проверка существования таблицы перед изменением
     conn = op.get_bind()
     inspector = sa.inspect(conn)
     tables = inspector.get_table_names()
 
     if 'users' not in tables:
-        # Если таблицы users почему-то нет в БД, создаем её с нуля
+        # Если таблицы нет, создаем ее начисто
         op.create_table(
             'users',
             sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -41,13 +40,13 @@ def upgrade() -> None:
         )
         op.create_index(op.f('ix_users_user_id'), 'users', ['user_id'], unique=True)
     else:
-        # Если таблица users уже есть, просто добавляем колонку, если её там еще нет
+        # Если таблица есть, безопасно добавляем колонку через batch mode
         columns = [c['name'] for c in inspector.get_columns('users')]
         if 'is_subscribed' not in columns:
-            op.add_column(
-                'users',
-                sa.Column('is_subscribed', sa.Boolean(), nullable=False, server_default=sa.text('1'))
-            )
+            with op.batch_alter_table('users') as batch_op:
+                batch_op.add_column(
+                    sa.Column('is_subscribed', sa.Boolean(), nullable=False, server_default=sa.text('1'))
+                )
 
 
 def downgrade() -> None:
@@ -58,4 +57,5 @@ def downgrade() -> None:
     if 'users' in tables:
         columns = [c['name'] for c in inspector.get_columns('users')]
         if 'is_subscribed' in columns:
-            op.drop_column('users', 'is_subscribed')
+            with op.batch_alter_table('users') as batch_op:
+                batch_op.drop_column('is_subscribed')

@@ -18,17 +18,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Добавляем поле для хранения стоимости открытых позиций
-    op.add_column(
-        'paper_portfolios',
-        sa.Column('positions_value', sa.Float(), nullable=False, server_default='0.0')
-    )
-    # Для существующих записей вычисляем значение из cash (так как позиций нет)
-    op.execute("""
-        UPDATE paper_portfolios 
-        SET positions_value = 0.0
-    """)
+    # Используем batch_alter_table для безопасного добавления NOT NULL колонки в SQLite
+    with op.batch_alter_table('paper_portfolios') as batch_op:
+        batch_op.add_column(
+            sa.Column('positions_value', sa.Float(), nullable=False, server_default='0.0')
+        )
 
 
 def downgrade() -> None:
-    op.drop_column('paper_portfolios', 'positions_value')
+    # Безопасное удаление колонки в SQLite
+    with op.batch_alter_table('paper_portfolios') as batch_op:
+        batch_op.drop_column('positions_value')
