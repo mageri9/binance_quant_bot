@@ -1,115 +1,89 @@
+```markdown
 # 🤖 MarketMind — Binance Quant Trading Bot
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://python.org)
 [![Aiogram](https://img.shields.io/badge/Aiogram-3.x-green.svg)](https://docs.aiogram.dev/)
 [![LightGBM](https://img.shields.io/badge/LightGBM-4.5-orange.svg)](https://lightgbm.readthedocs.io/)
+[![Optuna](https://img.shields.io/badge/Optuna-4.0-blue.svg)](https://optuna.org/)
 
-Telegram-бот для количественной торговли на Binance. Собирает исторические свечи,
-считает технические индикаторы, обучает ML-модель (LightGBM) на честной
-walk-forward валидации, торгует в режиме paper trading и самостоятельно
-переобучается по расписанию — с защитой от деградации модели.
+Telegram-бот для автоматизированной количественной торговли на Binance в режиме виртуального портфеля (Paper Trading). Бот параллельно обрабатывает три актива (`BTC/USDT`, `ETH/USDT`, `SOL/USDT`), обучает многоклассовую модель машинного обучения (LightGBM) на честной walk-forward валидации с подбором гиперпараметров через Optuna, торгует в обе стороны (Long/Short) и защищен от деградации показателей с помощью SRE-системы автоматического отката на резервные бэкапы.
+
+---
 
 ## ✨ Возможности
 
-### Данные
-- Загрузка OHLCV-свечей с Binance через `ccxt` с upsert-сохранением в SQLite
-- Скрипт разового бэкфилла истории (`scripts/backfill.py`)
-- Автоматический докач свежих свечей раз в час в фоне
+### 📈 Мультиактивная торговля в обе стороны (LONG / SHORT)
+* Параллельное ведение торговли по трем ликвидным криптоактивам: **`BTC/USDT`**, **`ETH/USDT`** и **`SOL/USDT`** на таймфрейме `1h`.
+* Открытие и закрытие сделок по сигналам модели с расчетом Stop-Loss, Take-Profit и выходом по временному тайм-ауту (horizon).
+* Математическое вычисление направления позиции (LONG/SHORT) без расширения схемы базы данных SQLite для 100% обратной совместимости.
+* Сводный интерактивный статус портфеля и агрегированная статистика по всем закрытым сделкам (Sharpe, Sortino, Win Rate, Drawdown, Profit Factor).
 
-### Признаки и разметка
-- Индикаторы: RSI (сглаживание Уайлдера), MACD (+ сигнальная линия, гистограмма),
-  волатильность, volume ratio
-- Метки: бинарная (рост / не рост) и тройная (long / short / hold) с настраиваемым
-  горизонтом и порогом доходности
-- Датасеты версионируются и сохраняются в Parquet + JSON-паспорт (git sha, диапазон
-  дат, список фич, размер выборки)
+### ⚙️ Управление капиталом и рисками (Money Management)
+* **Динамический сайзинг:** Объем каждой сделки рассчитывается как заданный процент от текущего общего баланса портфеля (например, ровно 10% от капитала).
+* Защита от микро-ордеров с помощью настраиваемого минимального объема сделки в долларах.
+* Защита базы данных от ухода баланса портфеля в минус.
 
-### ML-пайплайн
-- **Walk-Forward Validation** — строго хронологическое разделение train/test, без
-  утечек данных (покрыто отдельным leakage-тестом)
-- Две модели на каждый прогон: **baseline** (LogisticRegression) и продовая
-  (**LightGBM**)
-- Логирование каждого эксперимента (параметры, метрики) в БД
-- Инференс на последней свече (`Predictor`)
+### 🔬 Признаки, разметка и подбор параметров
+* **Расширенные признаки:** RSI (Wilder), MACD, историческая волатильность, Volume Ratio, Bollinger Bands, ATR и ADX, написанные с нуля на Pandas и NumPy без внешних зависимостей.
+* **Тройная разметка (target_triple):** Обучение модели предсказывать 3 рыночных состояния: падение (`-1.0` -> класс `0`), флэт (`0.0` -> класс `1`) и рост (`1.0` -> класс `2`).
+* **Оптимизация параметров:** Встроенный автоматический тюнинг гиперпараметров LightGBM через **Optuna** по метрике F1-macro на кросс-валидации.
+* Полное покрытие тестами на утечку данных в будущее (Data Leakage Protection).
 
-### Автообучение
-- Фоновый цикл (`retrain_loop`, интервал настраивается): собирает свежий датасет →
-  обучает baseline и LGBM → **продвигает новую модель в прод только если её F1
-  превосходит baseline того же прогона**. Если нет — модель отбраковывается, а
-  админам летит предупреждение (защита от скрытой деградации из-за data leakage
-  или смены рыночного режима)
+### 🚨 SRE-автооткат при деградации результатов
+* Автоматическое создание бэкапов стабильных файлов моделей перед заменой при переобучении.
+* Фоновая проверка результатов торговли: если Win Rate за последнее окно сделок падает ниже порога или просадка превышает норму, бот автоматически откатывает рабочую модель на последний успешный бэкап и отправляет критическое оповещение администраторам.
+* Блокировка повторных проверок (кулдаун) в Redis на 24 часа после совершения отката для накопления свежей статистики.
 
-### Торговля (Paper Trading)
-- Виртуальный портфель со стартовым балансом $10 000
-- Открытие/закрытие сделок по сигналу модели с учётом Stop-Loss, Take-Profit и
-  выхода по таймауту (horizon)
-- Отдельный бэктест-симулятор стратегии (`simulate_strategy`) с расчётом комиссий
-- Метрики стратегии: Win Rate, Profit Factor, Sharpe, Sortino, Max Drawdown,
-  Expectancy, суммарная доходность
+### 💬 Администрирование и Telegram UI
+* Полностью кнопочный интерактивный интерфейс. Динамические кнопки подписки и отписки меняют состояние в реальном времени.
+* Защищенный FSM-режим рассылки сообщений `/broadcast` всем активным пользователям бота с автоматическим отслеживанием блокировок и изменением статуса активности пользователя в SQLite.
 
-### Telegram-бот
-| Команда | Описание |
-|---|---|
-| `/start` | Регистрация пользователя, главное меню |
-| `/status` | Статус виртуального портфеля и открытой позиции |
-| `/signals` | Ручной опрос ML-модели по текущим данным |
-| `/report` | Отчёт по фактическим результатам paper trading |
-| `/admin` | Админ-панель |
-| `/stats` | Количество активных пользователей (только админ) |
-
-### Инфраструктура
-- **Redis**: FSM-хранилище, кэш пользователей, sliding-window rate limiting
-  (Lua-скрипт), освобождение админов от лимита
-- **Alembic**: версионируемые миграции БД
-- **Nexus SRE SDK** (опционально): автоматическая отправка ошибок и heartbeat во
-  внешнюю систему мониторинга по HMAC-подписанным вебхукам
-- **CI/CD**: GitHub Actions — тесты → сборка Docker-образа в GHCR → деплой на VPS
-  по SSH с установкой флага техобслуживания в Redis (подавление ложных алертов на
-  время рестарта)
-- Полное покрытие тестами: коллектор данных, фичи, лейблы, бэктест-сплиттер,
-  baseline/LGBM обучение, paper trading, стратегия, хендлеры
+---
 
 ## 🗂️ Структура проекта
 
 ```
+scripts/
+  backfill.py          # Разовое наполнение БД историческими свечами
+  calibrate.py         # Сеточный бэктест-поиск оптимальных параметров SL/TP
+  migrate.sh           # Запуск миграций Alembic в Docker
 src/
   core/
-    config.py          # Pydantic Settings
-    db.py               # SQLAlchemy async engine + session factory
-    redis.py             # Redis client singleton
-    router_manager.py    # Сборка роутеров aiogram
-  crud/                 # Repository-паттерн: user, kline, experiment, paper
+    config.py          # Настройки Pydantic Settings
+    db.py              # async сессии SQLAlchemy + SQLite
+    redis.py           # Инициализация клиента Redis
+    router_manager.py  # Сборка роутеров
+  crud/
+    user.py, kline.py, experiment.py, paper.py  # Repository-паттерны
   data/
-    collector.py        # Загрузка свечей с Binance (ccxt)
+    collector.py        # Загрузка свежих свечей через ccxt
   datasets/
-    build.py             # Сборка датасета: фичи + метки → Parquet/JSON
+    build.py           # Сборка версионированных датасетов в Parquet
   db/
-    models.py            # SQLAlchemy-модели
-    migrations/          # Alembic
+    models.py          # SQLAlchemy-модели таблиц БД
+    migrations/        # Alembic миграции
   features/
-    engineering.py        # RSI, MACD, волатильность, volume ratio
+    engineering.py     # RSI, MACD, BB, ATR, ADX (чистый Pandas/NumPy)
   labels/
-    generator.py          # Бинарные и тройные метки
+    generator.py       # Тройная и бинарная разметка
   models/
-    backtest.py           # TimeSeriesWalkForwardSplitter
-    baseline.py            # LogisticRegression эксперимент
-    train.py               # LightGBM эксперимент + сохранение модели
-    predictor.py            # Инференс на новых свечах
-  strategy/
-    signals.py              # Метрики стратегии + симулятор бэктеста
+    backtest.py        # TimeSeriesWalkForwardSplitter
+    baseline.py        # Логистическая регрессия (Baseline)
+    train.py           # LightGBM-эксперимент + Optuna тюнинг
+    predictor.py       # Инференс на новых свечах (двусторонний)
   paper_trading/
-    engine.py                # Движок виртуальной торговли
-  handlers/               # admin/, user/ — message.py, callback.py
-  keyboards/
-  filters/
-  middlewares/            # db, redis, rate_limit, logger
-  main.py                 # Точка входа, фоновые циклы
-nexus_sdk/                # Клиент для внешнего SRE-мониторинга
-scripts/
-  backfill.py              # Разовое наполнение БД историей
-  migrate.sh               # Обёртка над alembic для Docker
+    engine.py          # Двусторонний движок виртуальной торговли
+  handlers/            # admin/, user/ — обработчики кнопок и команд
+  keyboards/           # user.py — динамические клавиатуры
 tests/
+  test_features.py     # Тесты индикаторов
+  test_labels.py       # Математический тест на отсутствие утечки данных
+  test_paper.py        # Тесты Long/Short сделок и лимитов объемов
+  test_optuna.py       # Тест сеточного поиска параметров
+  test_rollback.py     # Тест SRE-автоотката при просадках
 ```
+
+---
 
 ## 🚀 Быстрый старт
 
@@ -120,45 +94,31 @@ git clone <repo_url>
 cd binance_quant_bot
 
 cp .env.example .env
-# Заполни BOT_TOKEN и ADMIN_IDS в .env
+# Заполните токен бота и ID администраторов в .env
 
 pip install -r requirements.txt
+pip install optuna
 
-# Применить миграции
+# Применить миграции базы данных
 alembic upgrade head
 
-# Наполнить БД историческими свечами (иначе на автообучение уйдут дни)
+# Собрать историю BTC, ETH и SOL (без этого запуск не имеет смысла)
 python -m scripts.backfill --symbol BTC/USDT --timeframe 1h --days 90
+python -m scripts.backfill --symbol ETH/USDT --timeframe 1h --days 90
+python -m scripts.backfill --symbol SOL/USDT --timeframe 1h --days 90
 
-# Запуск (Redis должен быть доступен)
+# Запуск бота (требуется запущенный Redis)
 python -m src.main
 ```
 
-### Docker
-
+### Скрипт калибровки SL/TP рисков
+Для подбора наиболее математически оптимальных параметров стоп-лосса и тейк-профита по конкретной монете на основе обученной модели запустите:
 ```bash
-cp .env.example .env
-# Заполни .env
-
-docker compose up --build -d
+python -m scripts.calibrate --symbol SOL/USDT --timeframe 1h
 ```
+Скрипт выдаст отчет о коэффициенте Шарпа, матожидании сделки и порекомендует значения для записи в `.env`.
 
-## 🗄️ Миграции (Alembic)
-
-```bash
-# Новая миграция
-alembic revision --autogenerate -m "add field"
-
-# Применить
-alembic upgrade head
-
-# Откатить на шаг
-alembic downgrade -1
-
-# То же самое в Docker
-./scripts/migrate.sh upgrade head
-./scripts/migrate.sh revision --autogenerate -m "add field"
-```
+---
 
 ## 🔧 Конфигурация (.env)
 
@@ -167,17 +127,28 @@ BOT_TOKEN=your_bot_token_here
 ADMIN_IDS=[123456789,987654321]
 
 # Redis
-REDIS_HOST=redis
+REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
 REDIS_PASSWORD=
 
-# Rate limiting
-RATE_LIMIT_CALLS=5
-RATE_LIMIT_PERIOD=10
+# Модель и обучение
+TARGET_COL=target_triple
 
-# Logging
-LOG_LEVEL=INFO
+# Риск-менеджмент сделок (Paper Trading)
+PAPER_SL_PCT=0.02              # Дефолтный стоп-лосс (2%)
+PAPER_TP_PCT=0.04              # Дефолтный тейк-профит (4%)
+PAPER_RISK_PCT=0.10            # Доля капитала на сделку (10% от общего баланса)
+PAPER_MIN_ALLOCATION=10.0      # Минимальный размер сделки в USD
+
+# Настройка Optuna тюнинга
+OPTUNA_TUNING_ENABLED=false     # Включить/выключить подбор параметров при переобучении
+OPTUNA_TRIALS=15               # Количество итераций подбора
+
+# Метрики SRE автоотката при деградации
+ROLLBACK_CHECK_WINDOW=10       # Окно сделок для анализа качества
+ROLLBACK_WIN_RATE_THRESHOLD=0.35 # Минимальный Win Rate
+ROLLBACK_MAX_DRAWDOWN_THRESHOLD=0.15 # Максимально допустимая просадка (15%)
 
 # Nexus SRE (опционально)
 NEXUS_APP_SECRET=your_nexus_app_secret_here
@@ -185,42 +156,25 @@ NEXUS_ENDPOINT_URL=http://nexus-webhook:8000/events/app
 NEXUS_PROJECT_NAME=binance_quant_bot
 ```
 
-Дополнительные параметры модели/переобучения задаются в `src/core/config.py`
-(`MODEL_PATH`, `RETRAIN_INTERVAL_SECONDS`, `MIN_KLINES_FOR_TRAIN`, `TRAIN_SIZE`,
-`TEST_SIZE`, `LABEL_HORIZON`, `LABEL_THRESHOLD`).
-
-## 💉 Dependency Injection
-
-Сессия БД и Redis прокидываются в хендлеры через middleware:
-
-```python
-async def my_handler(message: Message, session: AsyncSession, redis: Redis):
-    ...
-```
+---
 
 ## ⚡ Стек
 
 | Компонент | Технология |
 |---|---|
-| Фреймворк бота | Aiogram 3 |
-| Биржевые данные | ccxt (Binance) |
-| БД | SQLite + SQLAlchemy (async) |
+| Интерфейс | Aiogram 3 |
+| Котировки | CCXT (Binance) |
+| База данных | SQLite + SQLAlchemy (async) |
 | Миграции | Alembic |
-| Кэш / FSM storage / Rate limit | Redis 7 |
-| ML | scikit-learn, LightGBM |
-| Данные | pandas, pyarrow (Parquet) |
-| Конфиг | Pydantic Settings |
-| Логи | Loguru |
-| Мониторинг | Nexus SRE SDK (опционально) |
-| Тесты | pytest, pytest-asyncio |
-| Контейнеры | Docker + docker-compose |
-| CI/CD | GitHub Actions → GHCR → деплой по SSH |
+| Кэш и FSM | Redis 7 |
+| Модели ИИ | scikit-learn, LightGBM |
+| Оптимизация ИИ | Optuna |
+| Сборка данных | Pandas, PyArrow (Parquet) |
+| Тесты | Pytest, Pytest-asyncio |
+| Деплой | GitHub GCR → Docker Compose → SSH VPS |
 
-## ⚠️ Известные ограничения / TODO
+---
 
-- Торгуется только пара `BTC/USDT` на таймфрейме `1h`, без диверсификации
-- Уровни Stop-Loss/Take-Profit в `paper_trading/engine.py` заданы константами
-  «на глаз» и не провалидированы через `strategy.signals.simulate_strategy`
-- Тройные метки (`target_triple`) генерируются, но пока не используются в обучении
-- Реальные ордера на биржу не отправляются — только paper trading
-- Команда `/broadcast` заявлена в архитектуре, но не реализована
+## ⚠️ Текущие ограничения / TODO
+* Реальные ордера на биржу не отправляются — система полностью безопасна и работает только в режиме симуляции (Paper Trading).
+* Раз в сутки автокалибровка рисков во время `retrain_loop` отправляет отчет админам, но параметры применяются динамически «в памяти». Для сохранения между перезапусками рекомендуется прописывать новые параметры в `.env`.
