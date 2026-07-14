@@ -40,16 +40,15 @@ async def status_handler(message: Message, session: AsyncSession):
             kline_repo = KlineRepository(session)
             klines = await kline_repo.get_klines(symbol, timeframe, limit=1)
 
+            # Направление сделки берём напрямую из БД (поле is_short),
+            # без пересчёта по sl_price/tp_price — это устраняет хрупкую
+            # эвристику, которая может разойтись с реальным направлением
+            # (например, если sl_price или tp_price не заданы).
+            is_short = active_trade.is_short
+
             current_price_str = ""
             if klines:
                 current_close = klines[0].close
-
-                # Определяем направление сделки LONG или SHORT
-                is_short = active_trade.is_short
-                if active_trade.sl_price is not None:
-                    is_short = active_trade.sl_price > active_trade.entry_price
-                elif active_trade.tp_price is not None:
-                    is_short = active_trade.tp_price < active_trade.entry_price
 
                 if is_short:
                     unrealized_pnl = (
@@ -72,14 +71,7 @@ async def status_handler(message: Message, session: AsyncSession):
                     f"💰 Стоимость позиции: <code>{current_position_value:.2f}$</code>\n"
                 )
             else:
-                pos_type = (
-                    "SHORT"
-                    if (
-                        active_trade.sl_price
-                        and active_trade.sl_price > active_trade.entry_price
-                    )
-                    else "LONG"
-                )
+                pos_type = "SHORT" if is_short else "LONG"
 
             active_trades_text += (
                 f"🚀 <b>Активная позиция {pos_type} по {symbol}:</b>\n"

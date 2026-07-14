@@ -241,3 +241,76 @@ async def test_user_subscribe_handler(temp_db_session):
 
     u_record = await repo.get_by_user_id(444)
     assert u_record.is_subscribed is True
+
+@pytest.mark.asyncio
+async def test_status_handler_shows_short_from_db_field(temp_db_session):
+    """
+    Регрессионный тест: направление позиции в /status должно браться
+    из PaperTrade.is_short, а не пересчитываться эвристикой по
+    sl_price/tp_price. Намеренно задаём sl_price/tp_price так, чтобы
+    старая эвристика (sl_price > entry_price) ошиблась бы и показала LONG,
+    хотя сделка на самом деле SHORT.
+    """
+    from src.crud.paper import PaperTradingRepository
+
+    repo = PaperTradingRepository(temp_db_session)
+    # entry=100, sl_price ниже entry (как у LONG), но is_short=True явно
+    await repo.create_trade(
+        symbol="BTC/USDT",
+        entry_price=100.0,
+        amount=1.0,
+        sl_price=98.0,   # < entry_price -> старая эвристика решила бы, что это LONG
+        tp_price=104.0,  # > entry_price -> тоже указывало бы на LONG по старой логике
+        entry_candle_time=1000,
+        is_short=True,   # но по факту сделка SHORT
+    )
+
+    chat = Chat(id=123, type="private")
+    user = User(id=123, is_bot=False, first_name="TestUser")
+    message = AsyncMock(spec=Message)
+    message.chat = chat
+    message.from_user = user
+    message.answer = AsyncMock()
+
+    await status_handler(message, temp_db_session)
+
+    message.answer.assert_called_once()
+    answer_text = message.answer.call_args[0][0]
+
+    assert "SHORT" in answer_text
+    assert "LONG 🟢" not in answer_text
+
+
+@pytest.mark.asyncio
+async def test_status_handler_shows_short_without_klines(temp_db_session):
+    """
+    То же самое, но для ветки без свежих свечей в БД (klines пуст) —
+    там раньше была отдельная эвристика в блоке else.
+    """
+    from src.crud.paper import PaperTradingRepository
+
+    repo = PaperTradingRepository(temp_db_session)
+    await repo.create_trade(
+        symbol="BTC/USDT",
+        entry_price=100.0,
+        amount=1.0,
+        sl_price=98.0,
+        tp_price=104.0,
+        entry_candle_time=1000,
+        is_short=True,
+    )
+    # Никаких klines в БД не сохраняем -> get_klines() вернёт пустой список
+
+    chat = Chat(id=123, type="private")
+    user = User(id=123, is_bot=False, first_name="TestUser")
+    message = AsyncMock(spec=Message)
+    message.chat = chat
+    message.from_user = user
+    message.answer = AsyncMock()
+
+    await status_handler(message, temp_db_session)
+
+    message.answer.assert_called_once()
+    answer_text = message.answer.call_args[0][0]
+
+    assert "SHORT" in answer_text
