@@ -90,6 +90,11 @@ async def get_best_calibration(symbol: str, timeframe: str) -> tuple[float, floa
     features = saved_data["features"]
     scaler = saved_data.get("scaler")
 
+    model = saved_data["model"]
+    features = saved_data["features"]
+    scaler = saved_data.get("scaler")
+    target_col = saved_data.get("target_col", "target_binary")
+
     df_valid = df_feats.dropna(subset=features).copy()
     if df_valid.empty:
         raise ValueError("После расчета признаков не осталось валидных данных.")
@@ -98,8 +103,19 @@ async def get_best_calibration(symbol: str, timeframe: str) -> tuple[float, floa
     if scaler is not None:
         X = scaler.transform(X)
 
-    # Записываем исторические сигналы
-    df_valid["predicted_signal"] = model.predict(X)
+    # Модель для target_triple обучена на classes {0,1,2}, замапленных из
+    # {-1.0, 0.0, 1.0} (см. train.py). model.predict() возвращает сырые классы,
+    # их нужно декодировать обратно в торговый сигнал так же, как это делает
+    # Predictor.predict() — иначе grid search калибрует SL/TP под класс "Hold"
+    # вместо реального Long/Short сигнала.
+    raw_pred = model.predict(X)
+    if target_col == "target_triple":
+        signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
+        df_valid["predicted_signal"] = pd.Series(raw_pred, index=df_valid.index).map(
+            signal_map
+        )
+    else:
+        df_valid["predicted_signal"] = raw_pred
 
     # Набор сеток параметров
     sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
