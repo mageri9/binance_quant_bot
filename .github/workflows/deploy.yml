@@ -92,9 +92,9 @@ jobs:
             docker exec nexus-redis redis-cli SET nexus:maintenance:binance_quant_bot 1 EX "${MAINTENANCE_TTL_SECONDS}" \
               || echo "::warning::Could not set maintenance flag in Nexus Redis, continuing..."
 
+            # ПРИМЕНЯЕМ МИГРАЦИИ БАЗЫ ДАННЫХ ПЕРЕД ЗАПУСКОМ (Автоматизация SRE)
+            docker compose run --rm bot alembic upgrade head
+
             # Обновляем образ и перезапускаем контейнеры
             docker compose pull
             docker compose up -d --force-recreate
-
-            # Очищаем неиспользуемые старые слои
-            docker image prune -f
