@@ -280,25 +280,47 @@ async def run_lgbm_experiment(
         git_sha=get_git_sha(),
     )
 
-    # 5. Сохраняем файл модели и OOS-данные на диск
+    # 5. Сохраняем файл модели и OOS-данные на диск как единый ModelArtifact
     os.makedirs(models_dir, exist_ok=True)
     clean_symbol = metadata["symbol"].replace("/", "").replace(":", "")
-    model_filename = f"lgbm_{clean_symbol}_{metadata['timeframe'].replace('/', '')}.pkl"
+    clean_tf = metadata["timeframe"].replace("/", "")
+    model_filename = f"lgbm_{clean_symbol}_{clean_tf}.pkl"
     model_path = os.path.join(models_dir, model_filename)
 
-    saved_data = {
-        "model": final_model,
-        "features": feature_cols,
-        "scaler": None,
+    # Вычисляем уникальный хэш признаков для контроля целостности
+    import hashlib
+
+    features_str = ",".join(sorted(feature_cols))
+    features_hash = hashlib.sha256(features_str.encode("utf-8")).hexdigest()[:12]
+
+    # Конструируем унифицированный MLOps-артефакт
+    artifact = {
+        "model_id": f"lgbm_{clean_symbol}_{clean_tf}_{metadata['version']}",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "symbol": metadata["symbol"],
         "timeframe": metadata["timeframe"],
-        "version": metadata["version"],
+        "dataset_version": metadata["version"],
+        "git_sha": get_git_sha(),
         "target_col": target_col,
-        "df_oos": df_oos,  # ← СОХРАНЯЕМ ЧИСТЫЕ OOS ДАННЫЕ В МОДЕЛЬ
+        "features": feature_cols,
+        "features_hash": features_hash,
+        # Основные ML-объекты
+        "model": final_model,
+        "scaler": None,
+        # Калибровка рисков по умолчанию (будет перезаписана после калибровки)
+        "calibration": {
+            "sl_pct": settings.PAPER_SL_PCT,
+            "tp_pct": settings.PAPER_TP_PCT,
+            "sharpe_ratio": None,
+            "calibrated_at": None,
+        },
+        # Оценка
+        "metrics": metrics,
+        "df_oos": df_oos,
     }
 
     with open(model_path, "wb") as f:
-        pickle.dump(saved_data, f)
+        pickle.dump(artifact, f)
 
     return {
         "experiment_id": experiment.id,

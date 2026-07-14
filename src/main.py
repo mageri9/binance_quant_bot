@@ -320,6 +320,49 @@ async def retrain_loop(bot: Bot, symbol: str, timeframe: str):
                     if os_dir:
                         os.makedirs(os_dir, exist_ok=True)
 
+                    # --- АВТОМАТИЧЕСКАЯ КАЛИБРОВКА И ВШИВАНИЕ РИСКОВ В АРТЕФАКТ ---
+                    try:
+                        from scripts.calibrate import get_best_calibration
+
+                        # Калибруем по временной модели, пока она лежит в staging
+                        best_sl, best_tp, cal_report = await get_best_calibration(
+                            symbol,
+                            timeframe,
+                            custom_model_path=lgbm_result["model_path"],
+                        )
+
+                        # Открываем артефакт в staging, обновляем параметры калибровки
+                        with open(lgbm_result["model_path"], "rb") as f:
+                            artifact = pickle.load(f)
+
+                        artifact["calibration"] = {
+                            "sl_pct": best_sl,
+                            "tp_pct": best_tp,
+                            "calibrated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+
+                        # Перезаписываем артефакт в staging
+                        with open(lgbm_result["model_path"], "wb") as f:
+                            pickle.dump(artifact, f)
+
+                        msg = (
+                            f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
+                            f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
+                            f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n\n"
+                            f"{cal_report}"
+                        )
+                        logger.info(
+                            f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}"
+                        )
+                    except Exception as cal_err:
+                        logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
+                        msg = (
+                            f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
+                            f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
+                            f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n\n"
+                            f"⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
+                        )
+
                     # --- Создаем бэкап старой модели перед заменой (Quest 8 & 9) ---
                     if os.path.exists(model_path):
                         clean_symbol = symbol.replace("/", "").replace(":", "")
@@ -336,6 +379,7 @@ async def retrain_loop(bot: Bot, symbol: str, timeframe: str):
                                 f"Не удалось скопировать бэкап для {symbol}: {copy_err}"
                             )
 
+                    # Копируем полностью укомплектованный артефакт в продакшн-папку
                     shutil.copy(lgbm_result["model_path"], model_path)
 
                     msg = (

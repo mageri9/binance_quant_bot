@@ -51,13 +51,14 @@ def perform_grid_search(
     return results
 
 
-async def get_best_calibration(symbol: str, timeframe: str) -> tuple[float, float, str]:
+async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: str = None) -> tuple[float, float, str]:
     """
     Проводит калибровку и возвращает: (best_sl, best_tp, formatted_report_text).
     Использует чистые OOS-данные из файла модели для исключения утечек.
     """
     settings = get_settings()
-    model_path = settings.get_model_path(symbol, timeframe)
+    # Если передан custom_model_path, берем его, иначе стандартный из настроек
+    model_path = custom_model_path if custom_model_path is not None else settings.get_model_path(symbol, timeframe)
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Файл модели {model_path} не найден.")

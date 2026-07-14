@@ -158,9 +158,14 @@ class PaperTradingEngine:
 
                 amount = effective_trade_allocation / latest_close
 
-                effective_sl_pct = sl_pct if sl_pct is not None else self.settings.PAPER_SL_PCT
+                # Получаем калиброванные параметры напрямую из артефакта модели
+                model_calibration = getattr(predictor, "calibration", {})
+                cal_sl = model_calibration.get("sl_pct", self.settings.PAPER_SL_PCT)
+                cal_tp = model_calibration.get("tp_pct", self.settings.PAPER_TP_PCT)
+
+                effective_sl_pct = sl_pct if sl_pct is not None else cal_sl
                 effective_tp_pct = (
-                    tp_pct if tp_pct is not None else self.settings.PAPER_TP_PCT
+                    tp_pct if tp_pct is not None else cal_tp
                 )
 
                 # Рассчитываем уровни SL/TP в зависимости от направления

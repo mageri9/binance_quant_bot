@@ -6,8 +6,8 @@ from src.features.engineering import add_features
 
 class Predictor:
     """
-    Класс предсказателя. Загружает файл обученной модели и выдает сигналы
-    по новым входящим свечам. Поддерживает как бинарные, так и тройные метки.
+    Класс предсказателя. Загружает упакованный артефакт модели и выдает сигналы
+    по новым входящим свечам, а также предоставляет параметры калибровки рисков.
     """
 
     def __init__(self, model_path: str):
@@ -20,7 +20,6 @@ class Predictor:
         self.model = saved_data["model"]
         self.scaler = saved_data.get("scaler", None)
 
-        # Защищенное получение признаков с жестким откатом на стандартные
         self.features = saved_data.get("features")
         if self.features is None:
             self.features = [
@@ -32,10 +31,19 @@ class Predictor:
                 "volume_ratio",
             ]
 
-        # Защищенное получение названия целевой переменной
         self.target_col = saved_data.get("target_col")
         if self.target_col is None:
             self.target_col = "target_binary"
+
+        # Извлекаем новые MLOps-метаданные артефакта
+        self.model_id = saved_data.get("model_id", "legacy_model")
+        self.dataset_version = saved_data.get("dataset_version", "unknown")
+        self.git_sha = saved_data.get("git_sha", "unknown")
+        self.features_hash = saved_data.get("features_hash", "unknown")
+        self.calibration = saved_data.get("calibration", {
+            "sl_pct": 0.02,
+            "tp_pct": 0.04
+        })
 
     def predict(self, df: pd.DataFrame) -> int | None:
         """
