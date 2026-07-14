@@ -36,8 +36,8 @@ class ConceptDriftDetector:
             # Двусторонний тест Колмогорова-Смирнова
             stat, p_value = ks_2samp(ref_data, cur_data)
 
-            # Если p-value ниже альфа-порога, гипотеза о равенстве распределений отвергается
-            is_drifted = p_value < threshold
+            # Принудительно кастим к нативному типу bool для бесконфликтной сериализации
+            is_drifted = bool(p_value < threshold)
             results[col] = {
                 "stat": float(stat),
                 "p_value": float(p_value),
@@ -51,4 +51,4 @@ class ConceptDriftDetector:
                     f"p-value={p_value:.5f} (< {threshold})"
                 )
 
-        return {"drift_detected": drift_detected, "metrics": results}
+        return {"drift_detected": bool(drift_detected), "metrics": results}

@@ -72,12 +72,11 @@ def test_drift_detection_success():
 
     np.random.seed(42)
     # Создаем два датасета с разным распределением признака 'rsi'
-    # Референсный сгенерирован вокруг среднего 50, текущий смещен к 70 (сильный дрейф)
     ref_df = pd.DataFrame({"rsi": np.random.normal(loc=50, scale=10, size=100)})
     cur_df = pd.DataFrame({"rsi": np.random.normal(loc=70, scale=10, size=100)})
 
     report = ConceptDriftDetector.detect_drift(ref_df, cur_df, ["rsi"])
 
-    assert report["drift_detected"] is True
+    assert report["drift_detected"] == True
     assert "rsi" in report["metrics"]
-    assert report["metrics"]["rsi"]["drift"] is True
+    assert report["metrics"]["rsi"]["drift"] == True
