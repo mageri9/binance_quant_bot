@@ -493,9 +493,6 @@ async def on_startup(bot: Bot):
         f"Bot started: {bot_info.full_name} (@{bot_info.username}, id={bot_info.id})"
     )
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
     settings = get_settings()
 
     # Запускаем фоновые службы параллельно для каждого настроенного актива (Quest 9)
