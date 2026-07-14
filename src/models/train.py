@@ -34,7 +34,9 @@ async def run_lgbm_experiment(
         metadata = json.load(f)
 
     settings = get_settings()
-    target_col = settings.TARGET_COL
+
+    # Безопасное получение целевой переменной с защитой от None
+    target_col = getattr(settings, "TARGET_COL", "target_triple") or "target_triple"
 
     # Защитный механизм: автоматический откат на target_binary при отсутствии target_triple
     if target_col not in df.columns and "target_binary" in df.columns:

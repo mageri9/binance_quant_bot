@@ -33,9 +33,11 @@ async def run_baseline_experiment(
 
     # Определяем признаки и целевую переменную
     settings = get_settings()
-    target_col = settings.TARGET_COL
 
-    # Защитный механизм: если в датасете нет target_triple, откатываемся на target_binary (для тестов и старых баз)
+    # Безопасное получение целевой переменной с защитой от None
+    target_col = getattr(settings, "TARGET_COL", "target_triple") or "target_triple"
+
+    # Защитный механизм: автоматический откат на target_binary при отсутствии target_triple
     if target_col not in df.columns and "target_binary" in df.columns:
         target_col = "target_binary"
 
