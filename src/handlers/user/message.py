@@ -23,42 +23,75 @@ router = Router()
 @router.message(Command("status"))
 @router.message(F.text == "📊 Статус портфеля")
 async def status_handler(message: Message, session: AsyncSession):
-    """Выводит текущее состояние виртуального кошелька."""
+    """Выводит сводное текущее состояние виртуального кошелька по всем парам."""
     repo = PaperTradingRepository(session)
     portfolio = await repo.get_portfolio()
-    active_trade = await repo.get_active_trade("BTC/USDT")
+    settings = get_settings()
 
-    status_text = (
-        f"📊 <b>Виртуальный портфель (Paper Trading)</b>\n\n"
-        f"💵 Свободный кэш: <code>{portfolio.cash:.2f}$</code>\n"
-        f"📈 Общий баланс: <code>{portfolio.balance:.2f}$</code>\n\n"
-    )
+    active_trades_text = ""
 
-    if active_trade:
-        kline_repo = KlineRepository(session)
-        klines = await kline_repo.get_klines("BTC/USDT", "1h", limit=1)
+    for symbol, timeframe in settings.ACTIVE_CONFIGS:
+        active_trade = await repo.get_active_trade(symbol)
 
-        current_price_str = ""
-        if klines:
-            current_close = klines[0].close
-            unrealized_pnl = (
-                current_close - active_trade.entry_price
-            ) * active_trade.amount
-            current_price_str = (
-                f"🎯 Текущая цена: <code>{current_close:.2f}$</code>\n"
-                f"💰 Текущий PnL: <code>{unrealized_pnl:+.2f}$</code>\n"
+        if active_trade:
+            kline_repo = KlineRepository(session)
+            klines = await kline_repo.get_klines(symbol, timeframe, limit=1)
+
+            current_price_str = ""
+            if klines:
+                current_close = klines[0].close
+
+                # Определяем направление сделки LONG или SHORT
+                is_short = False
+                if active_trade.sl_price is not None:
+                    is_short = active_trade.sl_price > active_trade.entry_price
+                elif active_trade.tp_price is not None:
+                    is_short = active_trade.tp_price < active_trade.entry_price
+
+                if is_short:
+                    unrealized_pnl = (
+                        active_trade.entry_price - current_close
+                    ) * active_trade.amount
+                    pos_type = "SHORT 🔴"
+                else:
+                    unrealized_pnl = (
+                        current_close - active_trade.entry_price
+                    ) * active_trade.amount
+                    pos_type = "LONG 🟢"
+
+                current_price_str = (
+                    f"🎯 Текущая цена: <code>{current_close:.2f}$</code>\n"
+                    f"💰 Текущий PnL: <code>{unrealized_pnl:+.2f}$</code>\n"
+                )
+            else:
+                pos_type = (
+                    "SHORT"
+                    if (
+                        active_trade.sl_price
+                        and active_trade.sl_price > active_trade.entry_price
+                    )
+                    else "LONG"
+                )
+
+            active_trades_text += (
+                f"🚀 <b>Активная позиция {pos_type} по {symbol}:</b>\n"
+                f"📥 Цена входа: <code>{active_trade.entry_price:.2f}$</code>\n"
+                f"📦 Объем: <code>{active_trade.amount:.6f} монет</code>\n"
+                f"🛑 Stop-Loss: <code>{active_trade.sl_price:.2f}$</code>\n"
+                f"🎯 Take-Profit: <code>{active_trade.tp_price:.2f}$</code>\n"
+                f"{current_price_str}\n"
+            )
+        else:
+            active_trades_text += (
+                f"📭 <b>{symbol}:</b> <i>Вне рынка. Бот ожидает сигнала.</i>\n\n"
             )
 
-        status_text += (
-            f"🚀 <b>Активная позиция по {active_trade.symbol}:</b>\n"
-            f"📥 Цена входа: <code>{active_trade.entry_price:.2f}$</code>\n"
-            f"📦 Объем: <code>{active_trade.amount:.6f} монет</code>\n"
-            f"🛑 Stop-Loss: <code>{active_trade.sl_price:.2f}$</code>\n"
-            f"🎯 Take-Profit: <code>{active_trade.tp_price:.2f}$</code>\n"
-            f"{current_price_str}"
-        )
-    else:
-        status_text += "📭 <i>Активных позиций нет. Бот находится вне рынка.</i>"
+    status_text = (
+        f"📊 <b>Виртуальный портфель (Multi-Asset Paper Trading)</b>\n\n"
+        f"💵 Свободный кэш: <code>{portfolio.cash:.2f}$</code>\n"
+        f"📈 Общий баланс: <code>{portfolio.balance:.2f}$</code>\n\n"
+        f"{active_trades_text}"
+    )
 
     await message.answer(status_text)
 
@@ -66,102 +99,119 @@ async def status_handler(message: Message, session: AsyncSession):
 @router.message(Command("signals"))
 @router.message(F.text == "🤖 Торговый сигнал")
 async def signals_handler(message: Message, session: AsyncSession):
-    """Ручной опрос ML-модели по текущим ценам в БД."""
+    """Ручной опрос всех активных моделей по текущим ценам в БД."""
     settings = get_settings()
+    signals_text = "🤖 <b>Анализ рынка от MarketMind</b>\n\n"
 
-    if not os.path.exists(settings.MODEL_PATH):
-        await message.answer(
-            "⚠️ <b>Модель еще не обучена.</b>\n\n"
-            "Пожалуйста, соберите датасет и запустите обучение модели (LGBM)."
-        )
-        return
+    for symbol, timeframe in settings.ACTIVE_CONFIGS:
+        model_path = settings.get_model_path(symbol, timeframe)
 
-    kline_repo = KlineRepository(session)
-    klines = await kline_repo.get_klines("BTC/USDT", "1h", limit=50)
-
-    if len(klines) < 30:
-        await message.answer(
-            f"⚠️ <b>Недостаточно свечей в БД для анализа.</b>\n\n"
-            f"Имеется: {len(klines)} свечей. Требуется минимум: 30."
-        )
-        return
-
-    data = [
-        {
-            "open_time": k.open_time,
-            "open": k.open,
-            "high": k.high,
-            "low": k.low,
-            "close": k.close,
-            "volume": k.volume,
-        }
-        for k in klines
-    ]
-    df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
-
-    try:
-        predictor = Predictor(settings.MODEL_PATH)
-        prediction = predictor.predict(df)
-
-        if prediction is None:
-            await message.answer(
-                "⚠️ Ошибка: не удалось рассчитать признаки для прогноза."
+        if not os.path.exists(model_path):
+            signals_text += (
+                f"⚠️ <b>{symbol} ({timeframe}):</b> Модель еще не обучена.\n\n"
             )
-            return
+            continue
 
-        if prediction == 1:
-            recommendation = "🟢 <b>ПОКУПКА (LONG)</b>"
-            details = "Модель прогнозирует импульс роста цены в ближайшие часы."
-        else:
-            recommendation = "🔴 <b>ВНЕ РЫНКА (HOLD / FLAT)</b>"
-            details = "Модель не видит сильного восходящего потенциала цены."
+        kline_repo = KlineRepository(session)
+        klines = await kline_repo.get_klines(symbol, timeframe, limit=50)
 
-        await message.answer(
-            f"🤖 <b>Анализ рынка от MarketMind</b>\n"
-            f"📊 Валютная пара: <code>BTC/USDT</code>\n"
-            f"⏱ Таймфрейм: <code>1h</code>\n\n"
-            f"🎯 Рекомендация: {recommendation}\n"
-            f"📝 Описание: {details}"
-        )
-    except Exception as e:
-        await message.answer(f"❌ Произошла ошибка при анализе рынка: {e}")
+        if len(klines) < 30:
+            signals_text += f"⚠️ <b>{symbol} ({timeframe}):</b> Недостаточно свечей ({len(klines)}/30).\n\n"
+            continue
+
+        data = [
+            {
+                "open_time": k.open_time,
+                "open": k.open,
+                "high": k.high,
+                "low": k.low,
+                "close": k.close,
+                "volume": k.volume,
+            }
+            for k in klines
+        ]
+        df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
+
+        try:
+            predictor = Predictor(model_path)
+            prediction = predictor.predict(df)
+
+            if prediction == 1:
+                recommendation = "🟢 <b>ПОКУПКА (LONG)</b>"
+                details = "Прогнозируется рост цены."
+            elif prediction == -1:
+                recommendation = "🔴 <b>ПРОДАЖА (SHORT)</b>"
+                details = "Прогнозируется падение цены."
+            else:
+                recommendation = "⚪️ <b>ВНЕ РЫНКА (HOLD)</b>"
+                details = "Сильных трендовых импульсов не обнаружено."
+
+            signals_text += (
+                f"📊 <b>{symbol} ({timeframe}):</b>\n"
+                f"🎯 Рекомендация: {recommendation}\n"
+                f"📝 {details}\n\n"
+            )
+        except Exception as e:
+            signals_text += f"❌ <b>{symbol} ({timeframe}):</b> Ошибка анализа: {e}\n\n"
+
+    await message.answer(signals_text)
 
 
 @router.message(Command("report"))
 @router.message(F.text == "📈 Отчёт по стратегии")
 async def report_handler(message: Message, session: AsyncSession):
-    """Выводит реальные стратегические метрики."""
+    """Выводит сводный отчет по всем закрытым сделкам портфеля."""
+    settings = get_settings()
     repo = PaperTradingRepository(session)
-    closed_trades = await repo.get_closed_trades("BTC/USDT")
 
-    if not closed_trades:
+    all_closed_trades = []
+    for symbol, timeframe in settings.ACTIVE_CONFIGS:
+        closed_trades = await repo.get_closed_trades(symbol)
+        all_closed_trades.extend(closed_trades)
+
+    if not all_closed_trades:
         await message.answer(
             "📭 <i>Пока нет ни одной закрытой сделки. Отчёт появится после первых результатов.</i>"
         )
         return
 
-    trade_returns = [
-        (t.exit_price - t.entry_price) / t.entry_price for t in closed_trades
-    ]
+    # Сортируем все сделки по хронологии входа для правильного расчета просадок
+    all_closed_trades.sort(key=lambda t: t.entry_candle_time)
+
+    trade_returns = []
+    for t in all_closed_trades:
+        # Для шортов и лонгов расчет доходности отличается
+        is_short = False
+        if t.sl_price is not None:
+            is_short = t.sl_price > t.entry_price
+        elif t.tp_price is not None:
+            is_short = t.tp_price < t.entry_price
+
+        if is_short:
+            ret = (t.entry_price - t.exit_price) / t.entry_price
+        else:
+            ret = (t.exit_price - t.entry_price) / t.entry_price
+
+        trade_returns.append(ret)
+
     metrics = calculate_strategy_metrics(trade_returns)
 
     await message.answer(
-        f"📈 <b>Отчёт по стратегии (Paper Trading)</b>\n\n"
-        f"🔢 Всего сделок: <code>{metrics['total_trades']}</code>\n"
-        f"✅ Win rate: <code>{metrics['win_rate']:.1%}</code>\n"
+        f"📈 <b>Сводный отчёт по стратегии (Multi-Asset)</b>\n\n"
+        f"🔢 Всего сделок (суммарно): <code>{metrics['total_trades']}</code>\n"
+        f"✅ Win rate системы: <code>{metrics['win_rate']:.1%}</code>\n"
         f"💹 Profit Factor: <code>{metrics['profit_factor']:.2f}</code>\n"
-        f"📊 Sharpe: <code>{metrics['sharpe_ratio']:.3f}</code>\n"
-        f"📊 Sortino: <code>{metrics['sortino_ratio']:.3f}</code>\n"
-        f"📉 Max Drawdown: <code>{metrics['max_drawdown']:.1%}</code>\n"
-        f"🎯 Expectancy: <code>{metrics['expectancy']:.3%}</code> на сделку\n"
-        f"💰 Суммарная доходность: <code>{metrics['total_return']:.1%}</code>"
+        f"📊 Общий Sharpe: <code>{metrics['sharpe_ratio']:.3f}</code>\n"
+        f"📊 Общий Sortino: <code>{metrics['sortino_ratio']:.3f}</code>\n"
+        f"📉 Макс. просадка портфеля: <code>{metrics['max_drawdown']:.1%}</code>\n"
+        f"🎯 Матожидание (Expectancy): <code>{metrics['expectancy']:.3%}</code> на сделку\n"
+        f"💰 Накопленная доходность: <code>{metrics['total_return']:.1%}</code>"
     )
 
 
 @router.message(Command("subscribe"))
 @router.message(F.text == "🔔 Подписаться на сигналы")
 async def subscribe_handler(message: Message, session: AsyncSession):
-    """Обработчик подписки на уведомления."""
     repo = UserRepository(session)
     await repo.set_subscribed(message.from_user.id, True)
     await message.answer(
@@ -174,7 +224,6 @@ async def subscribe_handler(message: Message, session: AsyncSession):
 @router.message(Command("unsubscribe"))
 @router.message(F.text == "🔕 Отписаться от сигналов")
 async def unsubscribe_handler(message: Message, session: AsyncSession):
-    """Обработчик отписки от уведомлений."""
     repo = UserRepository(session)
     await repo.set_subscribed(message.from_user.id, False)
     await message.answer(
@@ -185,7 +234,6 @@ async def unsubscribe_handler(message: Message, session: AsyncSession):
 
 
 async def start_handler(message: Message, session: AsyncSession, redis: Redis):
-    """Регистрация или приветствие пользователя на старте."""
     service = UserService(session, redis)
     user, is_new = await service.register_or_update(
         user_id=message.from_user.id,
@@ -194,7 +242,6 @@ async def start_handler(message: Message, session: AsyncSession, redis: Redis):
     )
     greeting = "Привет" if is_new else "С возвращением"
 
-    # Получаем статус подписки пользователя (по умолчанию True)
     is_sub = getattr(user, "is_subscribed", True)
 
     await message.answer(

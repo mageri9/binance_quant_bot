@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     ROLLBACK_WIN_RATE_THRESHOLD: float = 0.35
     ROLLBACK_MAX_DRAWDOWN_THRESHOLD: float = 0.15
 
+    ACTIVE_CONFIGS: list[tuple[str, str]] = [
+        ("BTC/USDT", "1h"),
+        ("ETH/USDT", "1h"),
+        ("SOL/USDT", "1h"),
+    ]
+
+    def get_model_path(self, symbol: str, timeframe: str) -> str:
+        """Динамически рассчитывает путь к pkl-файлу модели."""
+        clean_symbol = symbol.replace("/", "").replace(":", "")
+        clean_tf = timeframe.replace("/", "")
+        return f"models/saved_models/lgbm_{clean_symbol}_{clean_tf}.pkl"
+
     class Config:
         env_file = get_env_path()
         env_file_encoding = "utf-8"

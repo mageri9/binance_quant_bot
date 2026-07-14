@@ -57,7 +57,7 @@ async def test_check_and_rollback_model_degradation(temp_db_session):
             mock_redis_func.return_value = redis_mock
 
             # Запускаем проверку SRE
-            await check_and_rollback_model(temp_db_session, bot_mock)
+            await check_and_rollback_model(temp_db_session, bot_mock, "BTC/USDT", "1h")
 
             # Проверки:
             # 1. Должно отправиться критическое оповещение администраторам
