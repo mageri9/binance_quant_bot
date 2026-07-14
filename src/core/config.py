@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     OPTUNA_TUNING_ENABLED: bool = False
     OPTUNA_TRIALS: int = 15
 
+    # Model Rollback SRE parameters
+    ROLLBACK_CHECK_WINDOW: int = 10
+    ROLLBACK_WIN_RATE_THRESHOLD: float = 0.35
+    ROLLBACK_MAX_DRAWDOWN_THRESHOLD: float = 0.15
+
     class Config:
         env_file = get_env_path()
         env_file_encoding = "utf-8"

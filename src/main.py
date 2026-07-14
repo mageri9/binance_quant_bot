@@ -3,12 +3,14 @@ import sys
 import os
 import pandas as pd
 import shutil
+from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.db import engine, Base, AsyncSessionFactory
@@ -28,6 +30,109 @@ try:
 except ImportError:
     NEXUS_AVAILABLE = False
     logger.warning("NexusSDK не установлен в окружении. Запуск без Nexus SRE.")
+
+
+async def check_and_rollback_model(session: AsyncSession, bot: Bot):
+    """
+    Фоновая проверка качества живых сделок (Quest 8).
+    Если метрики последних N сделок деградировали ниже порогов,
+    автоматически откатывает рабочую модель на последний успешный бэкап.
+    """
+    import glob
+    from src.crud.paper import PaperTradingRepository
+    from src.strategy.signals import calculate_strategy_metrics
+
+    settings = get_settings()
+
+    # 1. Проверяем кулдаун отката в Redis (чтобы не откатывать модель на каждой сделке подряд)
+    try:
+        redis = await get_redis()
+        cooldown = await redis.get("model_rollback_cooldown")
+        if cooldown:
+            return
+    except Exception as re_err:
+        logger.error(f"Ошибка проверки кулдауна отката в Redis: {re_err}")
+
+    repo = PaperTradingRepository(session)
+    # Загружаем последние сделки
+    closed_trades = await repo.get_closed_trades(
+        "BTC/USDT", limit=settings.ROLLBACK_CHECK_WINDOW
+    )
+
+    if len(closed_trades) < settings.ROLLBACK_CHECK_WINDOW:
+        # Недостаточно статистики для анализа
+        return
+
+    # Рассчитываем доходность
+    trade_returns = [
+        (t.exit_price - t.entry_price) / t.entry_price for t in closed_trades
+    ]
+    metrics = calculate_strategy_metrics(trade_returns)
+
+    win_rate = metrics["win_rate"]
+    max_dd = metrics["max_drawdown"]
+
+    # Условие деградации: Win Rate ниже нормы ИЛИ просадка выше порога
+    is_degraded = (
+        win_rate < settings.ROLLBACK_WIN_RATE_THRESHOLD
+        or max_dd > settings.ROLLBACK_MAX_DRAWDOWN_THRESHOLD
+    )
+
+    if is_degraded:
+        os_dir = os.path.dirname(settings.MODEL_PATH)
+        backup_pattern = os.path.join(os_dir, "lgbm_BTCUSDT_1h_backup_*.pkl")
+        backup_files = glob.glob(backup_pattern)
+
+        if not backup_files:
+            msg = (
+                f"🚨 [CRITICAL SRE] Живые показатели модели деградировали!\n"
+                f"Win Rate: <code>{win_rate:.1%}</code> (порог: {settings.ROLLBACK_WIN_RATE_THRESHOLD:.1%})\n"
+                f"Max Drawdown: <code>{max_dd:.1%}</code> (порог: {settings.ROLLBACK_MAX_DRAWDOWN_THRESHOLD:.1%})\n\n"
+                f"⚠️ <b>Откат невозможен:</b> файлы резервных бэкапов не найдены в папке {os_dir}!"
+            )
+            logger.critical(msg)
+            for admin_id in settings.ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=msg)
+                except Exception as e:
+                    logger.error(f"Не удалось отправить алерт админу {admin_id}: {e}")
+            return
+
+        # Сортируем бэкапы по времени изменения (самый свежий — первый)
+        backup_files.sort(key=os.path.getmtime, reverse=True)
+        best_backup = backup_files[0]
+
+        # Выполняем автооткат файла модели
+        try:
+            shutil.copy(best_backup, settings.MODEL_PATH)
+
+            # Устанавливаем кулдаун в Redis на 24 часа
+            try:
+                await redis.setex("model_rollback_cooldown", 86400, "1")
+            except Exception as re_err:
+                logger.error(f"Не удалось записать кулдаун отката в Redis: {re_err}")
+
+            msg = (
+                f"🚨 [CRITICAL SRE] Живые показатели модели ДЕГРАДИРОВАЛИ!\n"
+                f"Win Rate: <code>{win_rate:.1%}</code> (порог: {settings.ROLLBACK_WIN_RATE_THRESHOLD:.1%})\n"
+                f"Max Drawdown: <code>{max_dd:.1%}</code> (порог: {settings.ROLLBACK_MAX_DRAWDOWN_THRESHOLD:.1%})\n\n"
+                f"🔄 <b>Автоматический откат выполнен!</b>\n"
+                f"Рабочая модель успешно заменена на последний стабильный бэкап:\n"
+                f"<code>{os.path.basename(best_backup)}</code>\n\n"
+                f"⏱ Включена блокировка проверок на 24 часа."
+            )
+            logger.warning(msg)
+
+            for admin_id in settings.ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=msg)
+                except Exception as e:
+                    logger.error(
+                        f"Не удалось отправить уведомление об откате админу {admin_id}: {e}"
+                    )
+
+        except Exception as err:
+            logger.error(f"Ошибка при копировании резервной копии модели: {err}")
 
 
 async def paper_trading_loop(bot: Bot):
@@ -93,7 +198,6 @@ async def paper_trading_loop(bot: Bot):
                             )
 
                     # 2. Обычным подписчикам отправляем ТОЛЬКО закрытие сделок
-                    # Отличить закрытие легко — лог начинается с красного, зеленого или синего кружка
                     is_closure = any(
                         log_msg.startswith(prefix) for prefix in ["🔴", "🟢", "🔵"]
                     )
@@ -104,7 +208,6 @@ async def paper_trading_loop(bot: Bot):
                         subscribed_users = await user_repo.get_all_subscribed()
 
                         for u in subscribed_users:
-                            # Пропускаем администраторов, чтобы не дублировать им сообщения
                             if u.user_id in settings.ADMIN_IDS:
                                 continue
                             try:
@@ -113,6 +216,14 @@ async def paper_trading_loop(bot: Bot):
                                 logger.error(
                                     f"Не удалось отправить сигнал подписчику {u.user_id}: {e}"
                                 )
+
+                        # 3. Запускаем SRE проверку на деградацию модели (Quest 8)
+                        try:
+                            await check_and_rollback_model(session, bot)
+                        except Exception as rollback_err:
+                            logger.error(
+                                f"Ошибка при проверке/откате деградации модели: {rollback_err}"
+                            )
 
         except Exception as e:
             logger.error(f"Ошибка в цикле бумажной торговли: {e}")
@@ -125,16 +236,12 @@ nexus = None
 async def retrain_loop(bot: Bot):
     """
     Фоновая служба периодического переобучения модели.
-    Новая LightGBM-модель продвигается в продакшн только если её f1
-    превосходит baseline того же прогона — иначе это сигнал искать
-    проблему (leakage, смена режима рынка), а не молча подменять модель.
     """
     from src.core.db import AsyncSessionFactory
     from src.crud.kline import KlineRepository
     from src.datasets.build import build_and_save_dataset
     from src.models.baseline import run_baseline_experiment
     from src.models.train import run_lgbm_experiment
-    from datetime import datetime, timezone
 
     settings = get_settings()
     logger.info("Фоновая служба автообучения запущена.")
@@ -196,6 +303,19 @@ async def retrain_loop(bot: Bot):
                     os_dir = os.path.dirname(settings.MODEL_PATH)
                     if os_dir:
                         os.makedirs(os_dir, exist_ok=True)
+
+                    # --- Создаем бэкап старой модели перед заменой (Quest 8) ---
+                    if os.path.exists(settings.MODEL_PATH):
+                        backup_filename = f"lgbm_BTCUSDT_1h_backup_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}.pkl"
+                        backup_path = os.path.join(os_dir, backup_filename)
+                        try:
+                            shutil.copy(settings.MODEL_PATH, backup_path)
+                            logger.info(
+                                f"[Retrain] Успешно создан бэкап старой стабильной модели: {backup_path}"
+                            )
+                        except Exception as copy_err:
+                            logger.error(f"Не удалось скопировать бэкап: {copy_err}")
+
                     shutil.copy(lgbm_result["model_path"], settings.MODEL_PATH)
 
                     msg = (
@@ -303,9 +423,7 @@ async def main():
                 app_secret=app_secret,
                 project_name=os.getenv("NEXUS_PROJECT_NAME", "binance_quant_bot"),
             )
-            # Глобальный перехватчик ошибок в aiogram 3
             nexus.register_aiogram_error_handler(dp)
-            # Запуск пульса (Heartbeat) раз в 15 секунд
             nexus.start_heartbeat(interval_seconds=15)
             logger.info("Nexus SRE мониторинг успешно инициализирован.")
         else:
