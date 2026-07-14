@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 import pandas as pd
 import numpy as np
@@ -554,3 +556,55 @@ async def test_paper_trading_timeout_exit_matches_backtest_semantics(temp_db_ses
     assert msg is not None
     assert "тайм-ауту" in msg
     assert await repo.get_active_trade("BTC/USDT") is None
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_concurrent_open_no_overspend(temp_db_session):
+    """
+    Регрессия: без лока на портфель две параллельные задачи (символы)
+    могут обе прочитать одинаковый portfolio.cash и обе пройти проверку
+    достаточности средств, что даёт overspend. Эмулируем гонку явным
+    конкурентным запуском process_market_update для двух разных символов
+    с allocation, который в сумме превышает доступный cash, но по
+    отдельности укладывается.
+    """
+    engine = PaperTradingEngine(temp_db_session)
+    engine.settings.PAPER_MIN_ALLOCATION = 1.0
+
+    dummy_candles = pd.DataFrame({
+        "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+        "open": [100.0] * 35,
+        "high": [100.5] * 35,
+        "low": [99.5] * 35,
+        "close": [100.0] * 35,
+        "volume": [1000.0] * 35,
+    })
+
+    predictor = MockPredictor(signal=1)
+
+    # Баланс 10000$. Каждая "сделка" запрашивает 6000$ -> обе по отдельности
+    # проходят проверку cash < allocation (10000 >= 6000), но вместе это 12000$.
+    results = await asyncio.gather(
+        engine.process_market_update(
+            symbol="BTC/USDT", timeframe="1h",
+            latest_candles=dummy_candles, predictor=predictor,
+            sl_pct=0.02, tp_pct=0.04, trade_allocation=6000.0,
+        ),
+        engine.process_market_update(
+            symbol="ETH/USDT", timeframe="1h",
+            latest_candles=dummy_candles, predictor=predictor,
+            sl_pct=0.02, tp_pct=0.04, trade_allocation=6000.0,
+        ),
+    )
+
+    repo = PaperTradingRepository(temp_db_session)
+    portfolio = await repo.get_portfolio()
+
+    # Ровно одна сделка должна открыться успешно, вторая - отказ по нехватке кэша
+    opened = [r for r in results if r and "Открыта виртуальная" in r]
+    rejected = [r for r in results if r and "Недостаточно кэша" in r]
+
+    assert len(opened) == 1
+    assert len(rejected) == 1
+    # Баланс не должен уйти в минус
+    assert portfolio.cash >= 0.0
