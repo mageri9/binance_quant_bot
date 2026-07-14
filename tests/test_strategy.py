@@ -105,3 +105,32 @@ def test_simulate_strategy_no_signals():
     metrics = simulate_strategy(df)
     assert metrics["total_trades"] == 0
     assert metrics["total_return"] == 0.0
+
+
+def test_simulate_strategy_short_tp_hit():
+    # Имитируем падение цены для проверки SHORT сделки
+    df = pd.DataFrame(
+        {
+            "close": [100.0, 99.0, 98.0, 95.0, 96.0],
+            "high": [100.5, 99.5, 98.5, 95.5, 96.5],
+            "low": [99.5, 98.5, 97.5, 94.0, 95.5],
+            # Входим в SHORT на свече с индексом 1 (close = 99.0)
+            "predicted_signal": [0, -1, 0, 0, 0],
+        }
+    )
+
+    # Задаем TP = 3% (0.03). Уровень сработки для шорта: 99.0 * (1 - 0.03) = 96.03
+    # На свече 3 (index 3) low обвалился до 94.0, что пробивает наш TP (94.0 <= 96.03)
+    metrics = simulate_strategy(
+        df,
+        predicted_col="predicted_signal",
+        horizon=3,
+        sl_pct=0.02,
+        tp_pct=0.03,
+        transaction_cost=0.0,
+    )
+
+    assert metrics["total_trades"] == 1
+    # Должна зафиксироваться прибыль ровно 3% (0.03)
+    assert pytest.approx(metrics["total_return"], abs=1e-5) == 0.03
+    assert metrics["win_rate"] == 1.0

@@ -85,11 +85,16 @@ def simulate_strategy(
     transaction_cost: float = 0.001,
 ) -> dict:
     """
-    Симулирует торговлю на истории (Long-only).
+    Симулирует двустороннюю торговлю на истории (Long и Short).
 
-    Вход в позицию: когда predicted_signal == 1 и мы свободны.
-    Выход: при срабатывании Stop-Loss, Take-Profit или принудительно по времени (horizon).
-    Учитывает комиссию биржи на вход и выход.
+    Вход в позицию:
+        - При predicted_signal == 1  -> LONG
+        - При predicted_signal == -1 -> SHORT
+    Выход:
+        - По Stop-Loss
+        - По Take-Profit
+        - Принудительно по времени удержания (horizon)
+    Учитывает комиссию биржи (transaction_cost) на вход и выход из позиции.
     """
     prices = df["close"].values
     highs = df["high"].values
@@ -97,58 +102,106 @@ def simulate_strategy(
     signals = df[predicted_col].values
     n = len(df)
 
-    trades = []  # Хранит доходность по каждой совершенной сделке
+    trades = []  # Список доходностей по каждой совершенной сделке
 
-    in_position = False
+    position_type = None  # Возможные значения: None, 'LONG', 'SHORT'
     entry_price = 0.0
     entry_idx = 0
     sl_price = 0.0
     tp_price = 0.0
 
     for i in range(n):
-        if not in_position:
-            # Ищем сигнал на вход
-            if signals[i] == 1 and (i < n - 1):
-                in_position = True
-                entry_price = prices[i]
-                entry_idx = i
+        if position_type is None:
+            # Ищем сигнал на вход (имеем запас хотя бы в одну свечу до конца выборки)
+            if i < n - 1:
+                if signals[i] == 1:
+                    position_type = "LONG"
+                    entry_price = prices[i]
+                    entry_idx = i
+                    # Уровни для LONG: SL снизу, TP сверху
+                    sl_price = (
+                        entry_price * (1.0 - sl_pct)
+                        if sl_pct is not None
+                        else float("-inf")
+                    )
+                    tp_price = (
+                        entry_price * (1.0 + tp_pct)
+                        if tp_pct is not None
+                        else float("inf")
+                    )
 
-                # Задаем уровни SL / TP относительно цены входа
-                sl_price = entry_price * (1.0 - sl_pct) if sl_pct is not None else 0.0
-                tp_price = (
-                    entry_price * (1.0 + tp_pct) if tp_pct is not None else float("inf")
-                )
+                elif signals[i] == -1:
+                    position_type = "SHORT"
+                    entry_price = prices[i]
+                    entry_idx = i
+                    # Уровни для SHORT: SL сверху, TP снизу
+                    sl_price = (
+                        entry_price * (1.0 + sl_pct)
+                        if sl_pct is not None
+                        else float("inf")
+                    )
+                    tp_price = (
+                        entry_price * (1.0 - tp_pct)
+                        if tp_pct is not None
+                        else float("-inf")
+                    )
         else:
-            # Мы находимся в сделке, проверяем условия выхода:
+            # --- ЛОГИКА УДЕРЖАНИЯ И ВЫХОДА ИЗ ПОЗИЦИИ ---
 
-            # 1. Проверяем срабатывание Stop-Loss по минимальной цене свечи
-            if lows[i] <= sl_price:
-                # Фиксируем убыток по цене SL с учетом комиссий биржи за покупку и продажу
-                trade_return = (sl_price - entry_price) / entry_price - (
-                    2 * transaction_cost
-                )
-                trades.append(trade_return)
-                in_position = False
-                continue
+            if position_type == "LONG":
+                # 1. Проверяем Stop-Loss по минимальной цене свечи
+                if lows[i] <= sl_price:
+                    trade_return = (sl_price - entry_price) / entry_price - (
+                        2 * transaction_cost
+                    )
+                    trades.append(trade_return)
+                    position_type = None
+                    continue
 
-            # 2. Проверяем срабатывание Take-Profit по максимальной цене свечи
-            if highs[i] >= tp_price:
-                # Фиксируем прибыль по цене TP с учетом комиссий биржи
-                trade_return = (tp_price - entry_price) / entry_price - (
-                    2 * transaction_cost
-                )
-                trades.append(trade_return)
-                in_position = False
-                continue
+                # 2. Проверяем Take-Profit по максимальной цене свечи
+                if highs[i] >= tp_price:
+                    trade_return = (tp_price - entry_price) / entry_price - (
+                        2 * transaction_cost
+                    )
+                    trades.append(trade_return)
+                    position_type = None
+                    continue
 
-            # 3. Выход по истечении горизонта времени (Time Exit)
-            if i - entry_idx >= horizon:
-                # Выходим по цене закрытия текущей свечи
-                trade_return = (prices[i] - entry_price) / entry_price - (
-                    2 * transaction_cost
-                )
-                trades.append(trade_return)
-                in_position = False
-                continue
+                # 3. Выход по истечении горизонта времени (Time Exit)
+                if i - entry_idx >= horizon:
+                    trade_return = (prices[i] - entry_price) / entry_price - (
+                        2 * transaction_cost
+                    )
+                    trades.append(trade_return)
+                    position_type = None
+                    continue
+
+            elif position_type == "SHORT":
+                # 1. Проверяем Stop-Loss (для SHORT это рост цены вверх)
+                if highs[i] >= sl_price:
+                    trade_return = (entry_price - sl_price) / entry_price - (
+                        2 * transaction_cost
+                    )
+                    trades.append(trade_return)
+                    position_type = None
+                    continue
+
+                # 2. Проверяем Take-Profit (для SHORT это падение цены вниз)
+                if lows[i] <= tp_price:
+                    trade_return = (entry_price - tp_price) / entry_price - (
+                        2 * transaction_cost
+                    )
+                    trades.append(trade_return)
+                    position_type = None
+                    continue
+
+                # 3. Выход по истечении горизонта времени (Time Exit)
+                if i - entry_idx >= horizon:
+                    trade_return = (entry_price - prices[i]) / entry_price - (
+                        2 * transaction_cost
+                    )
+                    trades.append(trade_return)
+                    position_type = None
+                    continue
 
     return calculate_strategy_metrics(trades)
