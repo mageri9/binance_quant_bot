@@ -13,9 +13,9 @@ from src.services.user import UserService
 from src.core.config import get_settings
 from src.crud.paper import PaperTradingRepository
 from src.crud.kline import KlineRepository
+from src.crud.user import UserRepository
 from src.models.predictor import Predictor
 from src.strategy.signals import calculate_strategy_metrics
-from src.crud.user import UserRepository
 
 router = Router()
 
@@ -23,9 +23,7 @@ router = Router()
 @router.message(Command("status"))
 @router.message(F.text == "📊 Статус портфеля")
 async def status_handler(message: Message, session: AsyncSession):
-    """
-    Команда /status (или кнопка): Выводит текущее состояние виртуального кошелька.
-    """
+    """Выводит текущее состояние виртуального кошелька."""
     repo = PaperTradingRepository(session)
     portfolio = await repo.get_portfolio()
     active_trade = await repo.get_active_trade("BTC/USDT")
@@ -68,16 +66,13 @@ async def status_handler(message: Message, session: AsyncSession):
 @router.message(Command("signals"))
 @router.message(F.text == "🤖 Торговый сигнал")
 async def signals_handler(message: Message, session: AsyncSession):
-    """
-    Команда /signals (или кнопка): Ручной опрос ML-модели по текущим ценам в БД.
-    """
+    """Ручной опрос ML-модели по текущим ценам в БД."""
     settings = get_settings()
 
     if not os.path.exists(settings.MODEL_PATH):
         await message.answer(
             "⚠️ <b>Модель еще не обучена.</b>\n\n"
-            "Пожалуйста, соберите датасет и запустите обучение модели (LGBM), "
-            "чтобы файл модели сохранился на сервере."
+            "Пожалуйста, соберите датасет и запустите обучение модели (LGBM)."
         )
         return
 
@@ -91,18 +86,17 @@ async def signals_handler(message: Message, session: AsyncSession):
         )
         return
 
-    data = []
-    for k in klines:
-        data.append(
-            {
-                "open_time": k.open_time,
-                "open": k.open,
-                "high": k.high,
-                "low": k.low,
-                "close": k.close,
-                "volume": k.volume,
-            }
-        )
+    data = [
+        {
+            "open_time": k.open_time,
+            "open": k.open,
+            "high": k.high,
+            "low": k.low,
+            "close": k.close,
+            "volume": k.volume,
+        }
+        for k in klines
+    ]
     df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
 
     try:
@@ -120,9 +114,7 @@ async def signals_handler(message: Message, session: AsyncSession):
             details = "Модель прогнозирует импульс роста цены в ближайшие часы."
         else:
             recommendation = "🔴 <b>ВНЕ РЫНКА (HOLD / FLAT)</b>"
-            details = (
-                "Модель не видит сильного восходящего потенциала цены в данный момент."
-            )
+            details = "Модель не видит сильного восходящего потенциала цены."
 
         await message.answer(
             f"🤖 <b>Анализ рынка от MarketMind</b>\n"
@@ -138,11 +130,7 @@ async def signals_handler(message: Message, session: AsyncSession):
 @router.message(Command("report"))
 @router.message(F.text == "📈 Отчёт по стратегии")
 async def report_handler(message: Message, session: AsyncSession):
-    """
-    Команда /report: реальные стратегические метрики (Sharpe, Profit Factor,
-    Max Drawdown и т.д.) по фактическим закрытым сделкам paper trading —
-    не по бэктесту, а по тому, что бот действительно "наторговал".
-    """
+    """Выводит реальные стратегические метрики."""
     repo = PaperTradingRepository(session)
     closed_trades = await repo.get_closed_trades("BTC/USDT")
 
@@ -170,7 +158,34 @@ async def report_handler(message: Message, session: AsyncSession):
     )
 
 
+@router.message(Command("subscribe"))
+@router.message(F.text == "🔔 Подписаться на сигналы")
+async def subscribe_handler(message: Message, session: AsyncSession):
+    """Обработчик подписки на уведомления."""
+    repo = UserRepository(session)
+    await repo.set_subscribed(message.from_user.id, True)
+    await message.answer(
+        "🔔 <b>Вы успешно подписались на уведомления о сделках!</b>\n\n"
+        "Теперь вы будете получать сообщения о закрытии позиций в реальном времени.",
+        reply_markup=kb.main_menu(is_subscribed=True),
+    )
+
+
+@router.message(Command("unsubscribe"))
+@router.message(F.text == "🔕 Отписаться от сигналов")
+async def unsubscribe_handler(message: Message, session: AsyncSession):
+    """Обработчик отписки от уведомлений."""
+    repo = UserRepository(session)
+    await repo.set_subscribed(message.from_user.id, False)
+    await message.answer(
+        "🔕 <b>Вы отписались от уведомлений о сделках.</b>\n\n"
+        "Вы больше не будете получать сообщения о закрытых позициях.",
+        reply_markup=kb.main_menu(is_subscribed=False),
+    )
+
+
 async def start_handler(message: Message, session: AsyncSession, redis: Redis):
+    """Регистрация или приветствие пользователя на старте."""
     service = UserService(session, redis)
     user, is_new = await service.register_or_update(
         user_id=message.from_user.id,
@@ -178,40 +193,24 @@ async def start_handler(message: Message, session: AsyncSession, redis: Redis):
         full_name=message.from_user.full_name,
     )
     greeting = "Привет" if is_new else "С возвращением"
+
+    # Получаем статус подписки пользователя (по умолчанию True)
+    is_sub = getattr(user, "is_subscribed", True)
+
     await message.answer(
         f"{greeting}, {html.escape(message.from_user.full_name)}! 👋\n\n"
         f"<b>Доступные функции количественного ИИ:</b>\n"
         f"👉 Нажмите на кнопки внизу для взаимодействия.",
-        reply_markup=kb.main_menu(),
+        reply_markup=kb.main_menu(is_subscribed=is_sub),
     )
-
-@router.message(Command("subscribe"))
-async def subscribe_handler(message: Message, session: AsyncSession):
-    """Команда подписки."""
-    repo = UserRepository(session)
-    await repo.set_subscribed(message.from_user.id, True)
-    await message.answer(
-        "🔔 <b>Вы успешно подписались на уведомления о сделках!</b>\n\n"
-        "Теперь вы будете получать сообщения о закрытии позиций в реальном времени."
-    )
-
-
-@router.message(Command("unsubscribe"))
-async def unsubscribe_handler(message: Message, session: AsyncSession):
-    """Команда отписки."""
-    repo = UserRepository(session)
-    await repo.set_subscribed(message.from_user.id, False)
-    await message.answer(
-        "🔕 <b>Вы отписались от уведомлений о сделках.</b>\n\n"
-        "Вы больше не будете получать сообщения о закрытых позициях."
-    )
-
 
 
 def register_handlers():
     router.message.register(start_handler, CommandStart())
     router.message.register(subscribe_handler, Command("subscribe"))
+    router.message.register(subscribe_handler, F.text == "🔔 Подписаться на сигналы")
     router.message.register(unsubscribe_handler, Command("unsubscribe"))
+    router.message.register(unsubscribe_handler, F.text == "🔕 Отписаться от сигналов")
     router.message.register(status_handler, Command("status"))
     router.message.register(status_handler, F.text == "📊 Статус портфеля")
     router.message.register(signals_handler, Command("signals"))

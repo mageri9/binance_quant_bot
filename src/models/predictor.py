@@ -19,9 +19,23 @@ class Predictor:
 
         self.model = saved_data["model"]
         self.scaler = saved_data.get("scaler", None)
-        self.features = saved_data["features"]
-        # Считываем имя целевой переменной, по умолчанию бинарная
-        self.target_col = saved_data.get("target_col", "target_binary")
+
+        # Защищенное получение признаков с жестким откатом на стандартные
+        self.features = saved_data.get("features")
+        if self.features is None:
+            self.features = [
+                "rsi",
+                "macd",
+                "macd_signal",
+                "macd_hist",
+                "volatility",
+                "volume_ratio",
+            ]
+
+        # Защищенное получение названия целевой переменной
+        self.target_col = saved_data.get("target_col")
+        if self.target_col is None:
+            self.target_col = "target_binary"
 
     def predict(self, df: pd.DataFrame) -> int | None:
         """
@@ -33,11 +47,15 @@ class Predictor:
         # Нам нужен прогноз только для самой последней свечи
         latest_row = df_feats.iloc[-1]
 
-        if latest_row[self.features].isna().any():
+        # Гарантируем, что список признаков не равен None
+        features_to_check = self.features if self.features is not None else []
+
+        # Проверяем, что признаки успешно рассчитались (нет NaN)
+        if latest_row[features_to_check].isna().any():
             return None
 
         # Формируем строку признаков для модели
-        X = pd.DataFrame([latest_row[self.features]])
+        X = pd.DataFrame([latest_row[features_to_check]])
 
         if self.scaler is not None:
             X = self.scaler.transform(X)
@@ -46,7 +64,10 @@ class Predictor:
         pred = self.model.predict(X)[0]
 
         # Расшифровываем классы обратно
-        if self.target_col == "target_triple":
+        target_col_str = (
+            self.target_col if self.target_col is not None else "target_binary"
+        )
+        if target_col_str == "target_triple":
             # Маппинг: 0 -> -1 (Short), 1 -> 0 (Hold), 2 -> 1 (Long)
             if pred == 0:
                 return -1
