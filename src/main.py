@@ -39,9 +39,10 @@ async def check_and_rollback_model(
     """
     Фоновая проверка качества живых сделок по конкретному активу (Quest 8 & 9).
     Если метрики последних N сделок деградировали ниже порогов,
-    автоматически откатывает рабочую модель на последний успешный бэкап.
+    автоматически откатывает рабочую модель на последний успешный бэкап-артефакт.
     """
     import glob
+    import pickle
     from src.crud.paper import PaperTradingRepository
     from src.strategy.signals import calculate_strategy_metrics
 
@@ -99,7 +100,7 @@ async def check_and_rollback_model(
                 f"🚨 [CRITICAL SRE] Живые показатели по {symbol} деградировали!\n"
                 f"Win Rate: <code>{win_rate:.1%}</code> (порог: {settings.ROLLBACK_WIN_RATE_THRESHOLD:.1%})\n"
                 f"Max Drawdown: <code>{max_dd:.1%}</code> (порог: {settings.ROLLBACK_MAX_DRAWDOWN_THRESHOLD:.1%})\n\n"
-                f"⚠️ <b>Откат невозможен:</b> бэкапы не найдены в папке {os_dir}!"
+                f"⚠️ <b>Откат невозможен:</b> файлы бэкапов не найдены в папке {os_dir}!"
             )
             logger.critical(msg)
             for admin_id in settings.ADMIN_IDS:
@@ -109,29 +110,72 @@ async def check_and_rollback_model(
                     logger.error(f"Не удалось отправить алерт админу {admin_id}: {e}")
             return
 
+        # Сортируем бэкапы от самых новых к самым старым
         backup_files.sort(key=os.path.getmtime, reverse=True)
-        best_backup = backup_files[0]
+
+        # Ищем первый целостный, неповрежденный бэкап-артефакт
+        best_backup = None
+        backup_artifact = None
+
+        for bf in backup_files:
+            try:
+                with open(bf, "rb") as f:
+                    data = pickle.load(f)
+                if isinstance(data, dict) and "model" in data:
+                    best_backup = bf
+                    backup_artifact = data
+                    break
+            except Exception as parse_err:
+                logger.error(
+                    f"[SRE] Файл бэкапа {os.path.basename(bf)} поврежден или несовместим: {parse_err}"
+                )
+                continue
+
+        if not best_backup or not backup_artifact:
+            msg = (
+                f"🚨 [CRITICAL SRE] Живые показатели по {symbol} деградировали!\n"
+                f"⚠️ <b>Откат невозможен:</b> не найдено ни одного валидного/целостного бэкапа в {os_dir}!"
+            )
+            logger.critical(msg)
+            for admin_id in settings.ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=msg)
+                except Exception as e:
+                    logger.error(f"Не удалось отправить алерт админу {admin_id}: {e}")
+            return
 
         try:
+            # Выполняем физическую замену рабочей модели на верифицированный бэкап
             shutil.copy(best_backup, model_path)
 
             try:
+                # Включаем кулдаун проверок на 24 часа для сбора новой статистики
                 await redis.setex(
                     f"model_rollback_cooldown:{symbol}:{timeframe}", 86400, "1"
                 )
             except Exception as re_err:
                 logger.error(
-                    f"Не удалось записать кулдаун отката для {symbol}: {re_err}"
+                    f"Не удалось записать кулдаун SRE-отката для {symbol}: {re_err}"
                 )
+
+            # Извлекаем метаданные из восстановленного артефакта
+            restored_model_id = backup_artifact.get(
+                "model_id", os.path.basename(best_backup)
+            )
+            restored_cal = backup_artifact.get("calibration", {})
+            restored_sl = restored_cal.get("sl_pct", settings.PAPER_SL_PCT)
+            restored_tp = restored_cal.get("tp_pct", settings.PAPER_TP_PCT)
 
             msg = (
                 f"🚨 [CRITICAL SRE] Живые показатели по {symbol} ДЕГРАДИРОВАЛИ!\n"
                 f"Win Rate: <code>{win_rate:.1%}</code> (порог: {settings.ROLLBACK_WIN_RATE_THRESHOLD:.1%})\n"
                 f"Max Drawdown: <code>{max_dd:.1%}</code> (порог: {settings.ROLLBACK_MAX_DRAWDOWN_THRESHOLD:.1%})\n\n"
-                f"🔄 <b>Автоматический откат выполнен по {symbol}!</b>\n"
-                f"Рабочая модель заменена на стабильный бэкап:\n"
-                f"<code>{os.path.basename(best_backup)}</code>\n\n"
-                f"⏱ Блокировка проверок на 24 часа."
+                f"🔄 <b>Автоматический откат успешно выполнен по {symbol}!</b>\n"
+                f"Продакшн-модель заменена на стабильный бэкап-артефакт.\n\n"
+                f"🆔 ID восстановленной модели: <code>{restored_model_id}</code>\n"
+                f"📉 Восстановленный Stop-Loss: <code>{restored_sl:.1%}</code>\n"
+                f"📈 Восстановленный Take-Profit: <code>{restored_tp:.1%}</code>\n\n"
+                f"⏱ SRE-проверки по паре заморожены на 24 часа для накопления истории."
             )
             logger.warning(msg)
 

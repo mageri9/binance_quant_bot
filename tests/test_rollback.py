@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import pytest
+import pickle
 from unittest.mock import AsyncMock, patch, MagicMock
 from aiogram import Bot
 
@@ -16,11 +17,21 @@ async def test_check_and_rollback_model_degradation(temp_db_session):
         model_path = os.path.join(tmpdir, "lgbm_BTCUSDT_1h.pkl")
         backup_path = os.path.join(tmpdir, "lgbm_BTCUSDT_1h_backup_202607140000.pkl")
 
-        # Создаем файлы-заглушки для проверки
-        with open(model_path, "w") as f:
-            f.write("current degraded model")
-        with open(backup_path, "w") as f:
-            f.write("stable backup model")
+        # Создаем валидный тестовый упакованный артефакт
+        test_artifact = {
+            "model_id": "lgbm_BTCUSDT_1h_backup_test_v1",
+            "model": "dummy_model_object_for_test",
+            "calibration": {
+                "sl_pct": 0.015,
+                "tp_pct": 0.035
+            }
+        }
+
+        # Записываем его как в прод-файл, так и в файл бэкапа
+        with open(model_path, "wb") as f:
+            pickle.dump(test_artifact, f)
+        with open(backup_path, "wb") as f:
+            pickle.dump(test_artifact, f)
 
         # Настраиваем фиктивные параметры конфигурации
         mock_settings = MagicMock()
@@ -43,6 +54,7 @@ async def test_check_and_rollback_model_degradation(temp_db_session):
                 sl_price=90.0,
                 tp_price=110.0,
                 entry_candle_time=1000 + i,
+                is_short=False
             )
             # Фиксируем убыток по SL (90.0)
             await repo.close_trade(trade, exit_price=90.0, pnl=-10.0)
@@ -67,11 +79,13 @@ async def test_check_and_rollback_model_degradation(temp_db_session):
             bot_mock.send_message.assert_called_once()
             alert_text = bot_mock.send_message.call_args[1]["text"]
 
-            # Используем .lower() для защиты от регистра букв
+            # Проверяем, что алерт содержит расширенные метаданные
             assert "деградировали" in alert_text.lower()
-            assert "откат выполнен" in alert_text.lower()
+            assert "откат успешно выполнен" in alert_text.lower()
+            assert "v1" in alert_text.lower()  # Наличие ID модели в логе
+            assert "1.5%" in alert_text.lower()  # Наличие восстановленного SL
 
             # 2. Файл текущей модели должен быть успешно переписан стабильной копией
-            with open(model_path, "r") as f:
-                content = f.read()
-            assert content == "stable backup model"
+            with open(model_path, "rb") as f:
+                content = pickle.load(f)
+            assert content["model_id"] == "lgbm_BTCUSDT_1h_backup_test_v1"
