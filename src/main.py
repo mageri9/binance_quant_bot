@@ -170,9 +170,8 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
             await asyncio.sleep(3600)
 
             async with AsyncSessionFactory() as session:
-                collector = DataCollector(session)
-                await collector.fetch_and_save_klines(symbol, timeframe, limit=5)
-                await collector.close()
+                async with DataCollector(session) as collector:
+                    await collector.fetch_and_save_klines(symbol, timeframe, limit=5)
 
                 repo = KlineRepository(session)
                 klines = await repo.get_klines(symbol, timeframe, limit=50)

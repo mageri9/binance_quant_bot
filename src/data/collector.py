@@ -10,9 +10,17 @@ from src.crud.kline import KlineRepository
 class DataCollector:
     def __init__(self, session: AsyncSession):
         self.repo = KlineRepository(session)
-        self.exchange = ccxt.binance({
-            'enableRateLimit': True,
-        })
+        self.exchange = ccxt.binance(
+            {
+                "enableRateLimit": True,
+            }
+        )
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
 
     async def close(self):
         await self.exchange.close()

@@ -40,48 +40,62 @@ class Predictor:
         self.dataset_version = saved_data.get("dataset_version", "unknown")
         self.git_sha = saved_data.get("git_sha", "unknown")
         self.features_hash = saved_data.get("features_hash", "unknown")
-        self.calibration = saved_data.get("calibration", {
-            "sl_pct": 0.02,
-            "tp_pct": 0.04
-        })
+        self.calibration = saved_data.get(
+            "calibration", {"sl_pct": 0.02, "tp_pct": 0.04}
+        )
 
     def predict(self, df: pd.DataFrame) -> int | None:
         """
-        Принимает DataFrame со свечами, рассчитывает по ним индикаторы
-        и выдает сигнал на покупку (1), короткую продажу (-1) или флэт (0).
+        Сохраняем старый метод полностью совместимым.
+        """
+        signal, _ = self.predict_detailed(df)
+        return signal
+
+    def predict_detailed(self, df: pd.DataFrame) -> tuple[int | None, dict | None]:
+        """
+        Возвращает: (signal, probabilities_dict).
+        Выдает класс прогноза и словарь вероятностей классов для MLOps-логирования.
         """
         df_feats = add_features(df)
 
-        # Нам нужен прогноз только для самой последней свечи
         latest_row = df_feats.iloc[-1]
-
-        # Гарантируем, что список признаков не равен None
         features_to_check = self.features if self.features is not None else []
 
-        # Проверяем, что признаки успешно рассчитались (нет NaN)
         if latest_row[features_to_check].isna().any():
-            return None
+            return None, None
 
-        # Формируем строку признаков для модели
         X = pd.DataFrame([latest_row[features_to_check]])
 
         if self.scaler is not None:
             X = self.scaler.transform(X)
 
-        # Делаем предсказание [0, 1] или [0, 1, 2]
+        # Вычисляем сырые вероятности классов
         pred = self.model.predict(X)[0]
+        prob = self.model.predict_proba(X)[
+            0
+        ].tolist()  # Массив [p0, p1, p2] или [p0, p1]
 
-        # Расшифровываем классы обратно
         target_col_str = (
             self.target_col if self.target_col is not None else "target_binary"
         )
-        if target_col_str == "target_triple":
-            # Маппинг: 0 -> -1 (Short), 1 -> 0 (Hold), 2 -> 1 (Long)
-            if pred == 0:
-                return -1
-            elif pred == 1:
-                return 0
-            elif pred == 2:
-                return 1
 
-        return int(pred)
+        prob_dict = {}
+        if target_col_str == "target_triple":
+            # Тройная разметка (классы 0 -> Short (-1), 1 -> Hold (0), 2 -> Long (1))
+            prob_dict = {
+                "prob_short": prob[0],
+                "prob_hold": prob[1],
+                "prob_long": prob[2],
+            }
+            if pred == 0:
+                signal = -1
+            elif pred == 1:
+                signal = 0
+            elif pred == 2:
+                signal = 1
+        else:
+            # Бинарная разметка (классы 0 -> Hold/Short, 1 -> Long)
+            prob_dict = {"prob_short": 0.0, "prob_hold": prob[0], "prob_long": prob[1]}
+            signal = int(pred)
+
+        return signal, prob_dict

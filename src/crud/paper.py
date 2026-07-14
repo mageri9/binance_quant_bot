@@ -2,7 +2,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
 
-from src.db.models import PaperPortfolio, PaperTrade
+from src.db.models import PaperPortfolio, PaperTrade, PredictionLog
 
 
 class PaperTradingRepository:
@@ -139,3 +139,29 @@ class PaperTradingRepository:
         )
         res = await self.session.execute(stmt)
         return list(reversed(res.scalars().all()))
+
+    async def log_prediction(
+        self,
+        symbol: str,
+        model_id: str,
+        price: float,
+        prediction: int,
+        prob_short: float,
+        prob_hold: float,
+        prob_long: float,
+    ) -> PredictionLog:
+        """
+        Записывает прогноз модели и вероятности классов в базу данных для MLOps-мониторинга.
+        """
+        log_entry = PredictionLog(
+            symbol=symbol,
+            model_id=model_id,
+            price=price,
+            prediction=prediction,
+            prob_short=prob_short,
+            prob_hold=prob_hold,
+            prob_long=prob_long,
+        )
+        self.session.add(log_entry)
+        await self.session.commit()
+        return log_entry

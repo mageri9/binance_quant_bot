@@ -100,3 +100,22 @@ class PaperTrade(Base):
 
     def __repr__(self) -> str:
         return f"<PaperTrade symbol={self.symbol} status={self.status} pnl={self.pnl}>"
+
+    
+class PredictionLog(Base):
+    __tablename__ = "prediction_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    model_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    price: Mapped[float] = mapped_column(nullable=False)
+    prediction: Mapped[int] = mapped_column(nullable=False)
+    prob_short: Mapped[float] = mapped_column(nullable=False)
+    prob_hold: Mapped[float] = mapped_column(nullable=False)
+    prob_long: Mapped[float] = mapped_column(nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PredictionLog symbol={self.symbol} pred={self.prediction} model={self.model_id}>"
