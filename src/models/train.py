@@ -28,6 +28,7 @@ async def tune_lgbm_hyperparameters(
     test_size: int,
     metadata_version: str,
     n_trials: int = 15,
+    label_horizon: int = 0,
 ) -> dict:
     """
     Проводит автоматический подбор параметров LightGBM с помощью Optuna.
@@ -49,7 +50,9 @@ async def tune_lgbm_hyperparameters(
         }
 
         splitter = TimeSeriesWalkForwardSplitter(
-            train_size=train_size, test_size=test_size
+            train_size=train_size,
+            test_size=test_size,
+            label_horizon=label_horizon,
         )
         f1_scores = []
 
@@ -177,17 +180,20 @@ async def run_lgbm_experiment(
         )
         best_params = await tune_lgbm_hyperparameters(
             session=session,
-            df_clean=df_train_val,  # Тюним СТРОГО на валидационной выборке
+            df_clean=df_train_val,
             feature_cols=feature_cols,
             target_col=target_col,
             train_size=train_size,
             test_size=test_size,
             metadata_version=metadata["version"],
             n_trials=settings.OPTUNA_TRIALS,
+            label_horizon=settings.LABEL_HORIZON,
         )
         logger.info(f"[+] Лучшие параметры подобраны: {best_params}")
 
-    splitter = TimeSeriesWalkForwardSplitter(train_size=train_size, test_size=test_size)
+    splitter = TimeSeriesWalkForwardSplitter(
+        train_size=train_size, test_size=test_size, label_horizon=settings.LABEL_HORIZON,
+    )
 
     all_y_true = []
     all_y_pred = []

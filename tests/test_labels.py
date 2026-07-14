@@ -126,3 +126,34 @@ def test_feature_leakage_protection():
         assert (orig_series.index == mod_series.index).all()
         # Значения должны остаться абсолютно идентичными!
         pd.testing.assert_series_equal(orig_series, mod_series, rtol=1e-12, atol=1e-12)
+
+def test_label_leakage_removed_by_splitter_horizon():
+    """
+    Проверяет, что TimeSeriesWalkForwardSplitter с label_horizon
+    отбрасывает из train_df строки, чья метка размечена по данным
+    за пределами train-окна.
+    """
+    from src.models.backtest import TimeSeriesWalkForwardSplitter
+    from src.labels.generator import generate_triple_labels
+
+    n_rows = 200
+    df = pd.DataFrame({
+        "open_time": np.arange(n_rows),
+        "close": np.linspace(100, 200, n_rows),
+    })
+    horizon = 5
+    df["target_triple"] = generate_triple_labels(df, horizon=horizon, threshold=0.01)
+
+    splitter = TimeSeriesWalkForwardSplitter(
+        train_size=100, test_size=20, label_horizon=horizon,
+    )
+
+    for train_df, test_df, info in splitter.split(df):
+        # Последняя строка train_df: метка должна быть посчитана по close,
+        # который лежит строго внутри train-окна, а не в test-окне.
+        last_train_idx = train_df.index[-1]
+        # future_close для этой строки использовался close[last_train_idx + horizon]
+        assert last_train_idx + horizon < info["test_start_idx"]
+        # Обрезка реально произошла: train короче исходного train_size
+        assert info["train_size"] == 100 - horizon
+        break  # достаточно проверить первый фолд

@@ -3,32 +3,31 @@ from typing import Generator, Tuple, Dict, Any
 
 
 class TimeSeriesWalkForwardSplitter:
-    """
-    Класс для честного разделения временных рядов (Walk-Forward Validation).
-    Обучение происходит строго на прошлом, тестирование — строго на будущем.
-    """
-
-    def __init__(self, train_size: int, test_size: int, step_size: int | None = None):
+    def __init__(
+        self,
+        train_size: int,
+        test_size: int,
+        step_size: int | None = None,
+        label_horizon: int = 0,
+    ):
         """
-        :param train_size: Количество свечей для обучения модели.
-        :param test_size: Количество свечей для тестирования модели.
-        :param step_size: На сколько свечей сдвигается окно на каждом шаге.
-                          Если равен None, то равен test_size (тесты идут стык в стык).
+        :param label_horizon: количество последних строк train_df,
+            которые отбрасываются перед обучением. Нужно, если метки
+            (target) размечены через shift(-horizon) на полном
+            датафрейме ДО разбиения на train/test — тогда последние
+            `label_horizon` строк train содержат метку, посчитанную
+            по цене закрытия, физически лежащей уже в test-окне
+            следующего сегмента (утечка будущего). При 0 (по
+            умолчанию) поведение не меняется — обратная совместимость
+            для случаев, где сплиттер используется без такой разметки.
         """
         self.train_size = train_size
         self.test_size = test_size
         self.step_size = step_size or test_size
+        self.label_horizon = label_horizon
 
-    def split(
-        self, df: pd.DataFrame
-    ) -> Generator[Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]], None, None]:
-        """
-        Разрезает DataFrame на наборы (фолды) для обучения и теста.
-        Возвращает генератор кортежей: (таблица_обучения, таблица_теста, информация_о_шаге)
-        """
+    def split(self, df: pd.DataFrame):
         n_samples = len(df)
-
-        # Если данных слишком мало даже для одного шага — ничего не возвращаем
         if n_samples < (self.train_size + self.test_size):
             return
 
@@ -41,12 +40,16 @@ class TimeSeriesWalkForwardSplitter:
             test_start = train_end
             test_end = test_start + self.test_size
 
-            # Если тестовое окно выходит за рамки имеющихся данных — останавливаемся
             if test_end > n_samples:
                 break
 
             train_df = df.iloc[train_start:train_end].copy()
             test_df = df.iloc[test_start:test_end].copy()
+
+            # Отбрасываем последние label_horizon строк train_df: их метка
+            # рассчитана по close, лежащему уже в тестовом окне (см. docstring).
+            if self.label_horizon > 0:
+                train_df = train_df.iloc[: -self.label_horizon] if len(train_df) > self.label_horizon else train_df.iloc[0:0]
 
             info = {
                 "fold": fold,
@@ -60,6 +63,5 @@ class TimeSeriesWalkForwardSplitter:
 
             yield train_df, test_df, info
 
-            # Сдвигаем окно вперед на заданный шаг
             start_idx += self.step_size
             fold += 1

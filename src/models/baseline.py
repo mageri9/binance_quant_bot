@@ -52,7 +52,11 @@ async def run_baseline_experiment(
         )
 
     # 2. Настраиваем разделитель данных
-    splitter = TimeSeriesWalkForwardSplitter(train_size=train_size, test_size=test_size)
+    splitter = TimeSeriesWalkForwardSplitter(
+        train_size=train_size,
+        test_size=test_size,
+        label_horizon=settings.LABEL_HORIZON,
+    )
 
     all_y_true = []
     all_y_pred = []

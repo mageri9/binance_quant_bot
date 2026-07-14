@@ -43,3 +43,18 @@ def test_walk_forward_splitter_insufficient_data():
     splitter = TimeSeriesWalkForwardSplitter(train_size=10, test_size=5)
     splits = list(splitter.split(df))
     assert len(splits) == 0
+
+def test_walk_forward_splitter_label_horizon_trims_train():
+    df = pd.DataFrame(
+        {"timestamp": np.arange(100), "value": np.random.uniform(10, 20, 100)}
+    )
+    splitter = TimeSeriesWalkForwardSplitter(
+        train_size=50, test_size=10, step_size=10, label_horizon=5,
+    )
+    splits = list(splitter.split(df))
+
+    assert len(splits) == 5
+    for train_df, test_df, info in splits:
+        assert len(train_df) == 45  # 50 - label_horizon
+        assert info["train_size"] == 45
+        assert len(test_df) == 10  # test не трогаем
