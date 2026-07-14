@@ -45,7 +45,7 @@ async def status_handler(message: Message, session: AsyncSession):
                 current_close = klines[0].close
 
                 # Определяем направление сделки LONG или SHORT
-                is_short = False
+                is_short = active_trade.is_short
                 if active_trade.sl_price is not None:
                     is_short = active_trade.sl_price > active_trade.entry_price
                 elif active_trade.tp_price is not None:
@@ -198,11 +198,7 @@ async def report_handler(message: Message, session: AsyncSession):
 
     trade_returns = []
     for t in all_closed_trades:
-        is_short = False
-        if t.sl_price is not None:
-            is_short = t.sl_price > t.entry_price
-        elif t.tp_price is not None:
-            is_short = t.tp_price < t.entry_price
+        is_short = t.is_short
 
         if is_short:
             ret = (t.entry_price - t.exit_price) / t.entry_price

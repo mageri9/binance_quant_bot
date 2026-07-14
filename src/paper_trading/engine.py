@@ -47,23 +47,18 @@ class PaperTradingEngine:
         active_trade = await self.repo.get_active_trade(symbol)
 
         if active_trade:
-            # --- Логика ведения открытой позиции ---
-            # Математически определяем направление сделки без расширения схемы БД:
-            # Если SL выше цены входа (или TP ниже цены входа) — это SHORT.
-            is_short = False
-            if active_trade.sl_price is not None:
-                is_short = active_trade.sl_price > active_trade.entry_price
-            elif active_trade.tp_price is not None:
-                is_short = active_trade.tp_price < active_trade.entry_price
+            # Читаем направление напрямую из колонки в БД без хрупких эвристик!
+            is_short = active_trade.is_short
 
             if is_short:
                 # --- ЛОГИКА ДЛЯ SHORT-ПОЗИЦИИ ---
-                # 1. Проверяем Stop-Loss (для шорта это рост цены вверх)
                 if active_trade.sl_price and latest_high >= active_trade.sl_price:
                     pnl = (
                         active_trade.entry_price - active_trade.sl_price
                     ) * active_trade.amount
-                    await self.repo.close_trade(active_trade, active_trade.sl_price, pnl)
+                    await self.repo.close_trade(
+                        active_trade, active_trade.sl_price, pnl
+                    )
                     msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol} (SHORT). Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
                     logger.info(msg)
                     return msg
@@ -164,13 +159,10 @@ class PaperTradingEngine:
                 cal_tp = model_calibration.get("tp_pct", self.settings.PAPER_TP_PCT)
 
                 effective_sl_pct = sl_pct if sl_pct is not None else cal_sl
-                effective_tp_pct = (
-                    tp_pct if tp_pct is not None else cal_tp
-                )
+                effective_tp_pct = tp_pct if tp_pct is not None else cal_tp
 
                 # Рассчитываем уровни SL/TP в зависимости от направления
                 if signal == 1:
-                    # LONG: стоп-лосс внизу, тейк-профит вверху
                     sl_price = (
                         latest_close * (1.0 - effective_sl_pct)
                         if effective_sl_pct
@@ -181,16 +173,21 @@ class PaperTradingEngine:
                         if effective_tp_pct
                         else None
                     )
-                    pos_type = "Long"  # Было "LONG"
+                    pos_type = "Long"
+                    is_short = False
                 else:
-                    # SHORT: стоп-лосс вверху, тейк-профит внизу
                     sl_price = (
                         latest_close * (1.0 + effective_sl_pct)
                         if effective_sl_pct
                         else None
                     )
-                    tp_price = latest_close * (1.0 - effective_tp_pct) if effective_tp_pct else None
-                    pos_type = "Short"  # Было "SHORT"
+                    tp_price = (
+                        latest_close * (1.0 - effective_tp_pct)
+                        if effective_tp_pct
+                        else None
+                    )
+                    pos_type = "Short"
+                    is_short = True
 
                 await self.repo.create_trade(
                     symbol=symbol,
@@ -199,6 +196,7 @@ class PaperTradingEngine:
                     sl_price=sl_price,
                     tp_price=tp_price,
                     entry_candle_time=latest_open_time,
+                    is_short=is_short,
                 )
 
                 msg = (

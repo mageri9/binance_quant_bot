@@ -67,11 +67,7 @@ async def check_and_rollback_model(
 
     trade_returns = []
     for t in closed_trades:
-        is_short = False
-        if t.sl_price is not None:
-            is_short = t.sl_price > t.entry_price
-        elif t.tp_price is not None:
-            is_short = t.tp_price < t.entry_price
+        is_short = t.is_short
 
         if is_short:
             ret = (t.entry_price - t.exit_price) / t.entry_price

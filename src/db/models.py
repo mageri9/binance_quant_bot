@@ -83,7 +83,7 @@ class PaperTrade(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
-    status: Mapped[str] = mapped_column(String(10), default="OPEN", nullable=False)  # "OPEN" или "CLOSED"
+    status: Mapped[str] = mapped_column(String(10), default="OPEN", nullable=False)
     entry_price: Mapped[float] = mapped_column(nullable=False)
     entry_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -97,11 +97,9 @@ class PaperTrade(Base):
     tp_price: Mapped[float] = mapped_column(nullable=True)
     pnl: Mapped[float] = mapped_column(nullable=True)      # профит / лосс в долларах
     entry_candle_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_short: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="0")
 
-    def __repr__(self) -> str:
-        return f"<PaperTrade symbol={self.symbol} status={self.status} pnl={self.pnl}>"
 
-    
 class PredictionLog(Base):
     __tablename__ = "prediction_logs"
 

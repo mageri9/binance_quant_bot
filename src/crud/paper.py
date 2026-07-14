@@ -60,6 +60,7 @@ class PaperTradingRepository:
         sl_price: float | None,
         tp_price: float | None,
         entry_candle_time: int,
+        is_short: bool = False,  # ← ЯВНЫЙ ПАРАМЕТР
     ) -> PaperTrade:
         """
         Открывает новую виртуальную сделку и списывает средства со свободного кэша.
@@ -67,19 +68,13 @@ class PaperTradingRepository:
         portfolio = await self.get_portfolio()
         cost = entry_price * amount
 
-        # Проверка на наличие достаточного количества свободного кэша
         if portfolio.cash < cost:
             raise ValueError(
                 f"Недостаточно свободного кэша в портфеле. Требуется: {cost:.2f}$, Доступно: {portfolio.cash:.2f}$"
             )
 
-        # Списываем свободный кэш портфеля
         portfolio.cash -= cost
-
-        # Добавляем стоимость позиции
         portfolio.positions_value += cost
-
-        # Обновляем баланс (он должен остаться неизменным, так как мы просто переместили средства)
         portfolio.balance = portfolio.cash + portfolio.positions_value
 
         trade = PaperTrade(
@@ -90,6 +85,7 @@ class PaperTradingRepository:
             sl_price=sl_price,
             tp_price=tp_price,
             entry_candle_time=entry_candle_time,
+            is_short=is_short,  # ← СОХРАНЯЕМ В БД
         )
         self.session.add(trade)
         await self.session.commit()
