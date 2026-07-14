@@ -74,10 +74,13 @@ class PaperTradingEngine:
                     return msg
 
                 # 3. Проверяем выход по времени (Time Horizon)
-                candles_since_entry = latest_candles[
-                    latest_candles["open_time"] >= active_trade.entry_candle_time
+                candles_after_entry = latest_candles[
+                    latest_candles["open_time"] > active_trade.entry_candle_time
                 ]
-                if len(candles_since_entry) >= horizon:
+                # Семантика согласована с simulate_strategy: закрытие по таймауту
+                # происходит ровно через `horizon` свечей ПОСЛЕ свечи входа
+                # (свеча входа в счёт не идёт).
+                if len(candles_after_entry) >= horizon:
                     pnl = (active_trade.entry_price - latest_close) * active_trade.amount
                     await self.repo.close_trade(active_trade, latest_close, pnl)
                     msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol} (SHORT). Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
@@ -107,10 +110,13 @@ class PaperTradingEngine:
                     return msg
 
                 # 3. Проверяем выход по времени
-                candles_since_entry = latest_candles[
-                    latest_candles["open_time"] >= active_trade.entry_candle_time
+                candles_after_entry = latest_candles[
+                    latest_candles["open_time"] > active_trade.entry_candle_time
                 ]
-                if len(candles_since_entry) >= horizon:
+                # Семантика согласована с simulate_strategy: закрытие по таймауту
+                # происходит ровно через `horizon` свечей ПОСЛЕ свечи входа
+                # (свеча входа в счёт не идёт).
+                if len(candles_after_entry) >= horizon:
                     pnl = (latest_close - active_trade.entry_price) * active_trade.amount
                     await self.repo.close_trade(active_trade, latest_close, pnl)
                     msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol}. Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"

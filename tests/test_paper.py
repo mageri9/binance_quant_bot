@@ -484,3 +484,73 @@ async def test_paper_trading_short_sl_hit(temp_db_session):
     portfolio = await repo.get_portfolio()
     assert portfolio.balance == pytest.approx(9980.0)
     assert portfolio.cash == pytest.approx(9980.0)
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_timeout_exit_matches_backtest_semantics(temp_db_session):
+    """
+    Регрессия: движок закрывал позицию по таймауту на 1 свечу раньше,
+    чем simulate_strategy (i - entry_idx >= horizon). Проверяем, что
+    сделка НЕ закрывается на (horizon-1)-й свече после входа и
+    закрывается ровно на horizon-й.
+    """
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+    engine.settings.PAPER_RISK_PCT = 0.10
+
+    base_candles = pd.DataFrame({
+        "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+        "open": [100.0] * 35,
+        "high": [100.5] * 35,
+        "low": [99.5] * 35,
+        "close": [100.0] * 35,
+        "volume": [1000.0] * 35,
+    })
+
+    predictor = MockPredictor(signal=1)
+    horizon = 3
+
+    # Открываем позицию (SL/TP далеко, чтобы не сработали раньше времени)
+    await engine.process_market_update(
+        symbol="BTC/USDT", timeframe="1h",
+        latest_candles=base_candles, predictor=predictor,
+        sl_pct=0.5, tp_pct=0.5, horizon=horizon,
+    )
+    entry_trade = await repo.get_active_trade("BTC/USDT")
+    entry_time = entry_trade.entry_candle_time
+
+    # Свечи через 1 и 2 после входа (horizon-1) - сделка должна остаться открытой
+    for offset in range(1, horizon):
+        candles = pd.DataFrame({
+            "open_time": [entry_time + i * 3600 * 1000 for i in range(-32, offset + 1)],
+            "open": [100.0] * (33 + offset),
+            "high": [100.5] * (33 + offset),
+            "low": [99.5] * (33 + offset),
+            "close": [100.0] * (33 + offset),
+            "volume": [1000.0] * (33 + offset),
+        })
+        msg = await engine.process_market_update(
+            symbol="BTC/USDT", timeframe="1h",
+            latest_candles=candles, predictor=predictor,
+            sl_pct=0.5, tp_pct=0.5, horizon=horizon,
+        )
+        assert msg is None, f"Сделка закрылась раньше времени на offset={offset}"
+        assert await repo.get_active_trade("BTC/USDT") is not None
+
+    # Свеча через horizon после входа - сделка должна закрыться
+    candles = pd.DataFrame({
+        "open_time": [entry_time + i * 3600 * 1000 for i in range(-32, horizon + 1)],
+        "open": [100.0] * (33 + horizon),
+        "high": [100.5] * (33 + horizon),
+        "low": [99.5] * (33 + horizon),
+        "close": [100.0] * (33 + horizon),
+        "volume": [1000.0] * (33 + horizon),
+    })
+    msg = await engine.process_market_update(
+        symbol="BTC/USDT", timeframe="1h",
+        latest_candles=candles, predictor=predictor,
+        sl_pct=0.5, tp_pct=0.5, horizon=horizon,
+    )
+    assert msg is not None
+    assert "тайм-ауту" in msg
+    assert await repo.get_active_trade("BTC/USDT") is None
