@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 
 import numpy as np
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.pool import StaticPool
 
 from src.core.db import Base
 from src.crud.kline import KlineRepository
@@ -43,7 +44,6 @@ class FakeTripleModel:
     Заглушка модели для target_triple.
     Возвращает сырые (замапленные) классы {0, 1, 2}, как это делает
     настоящий LGBMClassifier после обучения на target_col="target_triple"
-    (см. train.py: is_multiclass -> {-1.0: 0, 0.0: 1, 1.0: 2}).
     """
 
     def predict(self, X):
@@ -54,18 +54,17 @@ class FakeTripleModel:
 @pytest.mark.asyncio
 async def test_get_best_calibration_decodes_triple_model_classes():
     """
-    Регрессионный тест на баг: calibrate.py скармливал сырые классы модели
-    ({0,1,2}) напрямую в simulate_strategy вместо декодированного сигнала
-    ({-1,0,1}), из-за чего grid search калибровал SL/TP под класс "Hold"
-    вместо реального Long/Short сигнала.
-
     Проверяем, что predicted_signal, попадающий в perform_grid_search,
     содержит только декодированные значения {-1.0, 0.0, 1.0}.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
-        # 1. Изолированная файловая БД (не :memory:, т.к. нужно несколько сессий)
-        db_path = os.path.join(tmpdir, "calib_test.db")
-        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        # Использование в памяти СУБД с StaticPool позволяет держать базу активной
+        # между разными сессиями и полностью решает проблему блокировки файлов в Windows
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            poolclass=StaticPool,
+            connect_args={"check_same_thread": False}
+        )
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         session_factory = async_sessionmaker(
@@ -133,8 +132,6 @@ async def test_get_best_calibration_decodes_triple_model_classes():
 
         assert "predicted_signal" in captured_df.columns
 
-        # Баг: старый код клал сюда сырые классы {0,1,2} -> набор значений
-        # включал бы 2.0, чего быть не должно.
         assert set(captured_df["predicted_signal"].unique()).issubset({-1.0, 0.0, 1.0})
 
         expected = pd.Series(
