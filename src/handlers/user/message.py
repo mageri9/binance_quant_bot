@@ -29,7 +29,8 @@ async def status_handler(message: Message, session: AsyncSession):
     settings = get_settings()
 
     active_trades_text = ""
-    has_any_active = False  # Флаг для проверки наличия хотя бы одной открытой сделки
+    has_any_active = False
+    total_positions_value = 0.0  # ← НОВОЕ
 
     for symbol, timeframe in settings.ACTIVE_CONFIGS:
         active_trade = await repo.get_active_trade(symbol)
@@ -61,9 +62,14 @@ async def status_handler(message: Message, session: AsyncSession):
                     ) * active_trade.amount
                     pos_type = "LONG 🟢"
 
+                # Считаем текущую стоимость позиции
+                current_position_value = active_trade.amount * current_close
+                total_positions_value += current_position_value
+
                 current_price_str = (
                     f"🎯 Текущая цена: <code>{current_close:.2f}$</code>\n"
                     f"💰 Текущий PnL: <code>{unrealized_pnl:+.2f}$</code>\n"
+                    f"💰 Стоимость позиции: <code>{current_position_value:.2f}$</code>\n"
                 )
             else:
                 pos_type = (
@@ -88,15 +94,18 @@ async def status_handler(message: Message, session: AsyncSession):
                 f"📭 <b>{symbol}:</b> <i>Вне рынка. Бот ожидает сигнала.</i>\n\n"
             )
 
-    # Дополнительная строка для полной обратной совместимости с тестами
     if not has_any_active:
         active_trades_text += (
             "📭 <i>Активных позиций нет. Бот находится вне рынка.</i>\n\n"
         )
 
+    # Обновляем баланс в объекте portfolio для отображения
+    portfolio.balance = portfolio.cash + portfolio.positions_value
+
     status_text = (
         f"📊 <b>Виртуальный портфель (Multi-Asset Paper Trading)</b>\n\n"
         f"💵 Свободный кэш: <code>{portfolio.cash:.2f}$</code>\n"
+        f"📊 Стоимость позиций: <code>{portfolio.positions_value:.2f}$</code>\n"
         f"📈 Общий баланс: <code>{portfolio.balance:.2f}$</code>\n\n"
         f"{active_trades_text}"
     )
