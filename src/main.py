@@ -3,6 +3,7 @@ import sys
 import os
 import pandas as pd
 import shutil
+import pickle
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher
