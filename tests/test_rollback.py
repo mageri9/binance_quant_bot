@@ -30,6 +30,9 @@ async def test_check_and_rollback_model_degradation(temp_db_session):
         mock_settings.ROLLBACK_WIN_RATE_THRESHOLD = 0.40
         mock_settings.ROLLBACK_MAX_DRAWDOWN_THRESHOLD = 0.10
 
+        # Обучаем мок возвращать правильный путь для временной модели (Quest 9)
+        mock_settings.get_model_path.return_value = model_path
+
         # Имитируем в БД 3 убыточные сделки (win_rate = 0%, drawdown большой)
         repo = PaperTradingRepository(temp_db_session)
         for i in range(3):
