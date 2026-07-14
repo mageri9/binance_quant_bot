@@ -15,6 +15,96 @@ class MockPredictor:
 
 
 @pytest.mark.asyncio
+async def test_portfolio_balance_with_open_position(temp_db_session):
+    """Проверяем, что баланс корректно отражает cash + positions_value"""
+    repo = PaperTradingRepository(temp_db_session)
+
+    # Начальный баланс
+    portfolio = await repo.get_portfolio()
+    assert portfolio.balance == 10000.0
+    assert portfolio.cash == 10000.0
+    assert portfolio.positions_value == 0.0
+
+    # Открываем позицию на 1000$
+    trade = await repo.create_trade(
+        symbol="BTC/USDT",
+        entry_price=100.0,
+        amount=10.0,
+        sl_price=90.0,
+        tp_price=110.0,
+        entry_candle_time=1000,
+    )
+
+    # Проверяем обновленный баланс
+    portfolio = await repo.get_portfolio()
+    assert portfolio.cash == 9000.0  # Уменьшился на 1000
+    assert portfolio.positions_value == 1000.0  # Появилась стоимость позиции
+    assert portfolio.balance == 10000.0  # Не изменился!
+
+    # Закрываем позицию с прибылью
+    await repo.close_trade(trade, exit_price=110.0, pnl=100.0)
+
+    # Проверяем финальный баланс
+    portfolio = await repo.get_portfolio()
+    assert portfolio.cash == 10100.0  # 9000 + 1000 + 100
+    assert portfolio.positions_value == 0.0  # Позиция закрыта
+    assert portfolio.balance == 10100.0  # Обновился!
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_dynamic_position_sizing(temp_db_session):
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+
+    # Переопределяем настройки для теста (риск 15% от баланса)
+    engine.settings.PAPER_RISK_PCT = 0.15
+    engine.settings.PAPER_MIN_ALLOCATION = 50.0
+
+    # Начальный баланс портфеля = 10000.0, свободный кэш = 10000.0
+    portfolio = await repo.get_portfolio()
+    assert portfolio.balance == 10000.0
+
+    dummy_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+
+    predictor = MockPredictor(signal=1)
+
+    # Запускаем без принудительного указания объема
+    msg = await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=dummy_candles,
+        predictor=predictor,
+        horizon=5,
+    )
+
+    assert msg is not None
+    assert "Открыта виртуальная Long-позиция" in msg
+
+    # Ожидаемый объем: 10000 * 15% = 1500.0$
+    # Количество монет: 1500.0 / 100.0 = 15.0
+    active_trade = await repo.get_active_trade("BTC/USDT")
+    assert active_trade is not None
+    assert active_trade.amount == pytest.approx(15.0)
+
+    # Проверяем списание кэша: 10000 - 1500 = 8500
+    # И стоимость позиции = 1500
+    portfolio = await repo.get_portfolio()
+    assert portfolio.cash == pytest.approx(8500.0)
+    assert portfolio.positions_value == pytest.approx(1500.0)
+    assert portfolio.balance == pytest.approx(10000.0)  # Не изменился!
+
+
+
+@pytest.mark.asyncio
 async def test_paper_trading_flow(temp_db_session):
     repo = PaperTradingRepository(temp_db_session)
     engine = PaperTradingEngine(temp_db_session)
