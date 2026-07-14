@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     PAPER_MIN_ALLOCATION: float = 1.0
 
     # Optuna Sizing parameters
-    OPTUNA_TUNING_ENABLED: bool = False
+    OPTUNA_TUNING_ENABLED: bool = True
     OPTUNA_TRIALS: int = 15
 
     # Model Rollback SRE parameters
