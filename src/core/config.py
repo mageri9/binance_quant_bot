@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     PAPER_RISK_PCT: float = 0.10
     PAPER_MIN_ALLOCATION: float = 1.0
 
+    # Optuna Sizing parameters
+    OPTUNA_TUNING_ENABLED: bool = False
+    OPTUNA_TRIALS: int = 15
+
     class Config:
         env_file = get_env_path()
         env_file_encoding = "utf-8"
