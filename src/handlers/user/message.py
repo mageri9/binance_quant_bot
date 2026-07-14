@@ -99,8 +99,9 @@ async def status_handler(message: Message, session: AsyncSession):
             "📭 <i>Активных позиций нет. Бот находится вне рынка.</i>\n\n"
         )
 
-    # Обновляем баланс в объекте portfolio для отображения
-    portfolio.balance = portfolio.cash + portfolio.positions_value
+    # Обновляем стоимость позиций и баланс динамически на основе текущих рыночных котировок
+    portfolio.positions_value = total_positions_value
+    portfolio.balance = portfolio.cash + total_positions_value
 
     status_text = (
         f"📊 <b>Виртуальный портфель (Multi-Asset Paper Trading)</b>\n\n"
