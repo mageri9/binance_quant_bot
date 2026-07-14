@@ -104,8 +104,8 @@ class PaperTradingRepository:
         stmt = (
             select(PaperTrade)
             .where(PaperTrade.symbol == symbol, PaperTrade.status == "CLOSED")
-            .order_by(PaperTrade.entry_candle_time.asc())
+            .order_by(PaperTrade.entry_candle_time.desc())
             .limit(limit)
         )
         res = await self.session.execute(stmt)
-        return list(res.scalars().all())
+        return list(reversed(res.scalars().all()))
