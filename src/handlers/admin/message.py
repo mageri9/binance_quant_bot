@@ -1,4 +1,5 @@
 import html
+import asyncio
 
 from aiogram import Router
 from aiogram.filters import Command, StateFilter
@@ -96,6 +97,10 @@ async def broadcast_text_handler(
                 failed_count += 1
         except Exception:
             failed_count += 1
+        finally:
+            # Троттлинг рассылки: задержка в 0.05 сек гарантирует, что мы отправляем не более
+            # 20 сообщений в секунду, надежно защищая бота от лимитов Telegram (429 HTTP API)
+            await asyncio.sleep(0.05)
 
     await message.answer(
         f"✅ <b>Рассылка успешно завершена!</b>\n\n"
