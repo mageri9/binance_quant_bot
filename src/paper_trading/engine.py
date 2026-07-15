@@ -7,6 +7,19 @@ from src.core.config import get_settings
 from src.crud.paper import PaperTradingRepository, _get_portfolio_lock
 
 
+def get_timeframe_ms(timeframe: str) -> int:
+    """Конвертирует строку таймфрейма в миллисекунды."""
+    unit = timeframe[-1]
+    value = int(timeframe[:-1])
+    if unit == "m":
+        return value * 60 * 1000
+    elif unit == "h":
+        return value * 60 * 60 * 1000
+    elif unit == "d":
+        return value * 24 * 60 * 60 * 1000
+    return 3600 * 1000  # Дефолт 1 час
+
+
 class PaperTradingEngine:
     """
     Движок виртуальной торговли (Paper trading).
@@ -57,6 +70,18 @@ class PaperTradingEngine:
             async with _get_portfolio_lock():
                 is_short = active_trade.is_short
 
+                # Проверка таймаута сделки с SRE-защитой (резервный фолбэк для старых сделок)
+                is_timeout = False
+                if active_trade.timeout_candle_time is not None:
+                    if latest_open_time >= active_trade.timeout_candle_time:
+                        is_timeout = True
+                else:
+                    candles_after_entry = latest_candles[
+                        latest_candles["open_time"] > active_trade.entry_candle_time
+                    ]
+                    if len(candles_after_entry) >= effective_horizon:
+                        is_timeout = True
+
                 if is_short:
                     # --- ЛОГИКА ДЛЯ SHORT-ПОЗИЦИИ ---
                     if active_trade.sl_price and latest_high >= active_trade.sl_price:
@@ -81,10 +106,7 @@ class PaperTradingEngine:
                         logger.info(msg)
                         return msg
 
-                    candles_after_entry = latest_candles[
-                        latest_candles["open_time"] > active_trade.entry_candle_time
-                    ]
-                    if len(candles_after_entry) >= effective_horizon:
+                    if is_timeout:
                         pnl = (
                             active_trade.entry_price - latest_close
                         ) * active_trade.amount
@@ -117,10 +139,7 @@ class PaperTradingEngine:
                         logger.info(msg)
                         return msg
 
-                    candles_after_entry = latest_candles[
-                        latest_candles["open_time"] > active_trade.entry_candle_time
-                    ]
-                    if len(candles_after_entry) >= effective_horizon:
+                    if is_timeout:
                         pnl = (
                             latest_close - active_trade.entry_price
                         ) * active_trade.amount
@@ -193,6 +212,10 @@ class PaperTradingEngine:
                         pos_type = "Short"
                         is_short = True
 
+                    # Рассчитываем время таймаута сделки
+                    timeframe_ms = get_timeframe_ms(timeframe)
+                    timeout_candle_time = latest_open_time + (effective_horizon * timeframe_ms)
+
                     await self.repo.create_trade(
                         symbol=symbol,
                         entry_price=latest_close,
@@ -201,6 +224,7 @@ class PaperTradingEngine:
                         tp_price=tp_price,
                         entry_candle_time=latest_open_time,
                         is_short=is_short,
+                        timeout_candle_time=timeout_candle_time,
                     )
 
                 sl_str = f"{sl_price:.2f}" if sl_price is not None else "-"

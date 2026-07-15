@@ -120,6 +120,7 @@ class PaperTradingRepository:
         tp_price: float | None,
         entry_candle_time: int,
         is_short: bool = False,
+        timeout_candle_time: int | None = None,
     ) -> PaperTrade:
         """
         Открывает новую виртуальную сделку и списывает средства со свободного кэша.
@@ -147,6 +148,7 @@ class PaperTradingRepository:
                 tp_price=tp_price,
                 entry_candle_time=entry_candle_time,
                 is_short=is_short,
+                timeout_candle_time=timeout_candle_time,
             )
             self.session.add(trade)
             await self.session.commit()

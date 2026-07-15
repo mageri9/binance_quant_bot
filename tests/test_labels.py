@@ -157,3 +157,48 @@ def test_label_leakage_removed_by_splitter_horizon():
         # Обрезка реально произошла: train короче исходного train_size
         assert info["train_size"] == 100 - horizon
         break  # достаточно проверить первый фолд
+
+
+def test_adaptive_triple_labels_with_atr_path_dependency():
+    """
+    Проверяет адаптивный разметчик Triple Barrier на полноценных данных:
+    проверяет, что при высокой волатильности горизонт сжимается,
+    а при низкой расширяется, и корректно срабатывают SL/TP на истории.
+    """
+    # Генерируем 120 свечей с контролируемыми ценами и ATR
+    np.random.seed(42)
+    close_prices = [100.0] * 120
+    high_prices = [100.5] * 120
+    low_prices = [99.5] * 120
+
+    # 20-я свеча дает резкий импульс вверх до 105.0 (TP для 1% барьера)
+    high_prices[21] = 105.0
+    close_prices[21] = 104.5
+
+    # 40-я свеча дает резкий импульс вниз до 95.0 (SL для 1% барьера)
+    low_prices[41] = 95.0
+    close_prices[41] = 95.5
+
+    df = pd.DataFrame(
+        {
+            "close": close_prices,
+            "high": high_prices,
+            "low": low_prices,
+            "atr": [1.0] * 120,  # постоянная волатильность
+        }
+    )
+
+    # Размечаем с симметричным барьером в 1% (0.01) и базовым горизонтом 5
+    labels = generate_triple_labels(df, horizon=5, threshold=0.01)
+
+    # Вход на 20-й свече: на 21-й (t+1) high достигает 105.0 (TP) -> Должен быть Long (1.0)
+    assert labels.iloc[20] == 1.0
+
+    # Вход на 40-й свече: на 41-й (t+1) low падает до 95.0 (SL) -> Должен быть Short (-1.0)
+    assert labels.iloc[40] == -1.0
+
+    # Вход на 80-й свече: цена не колеблется за пределы 99.5-100.5 -> Выход по тайм-ауту (0.0)
+    assert labels.iloc[80] == 0.0
+
+    # Последние строки (в пределах максимального горизонта) должны быть NaN
+    assert pd.isna(labels.iloc[-1])

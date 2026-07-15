@@ -98,6 +98,7 @@ class PaperTrade(Base):
     pnl: Mapped[float] = mapped_column(nullable=True)      # профит / лосс в долларах
     entry_candle_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_short: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="0")
+    timeout_candle_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class PredictionLog(Base):
