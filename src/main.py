@@ -336,9 +336,6 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             train_size=settings.TRAIN_SIZE,
             test_size=settings.TEST_SIZE,
         )
-        # ВАЖНО: baseline_f1 должен быть посчитан ДО вызова run_lgbm_experiment,
-        # так как Quality Gate внутри run_lgbm_experiment сравнивает holdout F1
-        # новой модели именно с этим значением.
         baseline_f1 = baseline_result["metrics"]["f1"]
 
         lgbm_result = await run_lgbm_experiment(
@@ -364,6 +361,13 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             if os_dir:
                 os.makedirs(os_dir, exist_ok=True)
 
+            # Инициализируем базовое сообщение
+            msg = (
+                f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
+                f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
+                f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n"
+            )
+
             # --- АВТОМАТИЧЕСКАЯ КАЛИБРОВКА И ВШИВАНИЕ РИСКОВ В АРТЕФАКТ ---
             try:
                 from scripts.calibrate import get_best_calibration
@@ -372,6 +376,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     symbol, timeframe, custom_model_path=lgbm_result["model_path"],
                 )
 
+                # Открываем артефакт в staging, обновляем параметры калибровки
                 with open(lgbm_result["model_path"], "rb") as f:
                     artifact = pickle.load(f)
 
@@ -384,12 +389,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 with open(lgbm_result["model_path"], "wb") as f:
                     pickle.dump(artifact, f)
 
-                msg = (
-                    f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
-                    f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
-                    f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n\n"
-                    f"{cal_report}"
-                )
+                # Добавляем отчет калибровки к Telegram-сообщению
+                msg += f"\n{cal_report}"
                 logger.info(
                     f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}"
                 )
@@ -425,14 +426,9 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
             except Exception as cal_err:
                 logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
-                msg = (
-                    f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
-                    f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
-                    f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n\n"
-                    f"⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
-                )
+                msg += f"\n\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
 
-            # --- Бэкап старой модели перед заменой ---
+            # --- Бэкап старой продакшн-модели перед заменой ---
             if os.path.exists(model_path):
                 clean_symbol = symbol.replace("/", "").replace(":", "")
                 clean_tf = timeframe.replace("/", "")
@@ -449,26 +445,9 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 except Exception as copy_err:
                     logger.error(f"Не удалось скопировать бэкап для {symbol}: {copy_err}")
 
+            # Финально копируем упакованный и откалиброванный артефакт в продакшн
             shutil.copy(lgbm_result["model_path"], model_path)
-
-            msg = (
-                f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
-                f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
-                f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n"
-            )
-            logger.info(msg)
-
-            try:
-                from scripts.calibrate import get_best_calibration
-
-                best_sl, best_tp, cal_report = await get_best_calibration(symbol, timeframe)
-                msg += f"\n{cal_report}"
-                logger.info(
-                    f"[Retrain v{version} - {symbol}] Автокалибровка завершена: SL={best_sl:.1%}, TP={best_tp:.1%}"
-                )
-            except Exception as cal_err:
-                logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
-                msg += f"\n\n⚠️ Автокалибровка завершилась с ошибкой для {symbol}: {cal_err}"
+            logger.info(f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}")
 
         for admin_id in settings.ADMIN_IDS:
             try:
