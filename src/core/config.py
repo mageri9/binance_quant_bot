@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # Retraining
     RETRAIN_INTERVAL_SECONDS: int = 86400  # раз в сутки
-    MIN_KLINES_FOR_TRAIN: int = 1200  # train_size + test_size с запасом
+    MIN_KLINES_FOR_TRAIN: int = 1300
     TRAIN_SIZE: int = 1000
     TEST_SIZE: int = 200
     LABEL_HORIZON: int = 5
@@ -62,7 +62,6 @@ class Settings(BaseSettings):
         ("SOL/USDT", "1h"),
     ]
 
-    ROLLBACK_MAX_DRAWDOWN_THRESHOLD: float = 0.15
     CALIBRATION_MIN_TRADES: int = 10
 
     def get_model_path(self, symbol: str, timeframe: str) -> str:

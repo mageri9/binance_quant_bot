@@ -256,7 +256,7 @@ async def test_paper_trading_default_sl_tp(temp_db_session):
 
 
 @pytest.mark.asyncio
-async def test_paper_trading_dynamic_position_sizing(temp_db_session):
+async def test_paper_trading_dynamic_position_sizing_alternative(temp_db_session):
     repo = PaperTradingRepository(temp_db_session)
     engine = PaperTradingEngine(temp_db_session)
 

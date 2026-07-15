@@ -30,6 +30,9 @@ def _atomic_copy(src: str, dst: str) -> None:
     shutil.copy(src, tmp)
     os.replace(tmp, dst)
 
+
+nexus = None
+
 # Мягкая SRE интеграция
 try:
     from nexus_sdk import NexusSDK
@@ -55,6 +58,8 @@ async def check_and_rollback_model(
 
     settings = get_settings()
     model_path = settings.get_model_path(symbol, timeframe)
+
+    redis = None  # Инициализируем для предотвращения UnboundLocalError / NameError при сбое get_redis()
 
     # 1. Проверяем кулдаун отката по этой паре в Redis
     try:
@@ -157,9 +162,10 @@ async def check_and_rollback_model(
 
             try:
                 # Включаем кулдаун проверок на 24 часа для сбора новой статистики
-                await redis.setex(
-                    f"model_rollback_cooldown:{symbol}:{timeframe}", 86400, "1"
-                )
+                if redis is not None:
+                    await redis.setex(
+                        f"model_rollback_cooldown:{symbol}:{timeframe}", 86400, "1"
+                    )
             except Exception as re_err:
                 logger.error(
                     f"Не удалось записать кулдаун SRE-отката для {symbol}: {re_err}"
