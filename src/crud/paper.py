@@ -1,8 +1,24 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
+from weakref import WeakKeyDictionary
+import asyncio
 
 from src.db.models import PaperPortfolio, PaperTrade, PredictionLog
+
+# Общий на процесс лок для синхронизации операций с балансом портфеля.
+# Каждому event loop выделяется свой изолированный лок (необходимо для тестов).
+_portfolio_locks: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = WeakKeyDictionary()
+
+
+def _get_portfolio_lock() -> asyncio.Lock:
+    """Возвращает лок, привязанный к текущему запущенному event loop."""
+    loop = asyncio.get_running_loop()
+    lock = _portfolio_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _portfolio_locks[loop] = lock
+    return lock
 
 
 class PaperTradingRepository:
@@ -12,18 +28,25 @@ class PaperTradingRepository:
     async def get_portfolio(self) -> PaperPortfolio:
         """
         Загружает данные портфеля. Если портфель пуст, создаёт новый с балансом $10 000.
+        Использует Double-Checked Locking для безопасной инициализации.
         """
         stmt = select(PaperPortfolio).limit(1)
         res = await self.session.execute(stmt)
         portfolio = res.scalar_one_or_none()
 
         if not portfolio:
-            portfolio = PaperPortfolio(
-                balance=10000.0, cash=10000.0, positions_value=0.0
-            )
-            self.session.add(portfolio)
-            await self.session.commit()
-            await self.session.refresh(portfolio)
+            async with _get_portfolio_lock():
+                # Повторная проверка под локом
+                res2 = await self.session.execute(select(PaperPortfolio).limit(1))
+                portfolio = res2.scalar_one_or_none()
+
+                if not portfolio:
+                    portfolio = PaperPortfolio(
+                        balance=10000.0, cash=10000.0, positions_value=0.0
+                    )
+                    self.session.add(portfolio)
+                    await self.session.commit()
+                    await self.session.refresh(portfolio)
 
         # Пересчитываем баланс на основе cash + positions_value
         portfolio.balance = portfolio.cash + portfolio.positions_value
@@ -60,72 +83,74 @@ class PaperTradingRepository:
         sl_price: float | None,
         tp_price: float | None,
         entry_candle_time: int,
-        is_short: bool = False,  # ← ЯВНЫЙ ПАРАМЕТР
+        is_short: bool = False,
     ) -> PaperTrade:
         """
         Открывает новую виртуальную сделку и списывает средства со свободного кэша.
+        Выполняется строго под локом портфеля.
         """
-        portfolio = await self.get_portfolio()
-        cost = entry_price * amount
+        async with _get_portfolio_lock():
+            portfolio = await self.get_portfolio()
+            cost = entry_price * amount
 
-        if portfolio.cash < cost:
-            raise ValueError(
-                f"Недостаточно свободного кэша в портфеле. Требуется: {cost:.2f}$, Доступно: {portfolio.cash:.2f}$"
+            if portfolio.cash < cost:
+                raise ValueError(
+                    f"Недостаточно свободного кэша в портфеле. Требуется: {cost:.2f}$, Доступно: {portfolio.cash:.2f}$"
+                )
+
+            portfolio.cash -= cost
+            portfolio.positions_value += cost
+            portfolio.balance = portfolio.cash + portfolio.positions_value
+
+            trade = PaperTrade(
+                symbol=symbol,
+                status="OPEN",
+                entry_price=entry_price,
+                amount=amount,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                entry_candle_time=entry_candle_time,
+                is_short=is_short,
             )
-
-        portfolio.cash -= cost
-        portfolio.positions_value += cost
-        portfolio.balance = portfolio.cash + portfolio.positions_value
-
-        trade = PaperTrade(
-            symbol=symbol,
-            status="OPEN",
-            entry_price=entry_price,
-            amount=amount,
-            sl_price=sl_price,
-            tp_price=tp_price,
-            entry_candle_time=entry_candle_time,
-            is_short=is_short,  # ← СОХРАНЯЕМ В БД
-        )
-        self.session.add(trade)
-        await self.session.commit()
-        await self.session.refresh(trade)
-        return trade
+            self.session.add(trade)
+            await self.session.commit()
+            await self.session.refresh(trade)
+            return trade
 
     async def close_trade(
         self, trade: PaperTrade, exit_price: float, pnl: float
     ) -> None:
         """
         Закрывает сделку, возвращает кэш обратно на баланс и фиксирует финансовый результат.
+        Выполняется строго под локом портфеля.
         """
-        trade.status = "CLOSED"
-        trade.exit_price = exit_price
-        trade.exit_time = datetime.now(timezone.utc)
-        trade.pnl = pnl
+        async with _get_portfolio_lock():
+            trade.status = "CLOSED"
+            trade.exit_price = exit_price
+            trade.exit_time = datetime.now(timezone.utc)
+            trade.pnl = pnl
 
-        portfolio = await self.get_portfolio()
+            portfolio = await self.get_portfolio()
 
-        # Получаем стоимость позиции
-        position_value = trade.entry_price * trade.amount
+            # Получаем стоимость позиции
+            position_value = trade.entry_price * trade.amount
 
-        # Возвращаем стоимость позиции и прибавляем PnL
-        portfolio.cash += position_value + pnl
+            # Возвращаем стоимость позиции и прибавляем PnL
+            portfolio.cash += position_value + pnl
 
-        # Убираем стоимость позиции
-        portfolio.positions_value -= position_value
+            # Убираем стоимость позиции
+            portfolio.positions_value -= position_value
 
-        # Обновляем баланс
-        portfolio.balance = portfolio.cash + portfolio.positions_value
+            # Обновляем баланс
+            portfolio.balance = portfolio.cash + portfolio.positions_value
 
-        await self.session.commit()
+            await self.session.commit()
 
     async def get_closed_trades(
         self, symbol: str, limit: int = 500
     ) -> list[PaperTrade]:
         """
         Возвращает историю закрытых сделок по паре (от старых к новым).
-        Используется для расчёта стратегических метрик (Sharpe, Drawdown и т.д.)
-        по фактическим результатам paper trading, а не по бэктесту.
         """
         stmt = (
             select(PaperTrade)

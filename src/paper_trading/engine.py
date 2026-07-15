@@ -4,29 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
-from src.crud.paper import PaperTradingRepository
-from src.db.models import PaperTrade
-from weakref import WeakKeyDictionary
-
-import asyncio
-
-# Общий на процесс лок: три параллельных paper_trading_loop (по одному на
-# символ) создают собственные экземпляры PaperTradingEngine, но все они
-# читают и пишут один и тот же PaperPortfolio. Без общего лока возможна
-# гонка между get_portfolio() в одной задаче и commit() в другой, если
-# оба тика (все loop стартуют почти синхронно) попадают в одно и то же
-# часовое окно.
-_portfolio_locks: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = WeakKeyDictionary()
-
-def _get_portfolio_lock() -> asyncio.Lock:
-    """Лок на event loop: в проде один процесс = один loop = один лок на весь рантайм.
-    В тестах каждый event loop получает свой собственный лок, без привязки к чужому."""
-    loop = asyncio.get_running_loop()
-    lock = _portfolio_locks.get(loop)
-    if lock is None:
-        lock = asyncio.Lock()
-        _portfolio_locks[loop] = lock
-    return lock
+from src.crud.paper import PaperTradingRepository, _get_portfolio_lock
 
 
 class PaperTradingEngine:
@@ -147,13 +125,11 @@ class PaperTradingEngine:
 
         else:
             # --- Логика открытия новой позиции ---
-
             signal = predictor.predict(latest_candles)
 
             if signal in [1, -1]:
                 async with _get_portfolio_lock():
                     portfolio = await self.repo.get_portfolio()
-
                     effective_trade_allocation = trade_allocation
 
                     if effective_trade_allocation is None:
@@ -166,9 +142,7 @@ class PaperTradingEngine:
                             f"⚠️ [PAPER] Расчитанный объем сделки ({effective_trade_allocation:.2f}$) "
                             f"меньше минимально допустимого ({self.settings.PAPER_MIN_ALLOCATION:.2f}$)."
                         )
-
                         logger.warning(msg)
-
                         return msg
 
                     if portfolio.cash < effective_trade_allocation:
@@ -176,21 +150,15 @@ class PaperTradingEngine:
                             f"⚠️ [PAPER] Недостаточно кэша для сделки по {symbol}. "
                             f"Нужно: {effective_trade_allocation:.2f}$, Свободно: {portfolio.cash:.2f}$"
                         )
-
                         logger.warning(msg)
-
                         return msg
 
                     amount = effective_trade_allocation / latest_close
-
                     model_calibration = getattr(predictor, "calibration", {})
-
                     cal_sl = model_calibration.get("sl_pct", self.settings.PAPER_SL_PCT)
-
                     cal_tp = model_calibration.get("tp_pct", self.settings.PAPER_TP_PCT)
 
                     effective_sl_pct = sl_pct if sl_pct is not None else cal_sl
-
                     effective_tp_pct = tp_pct if tp_pct is not None else cal_tp
 
                     if signal == 1:
@@ -199,32 +167,25 @@ class PaperTradingEngine:
                             if effective_sl_pct is not None
                             else None
                         )
-
                         tp_price = (
                             latest_close * (1.0 + effective_tp_pct)
                             if effective_tp_pct is not None
                             else None
                         )
-
                         pos_type = "Long"
-
                         is_short = False
-
                     else:
                         sl_price = (
                             latest_close * (1.0 + effective_sl_pct)
                             if effective_sl_pct is not None
                             else None
                         )
-
                         tp_price = (
                             latest_close * (1.0 - effective_tp_pct)
                             if effective_tp_pct is not None
                             else None
                         )
-
                         pos_type = "Short"
-
                         is_short = True
 
                     await self.repo.create_trade(
@@ -244,10 +205,7 @@ class PaperTradingEngine:
                     f"Размер сделки: {effective_trade_allocation:.2f}$. "
                     f"Количество монет: {amount:.6f}. SL: {sl_str}, TP: {tp_str}"
                 )
-
                 logger.info(msg)
-
                 return msg
-
 
             return None

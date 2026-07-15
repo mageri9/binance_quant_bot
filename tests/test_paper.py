@@ -669,20 +669,81 @@ async def test_paper_trading_concurrent_close_no_balance_loss(temp_db_session):
 async def test_paper_trading_zero_sl_pct_not_treated_as_none(temp_db_session):
     """sl_pct=0.0 раньше трактовался как 'нет SL' из-за truthiness-бага."""
     engine = PaperTradingEngine(temp_db_session)
-    dummy_candles = pd.DataFrame({
-        "open_time": [1672531200000 + i * 3600000 for i in range(35)],
-        "open": [100.0] * 35, "high": [100.5] * 35,
-        "low": [99.5] * 35, "close": [100.0] * 35,
-        "volume": [1000.0] * 35,
-    })
+    dummy_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
     predictor = MockPredictor(signal=1)
 
     await engine.process_market_update(
-        symbol="BTC/USDT", timeframe="1h",
-        latest_candles=dummy_candles, predictor=predictor,
-        sl_pct=0.0, tp_pct=0.04, trade_allocation=1000.0,
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=dummy_candles,
+        predictor=predictor,
+        sl_pct=0.0,
+        tp_pct=0.04,
+        trade_allocation=1000.0,
     )
 
     repo = PaperTradingRepository(temp_db_session)
     trade = await repo.get_active_trade("BTC/USDT")
     assert trade.sl_price == pytest.approx(100.0)  # не None
+
+
+@pytest.mark.asyncio
+async def test_repository_concurrent_close_no_lost_updates(temp_db_session):
+    """
+    Проверяет, что при одновременном вызове close_trade из разных сессий/задач
+    напрямую через репозиторий баланс портфеля не повреждается и сохраняет консистентность.
+    """
+    repo = PaperTradingRepository(temp_db_session)
+
+    # 1. Задаем исходное состояние портфеля
+    portfolio = await repo.get_portfolio()
+    assert portfolio.balance == 10000.0
+
+    # 2. Создаем две сделки (по одной на сессию/символ)
+    trade_btc = await repo.create_trade(
+        symbol="BTC/USDT",
+        entry_price=100.0,
+        amount=10.0,
+        sl_price=90.0,
+        tp_price=110.0,
+        entry_candle_time=1000,
+    )
+    trade_eth = await repo.create_trade(
+        symbol="ETH/USDT",
+        entry_price=50.0,
+        amount=10.0,
+        sl_price=40.0,
+        tp_price=60.0,
+        entry_candle_time=1000,
+    )
+
+    # Состояние портфеля с открытыми сделками:
+    # BTC_value = 1000, ETH_value = 500. Всего positions_value = 1500
+    # cash = 10000 - 1500 = 8500
+    portfolio = await repo.get_portfolio()
+    assert portfolio.cash == 8500.0
+    assert portfolio.positions_value == 1500.0
+
+    # Имитируем одновременное закрытие (одна с прибылью, другая с убытком)
+    # BTC закрывается по 105. PnL: +50$
+    # ETH закрывается по 45. PnL: -50$
+    # Ожидаемый итоговый cash после двух закрытий: 8500 + (1000 + 50) + (500 - 50) = 10000$
+
+    await asyncio.gather(
+        repo.close_trade(trade_btc, exit_price=105.0, pnl=50.0),
+        repo.close_trade(trade_eth, exit_price=45.0, pnl=-50.0)
+    )
+
+    portfolio_final = await repo.get_portfolio()
+    assert portfolio_final.cash == 10000.0
+    assert portfolio_final.positions_value == 0.0
+    assert portfolio_final.balance == 10000.0
