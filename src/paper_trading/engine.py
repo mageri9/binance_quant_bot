@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import get_settings
 from src.crud.paper import PaperTradingRepository
 from src.db.models import PaperTrade
+from weakref import WeakKeyDictionary
 
 import asyncio
 
@@ -15,7 +16,17 @@ import asyncio
 # гонка между get_portfolio() в одной задаче и commit() в другой, если
 # оба тика (все loop стартуют почти синхронно) попадают в одно и то же
 # часовое окно.
-_portfolio_lock = asyncio.Lock()
+_portfolio_locks: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = WeakKeyDictionary()
+
+def _get_portfolio_lock() -> asyncio.Lock:
+    """Лок на event loop: в проде один процесс = один loop = один лок на весь рантайм.
+    В тестах каждый event loop получает свой собственный лок, без привязки к чужому."""
+    loop = asyncio.get_running_loop()
+    lock = _portfolio_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _portfolio_locks[loop] = lock
+    return lock
 
 
 class PaperTradingEngine:
@@ -57,83 +68,82 @@ class PaperTradingEngine:
         active_trade = await self.repo.get_active_trade(symbol)
 
         if active_trade:
-            # Читаем направление напрямую из колонки в БД без хрупких эвристик!
-            is_short = active_trade.is_short
+            async with _get_portfolio_lock():
+                is_short = active_trade.is_short
 
-            if is_short:
-                # --- ЛОГИКА ДЛЯ SHORT-ПОЗИЦИИ ---
-                if active_trade.sl_price and latest_high >= active_trade.sl_price:
-                    pnl = (
-                        active_trade.entry_price - active_trade.sl_price
-                    ) * active_trade.amount
-                    await self.repo.close_trade(
-                        active_trade, active_trade.sl_price, pnl
-                    )
-                    msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol} (SHORT). Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
-                    logger.info(msg)
-                    return msg
+                if is_short:
+                    # --- ЛОГИКА ДЛЯ SHORT-ПОЗИЦИИ ---
+                    if active_trade.sl_price and latest_high >= active_trade.sl_price:
+                        pnl = (
+                            active_trade.entry_price - active_trade.sl_price
+                        ) * active_trade.amount
+                        await self.repo.close_trade(
+                            active_trade, active_trade.sl_price, pnl
+                        )
+                        msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol} (SHORT). Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
+                        logger.info(msg)
+                        return msg
 
-                # 2. Проверяем Take-Profit (для шорта это падение цены вниз)
-                if active_trade.tp_price and latest_low <= active_trade.tp_price:
-                    pnl = (
-                        active_trade.entry_price - active_trade.tp_price
-                    ) * active_trade.amount
-                    await self.repo.close_trade(active_trade, active_trade.tp_price, pnl)
-                    msg = f"🟢 [PAPER] Сработал Take-Profit по {symbol} (SHORT). Сделка закрыта по {active_trade.tp_price:.2f}. PnL: {pnl:.2f}$"
-                    logger.info(msg)
-                    return msg
+                    if active_trade.tp_price and latest_low <= active_trade.tp_price:
+                        pnl = (
+                            active_trade.entry_price - active_trade.tp_price
+                        ) * active_trade.amount
+                        await self.repo.close_trade(
+                            active_trade, active_trade.tp_price, pnl
+                        )
+                        msg = f"🟢 [PAPER] Сработал Take-Profit по {symbol} (SHORT). Сделка закрыта по {active_trade.tp_price:.2f}. PnL: {pnl:.2f}$"
+                        logger.info(msg)
+                        return msg
 
-                # 3. Проверяем выход по времени (Time Horizon)
-                candles_after_entry = latest_candles[
-                    latest_candles["open_time"] > active_trade.entry_candle_time
-                ]
-                # Семантика согласована с simulate_strategy: закрытие по таймауту
-                # происходит ровно через `horizon` свечей ПОСЛЕ свечи входа
-                # (свеча входа в счёт не идёт).
-                if len(candles_after_entry) >= horizon:
-                    pnl = (active_trade.entry_price - latest_close) * active_trade.amount
-                    await self.repo.close_trade(active_trade, latest_close, pnl)
-                    msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol} (SHORT). Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
-                    logger.info(msg)
-                    return msg
+                    candles_after_entry = latest_candles[
+                        latest_candles["open_time"] > active_trade.entry_candle_time
+                    ]
+                    if len(candles_after_entry) >= horizon:
+                        pnl = (
+                            active_trade.entry_price - latest_close
+                        ) * active_trade.amount
+                        await self.repo.close_trade(active_trade, latest_close, pnl)
+                        msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol} (SHORT). Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
+                        logger.info(msg)
+                        return msg
 
-            else:
-                # --- ЛОГИКА ДЛЯ LONG-ПОЗИЦИИ (Базовая) ---
-                # 1. Проверяем Stop-Loss
-                if active_trade.sl_price and latest_low <= active_trade.sl_price:
-                    pnl = (
-                        active_trade.sl_price - active_trade.entry_price
-                    ) * active_trade.amount
-                    await self.repo.close_trade(active_trade, active_trade.sl_price, pnl)
-                    msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol}. Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
-                    logger.info(msg)
-                    return msg
+                else:
+                    # --- ЛОГИКА ДЛЯ LONG-ПОЗИЦИИ ---
+                    if active_trade.sl_price and latest_low <= active_trade.sl_price:
+                        pnl = (
+                            active_trade.sl_price - active_trade.entry_price
+                        ) * active_trade.amount
+                        await self.repo.close_trade(
+                            active_trade, active_trade.sl_price, pnl
+                        )
+                        msg = f"🔴 [PAPER] Сработал Stop-Loss по {symbol}. Сделка закрыта по {active_trade.sl_price:.2f}. PnL: {pnl:.2f}$"
+                        logger.info(msg)
+                        return msg
 
-                # 2. Проверяем Take-Profit
-                if active_trade.tp_price and latest_high >= active_trade.tp_price:
-                    pnl = (
-                        active_trade.tp_price - active_trade.entry_price
-                    ) * active_trade.amount
-                    await self.repo.close_trade(active_trade, active_trade.tp_price, pnl)
-                    msg = f"🟢 [PAPER] Сработал Take-Profit по {symbol}. Сделка закрыта по {active_trade.tp_price:.2f}. PnL: {pnl:.2f}$"
-                    logger.info(msg)
-                    return msg
+                    if active_trade.tp_price and latest_high >= active_trade.tp_price:
+                        pnl = (
+                            active_trade.tp_price - active_trade.entry_price
+                        ) * active_trade.amount
+                        await self.repo.close_trade(
+                            active_trade, active_trade.tp_price, pnl
+                        )
+                        msg = f"🟢 [PAPER] Сработал Take-Profit по {symbol}. Сделка закрыта по {active_trade.tp_price:.2f}. PnL: {pnl:.2f}$"
+                        logger.info(msg)
+                        return msg
 
-                # 3. Проверяем выход по времени
-                candles_after_entry = latest_candles[
-                    latest_candles["open_time"] > active_trade.entry_candle_time
-                ]
-                # Семантика согласована с simulate_strategy: закрытие по таймауту
-                # происходит ровно через `horizon` свечей ПОСЛЕ свечи входа
-                # (свеча входа в счёт не идёт).
-                if len(candles_after_entry) >= horizon:
-                    pnl = (latest_close - active_trade.entry_price) * active_trade.amount
-                    await self.repo.close_trade(active_trade, latest_close, pnl)
-                    msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol}. Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
-                    logger.info(msg)
-                    return msg
+                    candles_after_entry = latest_candles[
+                        latest_candles["open_time"] > active_trade.entry_candle_time
+                    ]
+                    if len(candles_after_entry) >= horizon:
+                        pnl = (
+                            latest_close - active_trade.entry_price
+                        ) * active_trade.amount
+                        await self.repo.close_trade(active_trade, latest_close, pnl)
+                        msg = f"🔵 [PAPER] Выход по тайм-ауту по {symbol}. Сделка закрыта по {latest_close:.2f}. PnL: {pnl:.2f}$"
+                        logger.info(msg)
+                        return msg
 
-            return None
+                return None
 
         else:
             # --- Логика открытия новой позиции ---
@@ -141,7 +151,7 @@ class PaperTradingEngine:
             signal = predictor.predict(latest_candles)
 
             if signal in [1, -1]:
-                async with _portfolio_lock:
+                async with _get_portfolio_lock():
                     portfolio = await self.repo.get_portfolio()
 
                     effective_trade_allocation = trade_allocation

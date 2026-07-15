@@ -608,3 +608,59 @@ async def test_paper_trading_concurrent_open_no_overspend(temp_db_session):
     assert len(rejected) == 1
     # Баланс не должен уйти в минус
     assert portfolio.cash >= 0.0
+
+@pytest.mark.asyncio
+async def test_paper_trading_concurrent_close_no_balance_loss(temp_db_session):
+    """Без лока на close_trade конкурентное закрытие двух сделок теряет обновление баланса."""
+    repo = PaperTradingRepository(temp_db_session)
+
+    trade_btc = await repo.create_trade(
+        symbol="BTC/USDT", entry_price=100.0, amount=10.0,
+        sl_price=90.0, tp_price=200.0, entry_candle_time=1000,
+    )
+    trade_eth = await repo.create_trade(
+        symbol="ETH/USDT", entry_price=50.0, amount=10.0,
+        sl_price=40.0, tp_price=200.0, entry_candle_time=1000,
+    )
+
+    portfolio_before = await repo.get_portfolio()
+    cash_before = portfolio_before.cash
+
+    engine_btc = PaperTradingEngine(temp_db_session)
+    engine_eth = PaperTradingEngine(temp_db_session)
+
+    candles_btc = pd.DataFrame({
+        "open_time": [1000 + i * 3600000 for i in range(35)],
+        "open": [100.0] * 35, "high": [100.5] * 35,
+        "low": [85.0] * 35, "close": [90.0] * 35,
+        "volume": [1000.0] * 35,
+    })
+    candles_eth = pd.DataFrame({
+        "open_time": [1000 + i * 3600000 for i in range(35)],
+        "open": [50.0] * 35, "high": [50.5] * 35,
+        "low": [35.0] * 35, "close": [40.0] * 35,
+        "volume": [1000.0] * 35,
+    })
+
+    predictor = MockPredictor(signal=0)  # сигнал открытия не нужен, только close-логика
+
+    await asyncio.gather(
+        engine_btc.process_market_update(
+            symbol="BTC/USDT", timeframe="1h",
+            latest_candles=candles_btc, predictor=predictor, horizon=5,
+        ),
+        engine_eth.process_market_update(
+            symbol="ETH/USDT", timeframe="1h",
+            latest_candles=candles_eth, predictor=predictor, horizon=5,
+        ),
+    )
+
+    portfolio_after = await repo.get_portfolio()
+
+    # BTC SL: (90-100)*10 = -100 ; ETH SL: (40-50)*10 = -100
+    expected_cash = cash_before + (100.0 * 10.0 - 100.0) + (50.0 * 10.0 - 100.0)
+
+    assert portfolio_after.cash == pytest.approx(expected_cash)
+    assert portfolio_after.positions_value == pytest.approx(0.0)
+    assert await repo.get_active_trade("BTC/USDT") is None
+    assert await repo.get_active_trade("ETH/USDT") is None
