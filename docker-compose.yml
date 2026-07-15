@@ -1,6 +1,5 @@
 services:
   bot:
-    # Скачиваем готовый образ из GitHub Container Registry (GHCR)
     image: ${GHCR_IMAGE_NAME:-ghcr.io/mageri9/binance_quant_bot}:latest
     container_name: binance_quant_bot
     restart: unless-stopped
@@ -15,6 +14,7 @@ services:
     networks:
       - bot_net
       - nexus_shared
+      - postgres_net
 
   redis:
     image: redis:7-alpine
@@ -43,3 +43,6 @@ networks:
     driver: bridge
   nexus_shared:
     external: true
+  postgres_net:
+    external: true
+    name: tarot_bot_tarot_bot_net
