@@ -486,8 +486,9 @@ async def retrain_loop(bot: Bot, symbol: str, timeframe: str):
 
     while True:
         try:
-            await asyncio.sleep(settings.RETRAIN_INTERVAL_SECONDS)
             await _run_retrain_cycle(bot, symbol, timeframe)
+            await asyncio.sleep(settings.RETRAIN_INTERVAL_SECONDS)
+
         except Exception as e:
             logger.error(f"Ошибка в цикле автообучения для {symbol}: {e}")
             await asyncio.sleep(60)
