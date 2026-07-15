@@ -29,12 +29,13 @@ def test_perform_grid_search_success():
     sl_grid = [0.02]
     tp_grid = [0.029]  # (105 - 102) / 102 ≈ 2.94% (при tp=2.9% сработает TP на 102 * 1.029 = 104.958, что ниже high=105.5)
 
-    results = perform_grid_search(df_valid, sl_grid, tp_grid, horizon=3, min_trades=1)
+    results = perform_grid_search(df_valid, sl_grid, tp_grid, horizon_grid=[3], min_trades=1)
 
     assert len(results) == 1
     best_res = results[0]
     assert best_res["sl_pct"] == 0.02
     assert best_res["tp_pct"] == 0.029
+    assert best_res["horizon"] == 3
     assert best_res["total_trades"] == 1
     assert best_res["win_rate"] == 1.0
 
@@ -111,7 +112,7 @@ async def test_get_best_calibration_decodes_triple_model_classes():
         # perform_grid_search мокаем, чтобы изолированно проверить только
         # декодирование сигнала, не завися от исхода реальной симуляции сделок
         fake_grid_result = [{
-            "sl_pct": 0.02, "tp_pct": 0.04, "total_trades": 1,
+            "sl_pct": 0.02, "tp_pct": 0.04, "horizon": 5, "total_trades": 1,
             "win_rate": 1.0, "profit_factor": 2.0, "sharpe_ratio": 1.5,
             "sortino_ratio": 1.2, "expectancy": 0.01, "total_return": 0.05,
         }]
@@ -124,7 +125,7 @@ async def test_get_best_calibration_decodes_triple_model_classes():
                 return_value=fake_grid_result,
             ) as mock_grid_search,
         ):
-            sl, tp, report = await get_best_calibration("BTC/USDT", "1h")
+            sl, tp, hz, report = await get_best_calibration("BTC/USDT", "1h")
 
         await engine.dispose()
 
@@ -149,6 +150,7 @@ async def test_get_best_calibration_decodes_triple_model_classes():
 
         assert sl == 0.02
         assert tp == 0.04
+        assert hz == 5
 
 def test_perform_grid_search_filters_low_trade_count():
     df_valid = pd.DataFrame({
@@ -158,6 +160,6 @@ def test_perform_grid_search_filters_low_trade_count():
         "predicted_signal": [0, 0, 1, 0, 0, 0],
     })
     results = perform_grid_search(
-        df_valid, sl_grid=[0.02], tp_grid=[0.029], horizon=3, min_trades=5,
+        df_valid, sl_grid=[0.02], tp_grid=[0.029], horizon_grid=[3], min_trades=5,
     )
     assert results == []

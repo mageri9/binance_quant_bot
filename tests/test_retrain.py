@@ -60,7 +60,7 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
         patch(
             "scripts.calibrate.get_best_calibration",
             new_callable=AsyncMock,
-            return_value=(0.02, 0.04, "report"),
+            return_value=(0.02, 0.04, 5, "report"),
         ),
         patch("os.path.exists", return_value=False),
         patch("shutil.copy"),

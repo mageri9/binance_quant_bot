@@ -450,19 +450,24 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             try:
                 from scripts.calibrate import get_best_calibration
 
-                best_sl, best_tp, cal_report = await get_best_calibration(
-                    symbol, timeframe, custom_model_path=lgbm_result["model_path"],
+                best_sl, best_tp, best_hz, cal_report = await get_best_calibration(
+                    symbol,
+                    timeframe,
+                    custom_model_path=lgbm_result["model_path"],
                 )
 
                 # Открываем артефакт в staging, обновляем параметры калибровки
                 with open(lgbm_result["model_path"], "rb") as f:
                     artifact = pickle.load(f)
 
-                artifact.setdefault("calibration", {}).update({
-                    "sl_pct": best_sl,
-                    "tp_pct": best_tp,
-                    "calibrated_at": datetime.now(timezone.utc).isoformat(),
-                })
+                artifact.setdefault("calibration", {}).update(
+                    {
+                        "sl_pct": best_sl,
+                        "tp_pct": best_tp,
+                        "horizon": best_hz,
+                        "calibrated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
 
                 with open(lgbm_result["model_path"], "wb") as f:
                     pickle.dump(artifact, f)
@@ -470,7 +475,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 # Добавляем отчет калибровки к Telegram-сообщению
                 msg += f"\n{cal_report}"
                 logger.info(
-                    f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}"
+                    f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}, Horizon={best_hz}"
                 )
 
                 # --- АВТОМАТИЧЕСКАЯ ДЕТЕКЦИЯ ДРЕЙФА ПРИЗНАКОВ ---

@@ -1,5 +1,5 @@
 """
-Скрипт бэктест-калибровки параметров SL/TP на исторических данных БД.
+Скрипт бэктест-калибровки параметров SL/TP и горизонта удержания на исторических данных БД.
 Использование в терминале:
     python -m scripts.calibrate --symbol BTC/USDT --timeframe 1h
 """
@@ -21,38 +21,39 @@ def perform_grid_search(
     df_valid: pd.DataFrame,
     sl_grid: list[float],
     tp_grid: list[float],
-    horizon: int,
+    horizon_grid: list[int],
     min_trades: int = 10,
 ) -> list[dict]:
     results = []
     for sl in sl_grid:
         for tp in tp_grid:
-            metrics = simulate_strategy(
-                df_valid, predicted_col="predicted_signal",
-                horizon=horizon, sl_pct=sl, tp_pct=tp,
-            )
-            if metrics["total_trades"] >= min_trades:
-                results.append({
-                    "sl_pct": sl,
-                    "tp_pct": tp,
-                    "total_trades": metrics["total_trades"],
-                    "win_rate": metrics["win_rate"],
-                    "profit_factor": metrics["profit_factor"],
-                    "sharpe_ratio": metrics["sharpe_ratio"],
-                    "sortino_ratio": metrics["sortino_ratio"],
-                    "expectancy": metrics["expectancy"],
-                    "total_return": metrics["total_return"],
-                })
+            for hz in horizon_grid:
+                metrics = simulate_strategy(
+                    df_valid, predicted_col="predicted_signal",
+                    horizon=hz, sl_pct=sl, tp_pct=tp,
+                )
+                if metrics["total_trades"] >= min_trades:
+                    results.append({
+                        "sl_pct": sl,
+                        "tp_pct": tp,
+                        "horizon": hz,
+                        "total_trades": metrics["total_trades"],
+                        "win_rate": metrics["win_rate"],
+                        "profit_factor": metrics["profit_factor"],
+                        "sharpe_ratio": metrics["sharpe_ratio"],
+                        "sortino_ratio": metrics["sortino_ratio"],
+                        "expectancy": metrics["expectancy"],
+                        "total_return": metrics["total_return"],
+                    })
     return results
 
 
-async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: str = None) -> tuple[float, float, str]:
+async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: str = None) -> tuple[float, float, int, str]:
     """
-    Проводит калибровку и возвращает: (best_sl, best_tp, formatted_report_text).
+    Проводит калибровку рисков и горизонта, возвращает: (best_sl, best_tp, best_horizon, formatted_report_text).
     Использует чистые OOS-данные из файла модели для исключения утечек.
     """
     settings = get_settings()
-    # Если передан custom_model_path, берем его, иначе стандартный из настроек
     model_path = custom_model_path if custom_model_path is not None else settings.get_model_path(symbol, timeframe)
 
     if not os.path.exists(model_path):
@@ -65,12 +66,8 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
     df_valid = saved_data.get("df_oos")
 
     if df_valid is not None:
-        # --- НОВЫЙ БЕЗОПАСНЫЙ ПУТЬ (БЕЗ УТЕЧЕК) ---
-        # Данные уже содержат чистые 'predicted_signal' из Walk-Forward тест-сетов.
-        # Нам не нужно делать запросы к БД и пересчитывать признаки.
         logger.info(f"Используются чистые Out-of-Sample данные ({len(df_valid)} строк) из {os.path.basename(model_path)}")
     else:
-        # --- СТАРЫЙ РЕЗЕРВНЫЙ ПУТЬ (для совместимости со старыми моделями и тестами) ---
         logger.warning("Чистые OOS-данные не найдены в файле модели. Переход на резервный in-sample метод...")
         async with AsyncSessionFactory() as session:
             repo = KlineRepository(session)
@@ -119,18 +116,19 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
     # Набор сеток параметров
     sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
     tp_grid = [0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15]
+    horizon_grid = [3, 5, 8, 12]
 
     results = perform_grid_search(
         df_valid,
         sl_grid,
         tp_grid,
-        horizon=settings.LABEL_HORIZON,
+        horizon_grid=horizon_grid,
         min_trades=settings.CALIBRATION_MIN_TRADES,
     )
 
     if not results:
         raise ValueError(
-            f"Ни одна комбинация SL/TP не набрала {settings.CALIBRATION_MIN_TRADES}+ сделок."
+            f"Ни одна комбинация параметров не набрала {settings.CALIBRATION_MIN_TRADES}+ сделок."
         )
 
     res_df = pd.DataFrame(results)
@@ -146,18 +144,19 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
         f"⚙️ <b>Результаты автокалибровки рисков:</b>\n"
         f"📉 Stop-Loss (SL): <code>{best['sl_pct']:.1%}</code>\n"
         f"📈 Take-Profit (TP): <code>{best['tp_pct']:.1%}</code>\n"
+        f"⏱ Горизонт (Horizon): <code>{int(best['horizon'])} свечей</code>\n"
         f"📊 Коэффициент Шарпа: <code>{best['sharpe_ratio']:.3f}</code>\n"
         f"🎯 Матожидание (Expectancy): <code>{best['expectancy']:.3%}</code> на сделку\n"
         f"💰 Доходность бэктеста: <code>{best['total_return']:.1%}</code> ({best['total_trades']} сделок)"
     )
 
-    return float(best["sl_pct"]), float(best["tp_pct"]), report
+    return float(best["sl_pct"]), float(best["tp_pct"]), int(best["horizon"]), report
 
 
 async def run_calibration_cli(symbol: str, timeframe: str):
     """Обертка для запуска из консоли."""
     try:
-        sl, tp, report = await get_best_calibration(symbol, timeframe)
+        sl, tp, hz, report = await get_best_calibration(symbol, timeframe)
         # Очистим HTML-теги для красивого вывода в терминал
         clean_report = report.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
         print("\n" + "="*60)
@@ -165,7 +164,8 @@ async def run_calibration_cli(symbol: str, timeframe: str):
         print("="*60)
         print(f"\nДля сохранения параметров между перезапусками пропишите в .env:\n"
               f"PAPER_SL_PCT={sl}\n"
-              f"PAPER_TP_PCT={tp}")
+              f"PAPER_TP_PCT={tp}\n"
+              f"PAPER_HORIZON={hz}")
     except Exception as e:
         print(f"[-] Ошибка при калибровке: {e}")
 
