@@ -6,17 +6,53 @@ import asyncio
 
 from src.db.models import PaperPortfolio, PaperTrade, PredictionLog
 
+
+class AsyncRLock:
+    """
+    Реентерабельный асинхронный лок (Reentrant Lock).
+    Позволяет одной и той же задаче повторно захватывать блокировку без дедлока.
+    """
+    def __init__(self):
+        self._lock = asyncio.Lock()
+        self._owner = None
+        self._count = 0
+
+    async def acquire(self):
+        me = asyncio.current_task()
+        if self._owner == me:
+            self._count += 1
+            return
+        await self._lock.acquire()
+        self._owner = me
+        self._count = 1
+
+    def release(self):
+        me = asyncio.current_task()
+        if self._owner != me:
+            raise RuntimeError("Нельзя освободить блокировку, принадлежащую другой задаче")
+        self._count -= 1
+        if self._count == 0:
+            self._owner = None
+            self._lock.release()
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+
+
 # Общий на процесс лок для синхронизации операций с балансом портфеля.
-# Каждому event loop выделяется свой изолированный лок (необходимо для тестов).
-_portfolio_locks: "WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = WeakKeyDictionary()
+_portfolio_locks: "WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncRLock]" = WeakKeyDictionary()
 
 
-def _get_portfolio_lock() -> asyncio.Lock:
-    """Возвращает лок, привязанный к текущему запущенному event loop."""
+def _get_portfolio_lock() -> AsyncRLock:
+    """Возвращает реентерабельный лок, привязанный к текущему запущенному event loop."""
     loop = asyncio.get_running_loop()
     lock = _portfolio_locks.get(loop)
     if lock is None:
-        lock = asyncio.Lock()
+        lock = AsyncRLock()
         _portfolio_locks[loop] = lock
     return lock
 
@@ -28,7 +64,7 @@ class PaperTradingRepository:
     async def get_portfolio(self) -> PaperPortfolio:
         """
         Загружает данные портфеля. Если портфель пуст, создаёт новый с балансом $10 000.
-        Использует Double-Checked Locking для безопасной инициализации.
+        Использует Double-Checked Locking с AsyncRLock для безопасной инициализации.
         """
         stmt = select(PaperPortfolio).limit(1)
         res = await self.session.execute(stmt)
@@ -87,7 +123,7 @@ class PaperTradingRepository:
     ) -> PaperTrade:
         """
         Открывает новую виртуальную сделку и списывает средства со свободного кэша.
-        Выполняется строго под локом портфеля.
+        Выполняется строго под реентерабельным локом портфеля.
         """
         async with _get_portfolio_lock():
             portfolio = await self.get_portfolio()
@@ -122,7 +158,7 @@ class PaperTradingRepository:
     ) -> None:
         """
         Закрывает сделку, возвращает кэш обратно на баланс и фиксирует финансовый результат.
-        Выполняется строго под локом портфеля.
+        Выполняется строго под реентерабельным локом портфеля.
         """
         async with _get_portfolio_lock():
             trade.status = "CLOSED"
