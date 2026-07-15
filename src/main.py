@@ -338,16 +338,37 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
         )
         baseline_f1 = baseline_result["metrics"]["f1"]
 
-        lgbm_result = await run_lgbm_experiment(
-            session,
-            parquet_path,
-            json_path,
-            train_size=settings.TRAIN_SIZE,
-            test_size=settings.TEST_SIZE,
-            models_dir="models/staging",
-            baseline_f1=baseline_f1,
-        )
-        new_f1 = lgbm_result["metrics"]["f1"]
+        # Безопасно запускаем обучение с отслеживанием Quality Gate
+        try:
+            lgbm_result = await run_lgbm_experiment(
+                session,
+                parquet_path,
+                json_path,
+                train_size=settings.TRAIN_SIZE,
+                test_size=settings.TEST_SIZE,
+                models_dir="models/staging",
+                baseline_f1=baseline_f1,
+            )
+            new_f1 = lgbm_result["metrics"]["f1"]
+        except ValueError as gate_err:
+            err_msg = str(gate_err)
+            if "REJECTED" in err_msg:
+                # Если модель отклонена воротами качества - это ШТАТНАЯ ситуация
+                logger.warning(f"[Retrain - {symbol}] {err_msg}")
+
+                # Отправляем предупреждение админу в Telegram
+                reject_msg = f"⚠️ [Retrain - {symbol}] {err_msg}. В продакшн остается старая модель."
+                for admin_id in settings.ADMIN_IDS:
+                    try:
+                        await bot.send_message(chat_id=admin_id, text=reject_msg)
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить алерт админу: {e}")
+
+                # Завершаем функцию успешно, чтобы планировщик заснул на полный интервал!
+                return
+            else:
+                # Если возник другой ValueError, пробрасываем его дальше
+                raise gate_err
 
         if new_f1 <= baseline_f1:
             msg = (
