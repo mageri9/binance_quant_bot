@@ -20,6 +20,7 @@ pyarrow==25.0.0
 scikit-learn==1.5.2
 lightgbm==4.5.0
 optuna>=3.6.1
+asyncpg==0.30.0
 
 # Testing
 pytest==8.2.2

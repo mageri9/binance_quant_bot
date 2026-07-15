@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     BOT_TOKEN: str
     ADMIN_IDS: list[int]
 
+    # Database
+    DATABASE_URL: str = ""
+
     # Model
     MODEL_PATH: str = "models/saved_models/lgbm_BTCUSDT_1h.pkl"
 
@@ -86,6 +89,8 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
         db_path = Path(__file__).resolve().parent.parent / "db" / "db.db"
         return f"sqlite+aiosqlite:///{db_path}"
 
