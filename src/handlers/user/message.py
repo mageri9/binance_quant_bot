@@ -62,7 +62,8 @@ async def status_handler(message: Message, session: AsyncSession):
                     pos_type = "LONG 🟢"
 
                 # Считаем текущую стоимость позиции
-                current_position_value = active_trade.amount * current_close
+                entry_cost = active_trade.entry_price * active_trade.amount
+                current_position_value = entry_cost + unrealized_pnl
                 total_positions_value += current_position_value
 
                 current_price_str = (
