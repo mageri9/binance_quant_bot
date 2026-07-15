@@ -27,10 +27,10 @@ def upgrade() -> None:
 
     # 2. Вычисляем и восстанавливаем is_short для всех старых записей в БД
     op.execute("""
-        UPDATE paper_trades
-        SET is_short = 1
-        WHERE (sl_price > entry_price) OR (tp_price < entry_price)
-    """)
+            UPDATE paper_trades
+            SET is_short = TRUE
+            WHERE (sl_price > entry_price) OR (tp_price < entry_price)
+        """)
 
 
 def downgrade() -> None:
