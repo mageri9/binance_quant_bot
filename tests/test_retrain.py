@@ -57,11 +57,14 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
             new_callable=AsyncMock,
             return_value=mock_lgbm_result,
         ) as mock_run_lgbm,
-        patch("scripts.calibrate.get_best_calibration",
-              new_callable=AsyncMock,
-              return_value=(0.02, 0.04, "report")),
+        patch(
+            "scripts.calibrate.get_best_calibration",
+            new_callable=AsyncMock,
+            return_value=(0.02, 0.04, "report"),
+        ),
         patch("os.path.exists", return_value=False),
         patch("shutil.copy"),
+        patch("os.replace"),
         patch("pandas.read_parquet"),
     ):
         mock_kline_repo_cls.return_value.get_klines = AsyncMock(return_value=fake_klines)

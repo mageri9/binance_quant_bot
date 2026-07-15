@@ -243,8 +243,6 @@ class PaperTradingEngine:
                     f"🚀 [PAPER] Открыта виртуальная {pos_type}-позиция по {symbol} по цене {latest_close:.2f}. "
                     f"Размер сделки: {effective_trade_allocation:.2f}$. "
                     f"Количество монет: {amount:.6f}. SL: {sl_str}, TP: {tp_str}"
-                    f"SL: {sl_price:.2f if sl_price is not None else '-'}, "
-                    f"TP: {tp_price:.2f if tp_price is not None else '-'}"
                 )
 
                 logger.info(msg)
