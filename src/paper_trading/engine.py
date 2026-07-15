@@ -25,7 +25,7 @@ class PaperTradingEngine:
         predictor,
         sl_pct: float | None = None,
         tp_pct: float | None = None,
-        horizon: int = 5,
+        horizon: int | None = None,
         trade_allocation: float | None = None,
     ) -> str | None:
         """
@@ -42,6 +42,14 @@ class PaperTradingEngine:
         latest_high = float(latest_candle["high"])
         latest_low = float(latest_candle["low"])
         latest_open_time = int(latest_candle["open_time"])
+
+        # Извлекаем калиброванные параметры из артефакта модели
+        model_calibration = getattr(predictor, "calibration", {})
+        cal_sl = model_calibration.get("sl_pct", self.settings.PAPER_SL_PCT)
+        cal_tp = model_calibration.get("tp_pct", self.settings.PAPER_TP_PCT)
+        cal_hz = model_calibration.get("horizon", self.settings.LABEL_HORIZON)
+
+        effective_horizon = horizon if horizon is not None else cal_hz
 
         active_trade = await self.repo.get_active_trade(symbol)
 
@@ -76,7 +84,7 @@ class PaperTradingEngine:
                     candles_after_entry = latest_candles[
                         latest_candles["open_time"] > active_trade.entry_candle_time
                     ]
-                    if len(candles_after_entry) >= horizon:
+                    if len(candles_after_entry) >= effective_horizon:
                         pnl = (
                             active_trade.entry_price - latest_close
                         ) * active_trade.amount
@@ -112,7 +120,7 @@ class PaperTradingEngine:
                     candles_after_entry = latest_candles[
                         latest_candles["open_time"] > active_trade.entry_candle_time
                     ]
-                    if len(candles_after_entry) >= horizon:
+                    if len(candles_after_entry) >= effective_horizon:
                         pnl = (
                             latest_close - active_trade.entry_price
                         ) * active_trade.amount
@@ -154,9 +162,6 @@ class PaperTradingEngine:
                         return msg
 
                     amount = effective_trade_allocation / latest_close
-                    model_calibration = getattr(predictor, "calibration", {})
-                    cal_sl = model_calibration.get("sl_pct", self.settings.PAPER_SL_PCT)
-                    cal_tp = model_calibration.get("tp_pct", self.settings.PAPER_TP_PCT)
 
                     effective_sl_pct = sl_pct if sl_pct is not None else cal_sl
                     effective_tp_pct = tp_pct if tp_pct is not None else cal_tp

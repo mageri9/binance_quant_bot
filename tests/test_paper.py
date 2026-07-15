@@ -740,10 +740,99 @@ async def test_repository_concurrent_close_no_lost_updates(temp_db_session):
 
     await asyncio.gather(
         repo.close_trade(trade_btc, exit_price=105.0, pnl=50.0),
-        repo.close_trade(trade_eth, exit_price=45.0, pnl=-50.0)
+        repo.close_trade(trade_eth, exit_price=45.0, pnl=-50.0),
     )
 
     portfolio_final = await repo.get_portfolio()
     assert portfolio_final.cash == 10000.0
     assert portfolio_final.positions_value == 0.0
     assert portfolio_final.balance == 10000.0
+
+
+@pytest.mark.asyncio
+async def test_paper_trading_horizon_from_predictor_calibration(temp_db_session):
+    """
+    Проверяет, что движок бумажной торговли автоматически берет
+    горизонт удержания сделки (horizon) из калиброванных параметров модели,
+    а не глобального LABEL_HORIZON.
+    """
+    repo = PaperTradingRepository(temp_db_session)
+    engine = PaperTradingEngine(temp_db_session)
+    engine.settings.PAPER_RISK_PCT = 0.10
+
+    base_candles = pd.DataFrame(
+        {
+            "open_time": [1672531200000 + i * 3600 * 1000 for i in range(35)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+
+    # Создаем Mock-предиктор с калиброванным горизонтом = 3
+    class MockCalibratedPredictor:
+        def __init__(self, signal: int, horizon: int):
+            self.signal = signal
+            self.calibration = {"horizon": horizon}
+
+        def predict(self, df):
+            return self.signal
+
+    predictor = MockCalibratedPredictor(signal=1, horizon=3)
+
+    # 1. Открываем LONG. Не передаем horizon в process_market_update.
+    # Он должен автоматически прочитаться из predictor.calibration ("horizon": 3)
+    await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=base_candles,
+        predictor=predictor,
+        sl_pct=0.5,
+        tp_pct=0.5,
+    )
+
+    active_trade = await repo.get_active_trade("BTC/USDT")
+    assert active_trade is not None
+    entry_time = active_trade.entry_candle_time
+
+    # Свеча через 2 шага после входа (horizon - 1) - сделка должна остаться открытой
+    candles_h2 = pd.DataFrame(
+        {
+            "open_time": [entry_time + i * 3600 * 1000 for i in range(-32, 3)],
+            "open": [100.0] * 35,
+            "high": [100.5] * 35,
+            "low": [99.5] * 35,
+            "close": [100.0] * 35,
+            "volume": [1000.0] * 35,
+        }
+    )
+    msg = await engine.process_market_update(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        latest_candles=candles_h2,
+        predictor=predictor,
+        sl_pct=0.5,
+        tp_pct=0.5,
+    )
+    assert msg is None
+    assert await repo.get_active_trade("BTC/USDT") is not None
+
+    # Свеча через 3 шага после входа (horizon) - сделка должна автоматически закрыться по тайм-ауту
+    candles_h3 = pd.DataFrame({
+        "open_time": [entry_time + i * 3600 * 1000 for i in range(-32, 4)],
+        "open": [100.0] * 36,
+        "high": [100.5] * 36,
+        "low": [99.5] * 36,
+        "close": [100.0] * 36,
+        "volume": [1000.0] * 36,
+    })
+    msg = await engine.process_market_update(
+        symbol="BTC/USDT", timeframe="1h",
+        latest_candles=candles_h3, predictor=predictor,
+        sl_pct=0.5, tp_pct=0.5,
+    )
+    assert msg is not None
+    assert "тайм-ауту" in msg
+    assert await repo.get_active_trade("BTC/USDT") is None

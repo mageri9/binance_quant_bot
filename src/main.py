@@ -300,7 +300,6 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     timeframe=timeframe,
                     latest_candles=df,
                     predictor=predictor,
-                    horizon=settings.LABEL_HORIZON,  # Явный horizon, исключающий рассинхронизацию
                 )
 
                 if log_msg:
