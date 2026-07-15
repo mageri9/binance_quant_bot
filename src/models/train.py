@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import pickle
 import pandas as pd
 import numpy as np
@@ -84,7 +85,7 @@ async def tune_lgbm_hyperparameters(
 
     # Запускаем оптимизацию
     study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=n_trials)
+    await asyncio.to_thread(study.optimize, objective, n_trials=n_trials)
 
     best_params = study.best_params
     best_value = study.best_value
@@ -118,6 +119,60 @@ async def tune_lgbm_hyperparameters(
 
     return best_params
 
+
+def _run_walk_forward_folds(
+    df_train_val, feature_cols, target_col, train_size, test_size,
+    label_horizon, model_kwargs, is_multiclass, avg_method,
+):
+    splitter = TimeSeriesWalkForwardSplitter(
+        train_size=train_size, test_size=test_size, label_horizon=label_horizon,
+    )
+
+    all_y_true = []
+    all_y_pred = []
+    fold_count = 0
+    best_model = None
+    best_fold_f1 = -float("inf")
+    oos_dfs = []
+
+    for train_df, test_df, info in splitter.split(df_train_val):
+        X_train = train_df[feature_cols]
+        y_train = train_df[target_col]
+        X_test = test_df[feature_cols]
+        y_test = test_df[target_col]
+
+        if is_multiclass:
+            y_train = y_train.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+            y_test = y_test.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+        else:
+            y_train = y_train.astype(int)
+            y_test = y_test.astype(int)
+
+        model = LGBMClassifier(**model_kwargs)
+        model.fit(X_train, y_train)
+
+        y_pred = model.predict(X_test)
+        fold_f1 = f1_score(y_test, y_pred, average=avg_method, zero_division=0)
+
+        all_y_true.extend(y_test.tolist())
+        all_y_pred.extend(y_pred.tolist())
+
+        test_df_copy = test_df.copy()
+        if is_multiclass:
+            signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
+            test_df_copy["predicted_signal"] = pd.Series(y_pred, index=test_df.index).map(signal_map)
+        else:
+            test_df_copy["predicted_signal"] = y_pred
+
+        oos_dfs.append(test_df_copy)
+
+        if fold_f1 > best_fold_f1:
+            best_fold_f1 = fold_f1
+            best_model = model
+
+        fold_count += 1
+
+    return all_y_true, all_y_pred, fold_count, best_model, best_fold_f1, oos_dfs
 
 async def run_lgbm_experiment(
     session: AsyncSession,
@@ -191,73 +246,39 @@ async def run_lgbm_experiment(
         )
         logger.info(f"[+] Лучшие параметры подобраны: {best_params}")
 
-    splitter = TimeSeriesWalkForwardSplitter(
-        train_size=train_size, test_size=test_size, label_horizon=settings.LABEL_HORIZON,
-    )
-
-    all_y_true = []
-    all_y_pred = []
-    fold_count = 0
-
-    best_model = None
-    best_fold_f1 = -float("inf")
-    oos_dfs = []
-
     is_multiclass = target_col == "target_triple"
     avg_method = "macro" if is_multiclass else "binary"
 
-    # 2. Walk-Forward цикл обучения (на выборке Train-Val)
-    for train_df, test_df, info in splitter.split(df_train_val):
-        X_train = train_df[feature_cols]
-        y_train = train_df[target_col]
+    model_kwargs = {
+        "learning_rate": learning_rate,
+        "n_estimators": n_estimators,
+        "max_depth": max_depth,
+        "random_state": 42,
+        "verbosity": -1,
+        "n_jobs": 1,
+    }
+    if settings.OPTUNA_TUNING_ENABLED and best_params:
+        model_kwargs.update(best_params)
 
-        X_test = test_df[feature_cols]
-        y_test = test_df[target_col]
-
-        if is_multiclass:
-            y_train = y_train.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
-            y_test = y_test.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
-        else:
-            y_train = y_train.astype(int)
-            y_test = y_test.astype(int)
-
-        model_kwargs = {
-            "learning_rate": learning_rate,
-            "n_estimators": n_estimators,
-            "max_depth": max_depth,
-            "random_state": 42,
-            "verbosity": -1,
-            "n_jobs": 1,
-        }
-        if settings.OPTUNA_TUNING_ENABLED and best_params:
-            model_kwargs.update(best_params)
-
-        model = LGBMClassifier(**model_kwargs)
-        model.fit(X_train, y_train)
-
-        y_pred = model.predict(X_test)
-        fold_f1 = f1_score(y_test, y_pred, average=avg_method, zero_division=0)
-
-        all_y_true.extend(y_test.tolist())
-        all_y_pred.extend(y_pred.tolist())
-
-        test_df_copy = test_df.copy()
-        if is_multiclass:
-            signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
-            test_df_copy["predicted_signal"] = pd.Series(
-                y_pred, index=test_df.index
-            ).map(signal_map)
-        else:
-            test_df_copy["predicted_signal"] = y_pred
-
-        oos_dfs.append(test_df_copy)
-
-        # Выбираем лучшую модель на кросс-валидации для теста на holdout
-        if fold_f1 > best_fold_f1:
-            best_fold_f1 = fold_f1
-            best_model = model
-
-        fold_count += 1
+    (
+        all_y_true,
+        all_y_pred,
+        fold_count,
+        best_model,
+        best_fold_f1,
+        oos_dfs,
+    ) = await asyncio.to_thread(
+        _run_walk_forward_folds,
+        df_train_val,
+        feature_cols,
+        target_col,
+        train_size,
+        test_size,
+        settings.LABEL_HORIZON,
+        model_kwargs,
+        is_multiclass,
+        avg_method,
+    )
 
     if fold_count == 0 or best_model is None:
         raise ValueError("Не удалось запустить Walk-Forward. Проверьте размер данных.")
@@ -310,7 +331,7 @@ async def run_lgbm_experiment(
     else:
         y_all_mapped = y_all.astype(int)
 
-    final_model.fit(X_all, y_all_mapped)
+    await asyncio.to_thread(final_model.fit, X_all, y_all_mapped)
 
     # Объединяем OOS фолды
     df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)

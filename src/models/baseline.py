@@ -1,4 +1,5 @@
 import json
+import asyncio
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -12,6 +13,40 @@ from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
 from src.core.config import get_settings  # Добавлен важный импорт настроек
 
+
+def _run_baseline_folds(splitter, df_clean, feature_cols, target_col, is_multiclass, c_parameter):
+    all_y_true = []
+    all_y_pred = []
+    fold_count = 0
+
+    for train_df, test_df, info in splitter.split(df_clean):
+        X_train = train_df[feature_cols]
+        y_train = train_df[target_col]
+        X_test = test_df[feature_cols]
+        y_test = test_df[target_col]
+
+        if is_multiclass:
+            y_train = y_train.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+            y_test = y_test.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+        else:
+            y_train = y_train.astype(int)
+            y_test = y_test.astype(int)
+
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        model = LogisticRegression(C=c_parameter, random_state=42, max_iter=1000)
+        model.fit(X_train_scaled, y_train)
+
+        y_pred = model.predict(X_test_scaled)
+
+        all_y_true.extend(y_test.tolist())
+        all_y_pred.extend(y_pred.tolist())
+
+        fold_count += 1
+
+    return all_y_true, all_y_pred, fold_count
 
 async def run_baseline_experiment(
     session: AsyncSession,
@@ -58,46 +93,18 @@ async def run_baseline_experiment(
         label_horizon=settings.LABEL_HORIZON,
     )
 
-    all_y_true = []
-    all_y_pred = []
-    fold_count = 0
-
-    is_multiclass = (target_col == "target_triple")
+    is_multiclass = target_col == "target_triple"
     avg_method = "macro" if is_multiclass else "binary"
 
-    # 3. Запускаем обучение по шагам (фолдам)
-    for train_df, test_df, info in splitter.split(df_clean):
-        X_train = train_df[feature_cols]
-        y_train = train_df[target_col]
-
-        X_test = test_df[feature_cols]
-        y_test = test_df[target_col]
-
-        # Для тройной классификации маппим метки в [0, 1, 2]
-        if is_multiclass:
-            y_train = y_train.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
-            y_test = y_test.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
-        else:
-            y_train = y_train.astype(int)
-            y_test = y_test.astype(int)
-
-        # Масштабируем признаки
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-
-        # Обучаем модель на прошлом
-        model = LogisticRegression(C=c_parameter, random_state=42, max_iter=1000)
-        model.fit(X_train_scaled, y_train)
-
-        # Предсказываем результаты на будущем
-        y_pred = model.predict(X_test_scaled)
-
-        # Накапливаем правильные ответы и предсказания
-        all_y_true.extend(y_test.tolist())
-        all_y_pred.extend(y_pred.tolist())
-
-        fold_count += 1
+    all_y_true, all_y_pred, fold_count = await asyncio.to_thread(
+        _run_baseline_folds,
+        splitter,
+        df_clean,
+        feature_cols,
+        target_col,
+        is_multiclass,
+        c_parameter,
+    )
 
     if fold_count == 0:
         raise ValueError(
