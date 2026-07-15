@@ -22,7 +22,7 @@ def upgrade() -> None:
     # 1. Добавляем колонку в SQLite через Batch Mode
     with op.batch_alter_table("paper_trades") as batch_op:
         batch_op.add_column(
-            sa.Column("is_short", sa.Boolean(), nullable=False, server_default="0")
+            sa.Column("is_short", sa.Boolean(), nullable=False, server_default=sa.false())
         )
 
     # 2. Вычисляем и восстанавливаем is_short для всех старых записей в БД

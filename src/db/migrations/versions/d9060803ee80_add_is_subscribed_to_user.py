@@ -25,27 +25,48 @@ def upgrade() -> None:
     if 'users' not in tables:
         # Если таблицы нет, создаем ее начисто
         op.create_table(
-            'users',
-            sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-            sa.Column('user_id', sa.BigInteger(), nullable=False),
-            sa.Column('username', sa.String(length=64), nullable=True),
-            sa.Column('full_name', sa.String(length=256), nullable=True),
-            sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.text('1')),
-            sa.Column('is_blocked', sa.Boolean(), nullable=False, server_default=sa.text('0')),
-            sa.Column('is_subscribed', sa.Boolean(), nullable=False, server_default=sa.text('1')),
-            sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-            sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
-            sa.PrimaryKeyConstraint('id'),
-            sa.UniqueConstraint('user_id')
+            "users",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("user_id", sa.BigInteger(), nullable=False),
+            sa.Column("username", sa.String(length=64), nullable=True),
+            sa.Column("full_name", sa.String(length=256), nullable=True),
+            sa.Column(
+                "is_active", sa.Boolean(), nullable=False, server_default=sa.true()
+            ),
+            sa.Column(
+                "is_blocked", sa.Boolean(), nullable=False, server_default=sa.false()
+            ),
+            sa.Column(
+                "is_subscribed", sa.Boolean(), nullable=False, server_default=sa.true()
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+                nullable=False,
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("user_id"),
         )
         op.create_index(op.f('ix_users_user_id'), 'users', ['user_id'], unique=True)
     else:
         # Если таблица есть, безопасно добавляем колонку через batch mode
-        columns = [c['name'] for c in inspector.get_columns('users')]
-        if 'is_subscribed' not in columns:
-            with op.batch_alter_table('users') as batch_op:
+        columns = [c["name"] for c in inspector.get_columns("users")]
+        if "is_subscribed" not in columns:
+            with op.batch_alter_table("users") as batch_op:
                 batch_op.add_column(
-                    sa.Column('is_subscribed', sa.Boolean(), nullable=False, server_default=sa.text('1'))
+                    sa.Column(
+                        "is_subscribed",
+                        sa.Boolean(),
+                        nullable=False,
+                        server_default=sa.true(),
+                    )
                 )
 
 
