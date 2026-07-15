@@ -196,13 +196,13 @@ class PaperTradingEngine:
                     if signal == 1:
                         sl_price = (
                             latest_close * (1.0 - effective_sl_pct)
-                            if effective_sl_pct
+                            if effective_sl_pct is not None
                             else None
                         )
 
                         tp_price = (
                             latest_close * (1.0 + effective_tp_pct)
-                            if effective_tp_pct
+                            if effective_tp_pct is not None
                             else None
                         )
 
@@ -213,13 +213,13 @@ class PaperTradingEngine:
                     else:
                         sl_price = (
                             latest_close * (1.0 + effective_sl_pct)
-                            if effective_sl_pct
+                            if effective_sl_pct is not None
                             else None
                         )
 
                         tp_price = (
                             latest_close * (1.0 - effective_tp_pct)
-                            if effective_tp_pct
+                            if effective_tp_pct is not None
                             else None
                         )
 
@@ -237,10 +237,14 @@ class PaperTradingEngine:
                         is_short=is_short,
                     )
 
+                sl_str = f"{sl_price:.2f}" if sl_price is not None else "-"
+                tp_str = f"{tp_price:.2f}" if tp_price is not None else "-"
                 msg = (
                     f"🚀 [PAPER] Открыта виртуальная {pos_type}-позиция по {symbol} по цене {latest_close:.2f}. "
                     f"Размер сделки: {effective_trade_allocation:.2f}$. "
-                    f"Количество монет: {amount:.6f}. SL: {sl_price:.2f}, TP: {tp_price:.2f}"
+                    f"Количество монет: {amount:.6f}. SL: {sl_str}, TP: {tp_str}"
+                    f"SL: {sl_price:.2f if sl_price is not None else '-'}, "
+                    f"TP: {tp_price:.2f if tp_price is not None else '-'}"
                 )
 
                 logger.info(msg)

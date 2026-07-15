@@ -23,6 +23,13 @@ from src.middlewares.logger import LoggerMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 
+
+def _atomic_copy(src: str, dst: str) -> None:
+    """Копия во временный файл + os.replace — исключает чтение частично записанного .pkl."""
+    tmp = dst + ".tmp"
+    shutil.copy(src, tmp)
+    os.replace(tmp, dst)
+
 # Мягкая SRE интеграция
 try:
     from nexus_sdk import NexusSDK
@@ -146,7 +153,7 @@ async def check_and_rollback_model(
 
         try:
             # Выполняем физическую замену рабочей модели на верифицированный бэкап
-            shutil.copy(best_backup, model_path)
+            _atomic_copy(best_backup, model_path)
 
             try:
                 # Включаем кулдаун проверок на 24 часа для сбора новой статистики
@@ -401,11 +408,11 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 with open(lgbm_result["model_path"], "rb") as f:
                     artifact = pickle.load(f)
 
-                artifact["calibration"] = {
+                artifact.setdefault("calibration", {}).update({
                     "sl_pct": best_sl,
                     "tp_pct": best_tp,
                     "calibrated_at": datetime.now(timezone.utc).isoformat(),
-                }
+                })
 
                 with open(lgbm_result["model_path"], "wb") as f:
                     pickle.dump(artifact, f)
@@ -459,7 +466,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 )
                 backup_path = os.path.join(os_dir, backup_filename)
                 try:
-                    shutil.copy(model_path, backup_path)
+                    _atomic_copy(model_path, backup_path)
                     logger.info(
                         f"[Retrain - {symbol}] Успешно создан бэкап старой стабильной модели: {backup_path}"
                     )
@@ -467,7 +474,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     logger.error(f"Не удалось скопировать бэкап для {symbol}: {copy_err}")
 
             # Финально копируем упакованный и откалиброванный артефакт в продакшн
-            shutil.copy(lgbm_result["model_path"], model_path)
+            _atomic_copy(lgbm_result["model_path"], model_path)
             logger.info(f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}")
 
         for admin_id in settings.ADMIN_IDS:

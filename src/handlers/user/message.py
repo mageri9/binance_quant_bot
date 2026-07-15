@@ -74,12 +74,22 @@ async def status_handler(message: Message, session: AsyncSession):
             else:
                 pos_type = "SHORT" if is_short else "LONG"
 
+            sl_str = (
+                f"{active_trade.sl_price:.2f}$"
+                if active_trade.sl_price is not None
+                else "-"
+            )
+            tp_str = (
+                f"{active_trade.tp_price:.2f}$"
+                if active_trade.tp_price is not None
+                else "-"
+            )
             active_trades_text += (
                 f"🚀 <b>Активная позиция {pos_type} по {symbol}:</b>\n"
                 f"📥 Цена входа: <code>{active_trade.entry_price:.2f}$</code>\n"
                 f"📦 Объем: <code>{active_trade.amount:.6f} монет</code>\n"
-                f"🛑 Stop-Loss: <code>{active_trade.sl_price:.2f}$</code>\n"
-                f"🎯 Take-Profit: <code>{active_trade.tp_price:.2f}$</code>\n"
+                f"🛑 Stop-Loss: <code>{sl_str}</code>\n"
+                f"🎯 Take-Profit: <code>{tp_str}</code>\n"
                 f"{current_price_str}\n"
             )
         else:

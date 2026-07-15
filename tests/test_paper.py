@@ -664,3 +664,25 @@ async def test_paper_trading_concurrent_close_no_balance_loss(temp_db_session):
     assert portfolio_after.positions_value == pytest.approx(0.0)
     assert await repo.get_active_trade("BTC/USDT") is None
     assert await repo.get_active_trade("ETH/USDT") is None
+
+@pytest.mark.asyncio
+async def test_paper_trading_zero_sl_pct_not_treated_as_none(temp_db_session):
+    """sl_pct=0.0 раньше трактовался как 'нет SL' из-за truthiness-бага."""
+    engine = PaperTradingEngine(temp_db_session)
+    dummy_candles = pd.DataFrame({
+        "open_time": [1672531200000 + i * 3600000 for i in range(35)],
+        "open": [100.0] * 35, "high": [100.5] * 35,
+        "low": [99.5] * 35, "close": [100.0] * 35,
+        "volume": [1000.0] * 35,
+    })
+    predictor = MockPredictor(signal=1)
+
+    await engine.process_market_update(
+        symbol="BTC/USDT", timeframe="1h",
+        latest_candles=dummy_candles, predictor=predictor,
+        sl_pct=0.0, tp_pct=0.04, trade_allocation=1000.0,
+    )
+
+    repo = PaperTradingRepository(temp_db_session)
+    trade = await repo.get_active_trade("BTC/USDT")
+    assert trade.sl_price == pytest.approx(100.0)  # не None
