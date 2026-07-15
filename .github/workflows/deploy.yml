@@ -17,10 +17,9 @@ jobs:
   # 1. ЗАПУСК ТЕСТОВ ПЕРЕД СБОРКОЙ
   test:
     runs-on: ubuntu-latest
-    # Передаем фейковые переменные окружения для прохождения валидации Pydantic в тестах
     env:
       BOT_TOKEN: "123456:fake_token_for_ci_tests"
-      ADMIN_IDS: "[12345678]" # Передаем как валидный JSON-массив строк
+      ADMIN_IDS: "[12345678]"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,6 +69,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: [build-and-push, test]
+    concurrency:
+      group: deploy-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Execute remote SSH commands to deploy Bot
         uses: appleboy/ssh-action@v1.0.3
@@ -79,6 +81,7 @@ jobs:
           key: ${{ secrets.SERVER_KEY }}
           envs: MAINTENANCE_TTL_SECONDS
           script: |
+            set -e
             cd ~/apps/binance_quant_bot
             OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
             GHCR_IMAGE_NAME="ghcr.io/${OWNER_LOWER}/binance_quant_bot"
@@ -92,9 +95,16 @@ jobs:
             docker exec nexus-redis redis-cli SET nexus:maintenance:binance_quant_bot 1 EX "${MAINTENANCE_TTL_SECONDS}" \
               || echo "::warning::Could not set maintenance flag in Nexus Redis, continuing..."
 
-            # ПРИМЕНЯЕМ МИГРАЦИИ БАЗЫ ДАННЫХ ПЕРЕД ЗАПУСКОМ (Автоматизация SRE)
+            # Сначала скачиваем свежий образ — миграции должны идти на актуальных файлах,
+            # а не на образе, закэшированном с прошлого деплоя
+            docker compose pull
+
+            # Останавливаем bot перед миграцией: batch_alter_table в SQLite требует
+            # эксклюзивной блокировки файла БД, живой процесс bot будет с ней конкурировать
+            docker compose stop bot || true
+
+            # ПРИМЕНЯЕМ МИГРАЦИИ БАЗЫ ДАННЫХ (уже на новом образе, без живого bot)
             docker compose run --rm bot alembic upgrade head
 
-            # Обновляем образ и перезапускаем контейнеры
-            docker compose pull
+            # Поднимаем контейнеры заново
             docker compose up -d --force-recreate
