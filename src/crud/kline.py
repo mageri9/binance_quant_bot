@@ -1,5 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.db.models import Kline
@@ -9,16 +10,18 @@ class KlineRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    def _insert(self):
+        if self.session.bind.dialect.name == "postgresql":
+            return pg_insert
+        return sqlite_insert
+
     async def save_klines(self, klines_data: list[dict]) -> None:
-        """
-        Сохраняет список свечей в базу данных.
-        Если свеча с таким временем уже существует, обновляет её данные (Upsert).
-        """
         if not klines_data:
             return
 
+        insert_fn = self._insert()
         for data in klines_data:
-            stmt = sqlite_insert(Kline).values(
+            stmt = insert_fn(Kline).values(
                 symbol=data["symbol"],
                 timeframe=data["timeframe"],
                 open_time=data["open_time"],
@@ -28,7 +31,6 @@ class KlineRepository:
                 close=data["close"],
                 volume=data["volume"]
             )
-            # Настройка логики "если уже есть в базе — обновить цены"
             stmt = stmt.on_conflict_do_update(
                 index_elements=["symbol", "timeframe", "open_time"],
                 set_={
@@ -43,9 +45,6 @@ class KlineRepository:
         await self.session.commit()
 
     async def get_klines(self, symbol: str, timeframe: str, limit: int = 100) -> list[Kline]:
-        """
-        Получает последние сохраненные свечи из базы данных (от новых к старым).
-        """
         stmt = (
             select(Kline)
             .where(Kline.symbol == symbol, Kline.timeframe == timeframe)
