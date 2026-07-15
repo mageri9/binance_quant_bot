@@ -31,7 +31,53 @@ def _atomic_copy(src: str, dst: str) -> None:
     os.replace(tmp, dst)
 
 
-nexus = None
+def _get_backup_timestamp(filepath: str) -> int:
+    """
+    Извлекает временную метку (YYYYMMDDHHMM) из имени файла бэкапа.
+    Пример имени: /path/to/lgbm_BTCUSDT_1h_backup_202607151030.pkl
+    Возвращает целое число 202607151030 для надежной хронологической сортировки.
+    При ошибках парсинга возвращает 0.
+    """
+    try:
+        base = os.path.basename(filepath)
+        name_without_ext, _ = os.path.splitext(base)
+        if "_backup_" in name_without_ext:
+            parts = name_without_ext.split("_backup_")
+            timestamp_str = parts[-1]
+            # Оставляем только цифры
+            digits = "".join(c for c in timestamp_str if c.isdigit())
+            if digits:
+                return int(digits)
+    except Exception as e:
+        logger.error(f"Ошибка при извлечении временной метки из бэкапа {filepath}: {e}")
+    return 0
+
+
+def _rotate_backups(os_dir: str, clean_symbol: str, clean_tf: str, keep_count: int = 5) -> None:
+    """
+    Удаляет старые файлы бэкапов для конкретного актива,
+    сохраняя только последние keep_count штук на основе временной метки в имени.
+    """
+    import glob
+    backup_pattern = os.path.join(
+        os_dir, f"lgbm_{clean_symbol}_{clean_tf}_backup_*.pkl"
+    )
+    backup_files = glob.glob(backup_pattern)
+
+    # Сортируем от свежих к старым
+    backup_files.sort(key=_get_backup_timestamp, reverse=True)
+
+    if len(backup_files) > keep_count:
+        files_to_remove = backup_files[keep_count:]
+        for bf in files_to_remove:
+            try:
+                os.remove(bf)
+                logger.info(f"[SRE Rotation] Старый файл бэкапа удален: {os.path.basename(bf)}")
+            except Exception as err:
+                logger.error(f"[SRE Rotation] Ошибка удаления старого бэкапа {bf}: {err}")
+
+
+nexus = None  # Инициализация для предотвращения NameError в on_shutdown
 
 # Мягкая SRE интеграция
 try:
@@ -122,8 +168,8 @@ async def check_and_rollback_model(
                     logger.error(f"Не удалось отправить алерт админу {admin_id}: {e}")
             return
 
-        # Сортируем бэкапы от самых новых к самым старым
-        backup_files.sort(key=os.path.getmtime, reverse=True)
+        # Надежная хронологическая сортировка бэкапов от самых новых к самым старым по временной метке в имени
+        backup_files.sort(key=_get_backup_timestamp, reverse=True)
 
         # Ищем первый целостный, неповрежденный бэкап-артефакт
         best_backup = None
@@ -254,6 +300,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     timeframe=timeframe,
                     latest_candles=df,
                     predictor=predictor,
+                    horizon=settings.LABEL_HORIZON,  # Явный horizon, исключающий рассинхронизацию
                 )
 
                 if log_msg:
@@ -306,9 +353,6 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
     Выполняет один цикл переобучения для конкретного актива:
     сборка датасета -> обучение baseline -> обучение LGBM с Quality Gate ->
     автокалибровка -> детекция дрейфа -> продвижение в продакшн (или отказ).
-
-    Вынесена из retrain_loop в отдельную функцию, чтобы её можно было
-    покрыть юнит-тестами без бесконечного цикла и asyncio.sleep.
     """
     from src.core.db import AsyncSessionFactory
     from src.crud.kline import KlineRepository
@@ -377,7 +421,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     except Exception as e:
                         logger.error(f"Не удалось отправить алерт админу: {e}")
 
-                # Завершаем функцию успешно, чтобы планировщик заснул на полный интервал!
+                # Завершаем функцию успешно, чтобы планировщик заснул на полный интервал
                 return
             else:
                 # Если возник другой ValueError, пробрасываем его дальше
@@ -476,6 +520,10 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     logger.info(
                         f"[Retrain - {symbol}] Успешно создан бэкап старой стабильной модели: {backup_path}"
                     )
+
+                    # Запускаем автоматическую ротацию бэкапов: храним только последние 5 стабильных версий
+                    _rotate_backups(os_dir, clean_symbol, clean_tf, keep_count=5)
+
                 except Exception as copy_err:
                     logger.error(f"Не удалось скопировать бэкап для {symbol}: {copy_err}")
 

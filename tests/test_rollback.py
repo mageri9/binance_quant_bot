@@ -6,7 +6,7 @@ import pickle
 from unittest.mock import AsyncMock, patch, MagicMock
 from aiogram import Bot
 
-from src.main import check_and_rollback_model
+from src.main import check_and_rollback_model, _get_backup_timestamp, _rotate_backups
 from src.crud.paper import PaperTradingRepository
 
 
@@ -89,3 +89,50 @@ async def test_check_and_rollback_model_degradation(temp_db_session):
             with open(model_path, "rb") as f:
                 content = pickle.load(f)
             assert content["model_id"] == "lgbm_BTCUSDT_1h_backup_test_v1"
+
+
+def test_get_backup_timestamp_parsing():
+    """Проверяет извлечение временной метки из различных форматов путей файлов бэкапов."""
+    filepath = "/some/dir/lgbm_BTCUSDT_1h_backup_202607151030.pkl"
+    ts = _get_backup_timestamp(filepath)
+    assert ts == 202607151030
+
+    # Ошибочный или поврежденный путь
+    invalid_filepath = "/some/dir/lgbm_BTCUSDT_1h_backup_abc.pkl"
+    assert _get_backup_timestamp(invalid_filepath) == 0
+
+
+def test_backup_rotation():
+    """Проверяет правильность ротации файлов бэкапов на диске."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Создаем 7 пустых бэкапов с разными временными метками
+        timestamps = [
+            "202607151000",
+            "202607151005",
+            "202607151010",
+            "202607151015",
+            "202607151020",
+            "202607151025",
+            "202607151030",
+        ]
+        symbol = "BTCUSDT"
+        tf = "1h"
+
+        for ts in timestamps:
+            filename = f"lgbm_{symbol}_{tf}_backup_{ts}.pkl"
+            with open(os.path.join(tmpdir, filename), "w") as f:
+                f.write("test")
+
+        # Оставляем последние 5
+        _rotate_backups(tmpdir, symbol, tf, keep_count=5)
+
+        remaining_files = os.listdir(tmpdir)
+        assert len(remaining_files) == 5
+
+        # Старые файлы должны быть удалены
+        assert f"lgbm_{symbol}_{tf}_backup_202607151000.pkl" not in remaining_files
+        assert f"lgbm_{symbol}_{tf}_backup_202607151005.pkl" not in remaining_files
+
+        # Свежие файлы должны остаться
+        for ts in ["202607151010", "202607151015", "202607151020", "202607151025", "202607151030"]:
+            assert f"lgbm_{symbol}_{tf}_backup_{ts}.pkl" in remaining_files
