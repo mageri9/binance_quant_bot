@@ -3,43 +3,83 @@ import asyncio
 
 from aiogram import Router
 from aiogram.filters import Command, StateFilter
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from redis.asyncio import Redis
 
 from src.crud.user import UserRepository
 from src.filters.check_admin import IsAdmin
+from src.risk import KillSwitchManager
 
 router = Router()
 
 
-# Определяем состояния для машины состояний (FSM)
 class BroadcastStates(StatesGroup):
     waiting_for_text = State()
 
 
+def get_risk_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Сбросить и сверить", callback_data="admin:risk:reset"
+        ),
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="🚨 Экстренный Стоп", callback_data="admin:risk:kill"
+        ),
+        InlineKeyboardButton(
+            text="🟢 Активировать NORMAL", callback_data="admin:risk:normal"
+        ),
+    )
+    return builder.as_markup()
+
+
 async def admin_handler(message: Message):
-    """Приветственное сообщение админ-панели."""
     await message.answer(
         f"👑 Привет, {html.escape(message.from_user.full_name)}!\n\n"
         f"Команды:\n"
         f"/stats — статистика пользователей\n"
+        f"/risk — панель безопасности (SRE Kill Switch)\n"
         f"/broadcast — рассылка сообщений всем пользователям\n"
         f"/cancel — отмена текущего действия"
     )
 
 
 async def stats_handler(message: Message, session: AsyncSession):
-    """Вывод количества активных пользователей."""
     repo = UserRepository(session)
     users = await repo.get_all_active()
     await message.answer(f"📊 Активных пользователей в БД: {len(users)}")
 
 
+async def risk_handler(message: Message, redis: Redis):
+    """Показывает текущее состояние Kill Switch и панель управления"""
+    manager = KillSwitchManager(redis)
+    state, reason, details = await manager.get_state()
+
+    color = "🟢" if state == "NORMAL" else "🟡" if state == "SAFE_MODE" else "🔴"
+
+    text = (
+        f"🛡️ <b>Управление рисками (SRE Kill Switch)</b>\n\n"
+        f"📊 Текущее состояние: {color} <b>{state}</b>\n"
+    )
+    if state != "NORMAL":
+        text += (
+            f"❓ Причина останова: <code>{reason or 'не указана'}</code>\n"
+            f"📝 Детали расхождений:\n<code>{details or 'нет деталей'}</code>\n"
+        )
+    else:
+        text += "✅ Система работает в штатном режиме, блокировок нет.\n"
+
+    await message.answer(text, reply_markup=get_risk_keyboard())
+
+
 async def broadcast_start_handler(message: Message, state: FSMContext):
-    """Запуск процесса рассылки. Переводит бота в режим ожидания текста."""
     await message.answer(
         "📝 <b>Режим рассылки сообщений</b>\n\n"
         "Отправьте текст, который вы хотите разослать ВСЕМ активным пользователям бота.\n"
@@ -50,7 +90,6 @@ async def broadcast_start_handler(message: Message, state: FSMContext):
 
 
 async def broadcast_cancel_handler(message: Message, state: FSMContext):
-    """Сброс состояния и отмена рассылки."""
     await state.clear()
     await message.answer("❌ Рассылка отменена.")
 
@@ -58,13 +97,11 @@ async def broadcast_cancel_handler(message: Message, state: FSMContext):
 async def broadcast_text_handler(
     message: Message, state: FSMContext, session: AsyncSession
 ):
-    """Прием текста рассылки и осуществление вещания с обработкой ошибок."""
     text_to_send = message.text or message.caption
     if not text_to_send:
         await message.answer("⚠️ Пожалуйста, отправьте текстовое сообщение.")
         return
 
-    # Очищаем состояние FSM, так как текст успешно получен
     await state.clear()
     await message.answer("⏳ Начинаю рассылку сообщений...")
 
@@ -80,12 +117,10 @@ async def broadcast_text_handler(
             await message.bot.send_message(chat_id=user.user_id, text=text_to_send)
             success_count += 1
         except TelegramForbiddenError:
-            # Пользователь заблокировал бота — помечаем его в БД
             await repo.set_blocked(user.user_id, True)
             blocked_count += 1
         except TelegramAPIError as e:
             err_msg = str(e).lower()
-            # Дополнительные проверки на удаленные чаты и деактивированных пользователей
             if (
                 "chat not found" in err_msg
                 or "deactivated" in err_msg
@@ -98,8 +133,6 @@ async def broadcast_text_handler(
         except Exception:
             failed_count += 1
         finally:
-            # Троттлинг рассылки: задержка в 0.05 сек гарантирует, что мы отправляем не более
-            # 20 сообщений в секунду, надежно защищая бота от лимитов Telegram (429 HTTP API)
             await asyncio.sleep(0.05)
 
     await message.answer(
@@ -113,8 +146,8 @@ async def broadcast_text_handler(
 def register_handlers():
     router.message.register(admin_handler, Command("admin"), IsAdmin())
     router.message.register(stats_handler, Command("stats"), IsAdmin())
+    router.message.register(risk_handler, Command("risk"), IsAdmin())
 
-    # Обработчики рассылки
     router.message.register(
         broadcast_cancel_handler, Command("cancel"), IsAdmin(), StateFilter("*")
     )
