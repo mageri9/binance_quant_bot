@@ -1,5 +1,6 @@
 import os
 import json
+import pickle
 import tempfile
 import pytest
 import pandas as pd
@@ -9,6 +10,7 @@ from sqlalchemy import select
 from src.db.models import Experiment
 from src.models.train import run_lgbm_experiment
 from src.models.predictor import Predictor
+from src.utils.artifact_paths import get_oos_path
 
 
 @pytest.mark.asyncio
@@ -71,6 +73,17 @@ async def test_run_lgbm_and_predict_success(temp_db_session):
             models_dir=models_dir,
             bypass_quality_gates=True,  # ← Исключаем случайные падения тестов на шуме
         )
+
+        oos_path = get_oos_path(result["model_path"])
+        assert os.path.exists(oos_path)
+
+        with open(result["model_path"], "rb") as f:
+            raw_artifact = pickle.load(f)
+        assert "df_oos" not in raw_artifact
+
+        df_oos_loaded = pd.read_parquet(oos_path)
+        assert len(df_oos_loaded) > 0
+        assert "predicted_signal" in df_oos_loaded.columns
 
         assert "experiment_id" in result
         assert os.path.exists(result["model_path"])

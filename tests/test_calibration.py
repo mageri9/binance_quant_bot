@@ -163,3 +163,47 @@ def test_perform_grid_search_filters_low_trade_count():
         df_valid, sl_grid=[0.02], tp_grid=[0.029], horizon_grid=[3], min_trades=5,
     )
     assert results == []
+
+@pytest.mark.asyncio
+async def test_get_best_calibration_prefers_sibling_oos_parquet(tmp_path):
+    """
+    Если рядом с моделью лежит {model}_oos.parquet, get_best_calibration
+    обязан использовать его и не должен трогать БД вообще.
+    """
+    from src.utils.artifact_paths import get_oos_path
+
+    model_path = str(tmp_path / "lgbm_BTCUSDT_1h.pkl")
+    oos_path = get_oos_path(model_path)
+
+    # Строим OOS-датафрейм с гарантированным TP-сценарием, как в
+    # test_perform_grid_search_success
+    df_oos = pd.DataFrame({
+        "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+        "high": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+        "low": [99.5, 100.5, 101.5, 102.5, 103.5, 104.5],
+        "predicted_signal": [0, 0, 1, 0, 0, 0],
+    })
+    df_oos.to_parquet(oos_path, index=False)
+
+    with open(model_path, "wb") as f:
+        pickle.dump({
+            "model": "dummy",
+            "features": ["rsi"],
+            "scaler": None,
+            "target_col": "target_binary",
+        }, f)
+
+    mock_settings = MagicMock()
+    mock_settings.get_model_path.return_value = model_path
+    mock_settings.CALIBRATION_MIN_TRADES = 1
+
+    with (
+        patch("scripts.calibrate.get_settings", return_value=mock_settings),
+        patch("src.crud.kline.KlineRepository.get_klines") as mock_get_klines,
+    ):
+        sl, tp, hz, report = await get_best_calibration("BTC/USDT", "1h", custom_model_path=model_path)
+
+    # БД не должна была вызываться вообще — данные пришли из parquet
+    mock_get_klines.assert_not_called()
+    assert sl is not None
+    assert tp is not None
