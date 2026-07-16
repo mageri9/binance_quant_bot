@@ -10,12 +10,12 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from src.models.backtest import TimeSeriesWalkForwardSplitter
+from src.models.backtest import TimeSeriesWalkForwardSplitter, purge_train_tail
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
 from src.core.config import get_settings
+from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 from datetime import datetime, timezone
-from src.utils.artifact_paths import get_oos_path
 
 # Отключаем избыточный вывод логов Optuna в консоль
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -213,10 +213,13 @@ async def run_lgbm_experiment(
         )
 
     # --- 1. СТРОГИЙ ХРОНОЛОГИЧЕСКИЙ SPLIT (80% / 20%) ---
+    purge_rows = MAX_ADAPTIVE_HORIZON_CANDLES
+    min_train_val_needed = train_size + test_size + purge_rows
+
     holdout_size = int(len(df_clean) * 0.2)
     # Для крошечных тест-выборок гарантируем, что останется хотя бы один фолд
-    if len(df_clean) - holdout_size < (train_size + test_size):
-        holdout_size = len(df_clean) - (train_size + test_size)
+    if len(df_clean) - holdout_size < min_train_val_needed:
+        holdout_size = len(df_clean) - min_train_val_needed
         if holdout_size < 0:
             holdout_size = 0
 
@@ -224,8 +227,12 @@ async def run_lgbm_experiment(
     df_train_val = df_clean.iloc[:split_idx].reset_index(drop=True)
     df_holdout = df_clean.iloc[split_idx:].reset_index(drop=True)
 
+    if len(df_holdout) > 0:
+        df_train_val = purge_train_tail(df_train_val, purge_rows)
+
     logger.info(
-        f"[MLOps Train] Всего строк: {len(df_clean)}. Валидация: {len(df_train_val)}, Holdout: {len(df_holdout)}"
+        f"[MLOps Train] Всего строк: {len(df_clean)}. Валидация: {len(df_train_val)}, "
+        f"Holdout: {len(df_holdout)}, Purge: {purge_rows if len(df_holdout) > 0 else 0}"
     )
 
     # 1.5. Шаг автоматической калибровки параметров через Optuna (если включено в конфиге)
@@ -243,7 +250,7 @@ async def run_lgbm_experiment(
             test_size=test_size,
             metadata_version=metadata["version"],
             n_trials=settings.OPTUNA_TRIALS,
-            label_horizon=settings.LABEL_HORIZON,
+            label_horizon=purge_rows,
         )
         logger.info(f"[+] Лучшие параметры подобраны: {best_params}")
 
@@ -275,7 +282,7 @@ async def run_lgbm_experiment(
         target_col,
         train_size,
         test_size,
-        settings.LABEL_HORIZON,
+        purge_rows,
         model_kwargs,
         is_multiclass,
         avg_method,

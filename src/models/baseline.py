@@ -11,7 +11,8 @@ from loguru import logger
 from src.models.backtest import TimeSeriesWalkForwardSplitter
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
-from src.core.config import get_settings  # Добавлен важный импорт настроек
+from src.core.config import get_settings
+from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 
 
 def _run_baseline_folds(splitter, df_clean, feature_cols, target_col, is_multiclass, c_parameter):
@@ -90,7 +91,7 @@ async def run_baseline_experiment(
     splitter = TimeSeriesWalkForwardSplitter(
         train_size=train_size,
         test_size=test_size,
-        label_horizon=settings.LABEL_HORIZON,
+        label_horizon=MAX_ADAPTIVE_HORIZON_CANDLES,
     )
 
     is_multiclass = target_col == "target_triple"
