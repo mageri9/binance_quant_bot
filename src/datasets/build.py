@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from datetime import datetime
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,10 +13,6 @@ from src.labels.generator import generate_binary_labels, generate_triple_labels
 
 
 def get_git_sha() -> str:
-    """
-    Получает хэш текущего коммита Git.
-    Если утилита Git недоступна в системе, возвращает 'unknown'.
-    """
     try:
         sha = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
@@ -34,14 +31,7 @@ async def build_and_save_dataset(
     threshold: float = 0.01,
     output_dir: str = "datasets",
 ) -> str:
-    """
-    Скачивает свечи из БД, рассчитывает все признаки и цели,
-    сохраняет готовую таблицу в Parquet и описание в JSON.
-    Возвращает путь к созданному файлу данных.
-    """
-    # 1. Загружаем свечи из базы данных
     repo = KlineRepository(session)
-    # Берем с запасом последние 10 000 свечей
     klines = await repo.get_klines(symbol, timeframe, limit=10000)
 
     if not klines:
@@ -49,82 +39,51 @@ async def build_and_save_dataset(
             f"В базе данных нет свечей для пары {symbol} и таймфрейма {timeframe}."
         )
 
-    # Превращаем данные из базы в таблицу pandas
-    # get_klines отдает свечи от новых к старым (desc),
-    # для расчета индикаторов нам нужно отсортировать их от старых к новым (asc)
-    data = []
-    for k in klines:
-        data.append(
-            {
-                "open_time": k.open_time,
-                "open": k.open,
-                "high": k.high,
-                "low": k.low,
-                "close": k.close,
-                "volume": k.volume,
-            }
-        )
+    data = [
+        {
+            "open_time": k.open_time,
+            "open": k.open,
+            "high": k.high,
+            "low": k.low,
+            "close": k.close,
+            "volume": k.volume,
+        }
+        for k in klines
+    ]
     df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
 
-    # 2. Запускаем расчет индикаторов (RSI, MACD, волатильность...)
-    df_features = add_features(df)
-
-    # 3. Рассчитываем два типа целей (бинарную и тройную) для универсальности датасета
-    df_features["target_binary"] = generate_binary_labels(
-        df_features, horizon=horizon, threshold=0.0
-    )
-    df_features["target_triple"] = generate_triple_labels(
-        df_features, horizon=horizon, threshold=threshold
-    )
-
-    # 4. Определяем временные рамки нашего датасета
-    first_time_ms = int(df_features["open_time"].iloc[0])
-    last_time_ms = int(df_features["open_time"].iloc[-1])
-
-    start_date = datetime.fromtimestamp(first_time_ms / 1000).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-    end_date = datetime.fromtimestamp(last_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
-
-    # 5. Подготавливаем имена файлов (например, убираем косую черту: BTC/USDT -> BTCUSDT)
     clean_symbol = symbol.replace("/", "").replace(":", "")
-
     os.makedirs(output_dir, exist_ok=True)
 
-    parquet_filename = f"{clean_symbol}_{timeframe}_v{version}.parquet"
-    json_filename = f"{clean_symbol}_{timeframe}_v{version}.json"
+    parquet_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.parquet")
+    json_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.json")
 
-    parquet_path = os.path.join(output_dir, parquet_filename)
-    json_path = os.path.join(output_dir, json_filename)
+    # Переносим расчет признаков, меток и сохранение Parquet в фоновый поток
+    def process_data_sync() -> pd.DataFrame:
+        df_feats = add_features(df)
+        df_feats["target_binary"] = generate_binary_labels(df_feats, horizon=horizon, threshold=0.0)
+        df_feats["target_triple"] = generate_triple_labels(df_feats, horizon=horizon, threshold=threshold)
+        df_feats.to_parquet(parquet_path, index=False)
+        return df_feats
 
-    # 6. Сохраняем готовую таблицу в файл Parquet
-    df_features.to_parquet(parquet_path, index=False)
+    df_features = await asyncio.to_thread(process_data_sync)
 
-    # 7. Заполняем и сохраняем паспорт данных в JSON
+    first_time_ms = int(df_features["open_time"].iloc[0])
+    last_time_ms = int(df_features["open_time"].iloc[-1])
+    start_date = datetime.fromtimestamp(first_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    end_date = datetime.fromtimestamp(last_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
     metadata = {
         "symbol": symbol,
         "timeframe": timeframe,
         "version": version,
         "features": [
-            "rsi",
-            "macd",
-            "macd_signal",
-            "macd_hist",
-            "volatility",
-            "volume_ratio",
-            "bb_upper",
-            "bb_middle",
-            "bb_lower",
-            "atr",
-            "adx",
+            "rsi", "macd", "macd_signal", "macd_hist", "volatility",
+            "volume_ratio", "bb_upper", "bb_middle", "bb_lower", "atr", "adx"
         ],
         "targets": {
             "target_binary": {"type": "binary", "horizon": horizon, "threshold": 0.0},
-            "target_triple": {
-                "type": "triple",
-                "horizon": horizon,
-                "threshold": threshold,
-            },
+            "target_triple": {"type": "triple", "horizon": horizon, "threshold": threshold},
         },
         "date_range": {
             "start_time_ms": first_time_ms,
@@ -137,8 +96,11 @@ async def build_and_save_dataset(
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, indent=4, ensure_ascii=False)
+    def save_metadata_sync():
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=4, ensure_ascii=False)
+
+    await asyncio.to_thread(save_metadata_sync)
 
     logger.info(f"Датасет успешно собран и записан в {parquet_path}")
     return parquet_path

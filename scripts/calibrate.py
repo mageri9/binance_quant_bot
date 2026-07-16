@@ -118,7 +118,9 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
     tp_grid = [0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15]
     horizon_grid = [3, 5, 8, 12]
 
-    results = perform_grid_search(
+    # Запускаем тяжелую симуляцию сделок бэктеста в потоке
+    results = await asyncio.to_thread(
+        perform_grid_search,
         df_valid,
         sl_grid,
         tp_grid,

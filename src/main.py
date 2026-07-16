@@ -487,10 +487,13 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         if df_old_oos is not None:
                             from src.features.drift import ConceptDriftDetector
 
-                            df_new = pd.read_parquet(parquet_path)
+                            df_new = await asyncio.to_thread(
+                                pd.read_parquet, parquet_path
+                            )
                             old_features = old_artifact.get("features", [])
 
-                            drift_report = ConceptDriftDetector.detect_drift(
+                            drift_report = await asyncio.to_thread(
+                                ConceptDriftDetector.detect_drift,
                                 reference_df=df_old_oos,
                                 current_df=df_new,
                                 features=old_features,
