@@ -252,32 +252,77 @@ async def check_and_rollback_model(
 
 async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
     """
-    Асинхронная фоновая служба бумажной торговли для конкретного актива (Quest 9).
+    Фоновая служба торговли.
+    Автоматически переключается на реальный API Binance при наличии ключей.
+    Соблюдает блокировки Kill Switch и сверяет позиции перед каждым раундом.
     """
     from src.data.collector import DataCollector
     from src.models.predictor import Predictor
-    from src.paper_trading.engine import PaperTradingEngine
     from src.crud.kline import KlineRepository
+
+    # Новые импорты SRE контура
+    from src.exchange.paper import PaperExchange
+    from src.exchange.binance import BinanceExchange
+    from src.risk.engine import RiskEngine
+    from src.risk.kill_switch import KillSwitchManager, reconcile_positions
 
     settings = get_settings()
     model_path = settings.get_model_path(symbol, timeframe)
-    logger.info(f"Фоновая служба Paper Trading для {symbol} ({timeframe}) запущена.")
+    logger.info(f"Фоновая служба торговли для {symbol} ({timeframe}) запущена.")
 
     while True:
         try:
-            # Опрашиваем биржу раз в 1 час
             await asyncio.sleep(3600)
 
             async with AsyncSessionFactory() as session:
+                # 1. Скачиваем свечи
                 async with DataCollector(session) as collector:
                     await collector.fetch_and_save_klines(symbol, timeframe, limit=5)
 
-                repo = KlineRepository(session)
-                klines = await repo.get_klines(symbol, timeframe, limit=50)
+                # 2. Инициализируем SRE менеджеры и Биржу
+                redis = await get_redis()
+                kill_switch = KillSwitchManager(redis)
+                risk_engine = RiskEngine()
 
-                data = []
-                for k in klines:
-                    data.append(
+                # Динамическая регистрация API коннектора
+                if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
+                    exchange = BinanceExchange(
+                        api_key=settings.BINANCE_API_KEY,
+                        secret=settings.BINANCE_API_SECRET,
+                        testnet=settings.BINANCE_TESTNET,
+                    )
+                else:
+                    exchange = PaperExchange(session)
+
+                try:
+                    # 3. Сверка позиций перед раундом (Биржа — источник истины)
+                    symbols_to_sync = [config[0] for config in settings.ACTIVE_CONFIGS]
+                    synced, error_details = await reconcile_positions(
+                        exchange, session, symbols_to_sync, kill_switch
+                    )
+
+                    if not synced:
+                        # Если нашли рассинхронизацию, шлем критический алерт
+                        alert_msg = (
+                            f"🚨 [SRE RECONCILE ERROR] Рассинхронизация по {symbol}!\n"
+                            f"Бот заблокирован в SAFE_MODE.\n"
+                            f"<code>{error_details}</code>"
+                        )
+                        for admin_id in settings.ADMIN_IDS:
+                            await bot.send_message(chat_id=admin_id, text=alert_msg)
+                        continue
+
+                    # 4. Проверяем Kill Switch перед генерацией сигналов
+                    if await kill_switch.is_trading_blocked():
+                        continue
+
+                    if not os.path.exists(model_path):
+                        continue
+
+                    # 5. Загружаем свежие данные для предиктора
+                    kline_repo = KlineRepository(session)
+                    klines = await kline_repo.get_klines(symbol, timeframe, limit=50)
+                    data = [
                         {
                             "open_time": k.open_time,
                             "open": k.open,
@@ -286,64 +331,48 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                             "close": k.close,
                             "volume": k.volume,
                         }
+                        for k in klines
+                    ]
+                    df = (
+                        pd.DataFrame(data)
+                        .sort_values("open_time")
+                        .reset_index(drop=True)
                     )
-                df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
 
-                if not os.path.exists(model_path):
-                    continue
+                    predictor = Predictor(model_path)
+                    signal = predictor.predict(df)
+                    latest_close = df["close"].iloc[-1]
 
-                predictor = Predictor(model_path)
-                engine_pt = PaperTradingEngine(session)
+                    # 6. Запускаем торговый движок
+                    from src.exchange.engine import TradingEngine
 
-                log_msg = await engine_pt.process_market_update(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    latest_candles=df,
-                    predictor=predictor,
-                )
-
-                if log_msg:
-                    # 1. Отправляем ВСЕ логи сделок администраторам
-                    for admin_id in settings.ADMIN_IDS:
-                        try:
-                            await bot.send_message(chat_id=admin_id, text=log_msg)
-                        except Exception as e:
-                            logger.error(
-                                f"Не удалось отправить уведомление админу {admin_id}: {e}"
-                            )
-
-                    # 2. Обычным подписчикам отправляем ТОЛЬКО закрытие сделок
-                    is_closure = any(
-                        log_msg.startswith(prefix) for prefix in ["🔴", "🟢", "🔵"]
+                    trading_engine = TradingEngine(
+                        exchange=exchange,
+                        risk_engine=risk_engine,
+                        kill_switch_manager=kill_switch,
+                        session=session,
+                        settings=settings,
                     )
-                    if is_closure:
-                        from src.crud.user import UserRepository
 
-                        user_repo = UserRepository(session)
-                        subscribed_users = await user_repo.get_all_subscribed()
+                    log_msg = await trading_engine.process_signal(
+                        symbol, signal, latest_close
+                    )
 
-                        for u in subscribed_users:
-                            if u.user_id in settings.ADMIN_IDS:
-                                continue
+                    if log_msg:
+                        # Оповещаем администраторов о всех событиях движка
+                        for admin_id in settings.ADMIN_IDS:
                             try:
-                                await bot.send_message(chat_id=u.user_id, text=log_msg)
+                                await bot.send_message(chat_id=admin_id, text=log_msg)
                             except Exception as e:
-                                logger.error(
-                                    f"Не удалось отправить сигнал подписчику {u.user_id}: {e}"
-                                )
+                                logger.error(f"Не удалось отправить лог админу: {e}")
 
-                        # 3. Запускаем SRE проверку на деградацию модели
-                        try:
-                            await check_and_rollback_model(
-                                session, bot, symbol, timeframe
-                            )
-                        except Exception as rollback_err:
-                            logger.error(
-                                f"Ошибка при проверке/откате деградации модели {symbol}: {rollback_err}"
-                            )
+                finally:
+                    # Закрываем асинхронную сессию CCXT
+                    if hasattr(exchange, "close"):
+                        await exchange.close()
 
         except Exception as e:
-            logger.error(f"Ошибка в цикле бумажной торговли для {symbol}: {e}")
+            logger.error(f"Ошибка в цикле торговли для {symbol}: {e}")
             await asyncio.sleep(60)
 
 
