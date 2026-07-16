@@ -15,6 +15,7 @@ from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
 from src.core.config import get_settings
 from datetime import datetime, timezone
+from src.utils.artifact_paths import get_oos_path
 
 # Отключаем избыточный вывод логов Optuna в консоль
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -336,6 +337,9 @@ async def run_lgbm_experiment(
     # Объединяем OOS фолды
     df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
 
+    # Объединяем OOS фолды
+    df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
+
     # 5. Метрики для записи в БД экспериментов
     metrics = {
         "accuracy": float(accuracy_score(all_y_true, all_y_pred)),
@@ -401,7 +405,7 @@ async def run_lgbm_experiment(
         "target_col": target_col,
         "features": feature_cols,
         "features_hash": features_hash,
-        "model": final_model,  # ← Сохраняем модель, обученную на 100% данных
+        "model": final_model,
         "scaler": None,
         "calibration": {
             "sl_pct": settings.PAPER_SL_PCT,
@@ -411,11 +415,18 @@ async def run_lgbm_experiment(
             "calibrated_at": None,
         },
         "metrics": metrics,
-        "df_oos": df_oos,
+        # df_oos больше не хранится внутри pickle — см. get_oos_path().
+        # Каждая загрузка модели (инференс, откат) больше не тащит в память
+        # весь OOS-датафрейм, который нужен только для калибровки/drift-проверки.
     }
 
     with open(model_path, "wb") as f:
         pickle.dump(artifact, f)
+
+    # Сохраняем OOS отдельно, рядом с моделью — читается точечно только там,
+    # где реально нужен (scripts/calibrate.py, drift-детекция в src/main.py).
+    oos_path = get_oos_path(model_path)
+    await asyncio.to_thread(df_oos.to_parquet, oos_path, index=False)
 
     return {
         "experiment_id": experiment.id,
