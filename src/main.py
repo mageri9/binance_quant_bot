@@ -376,12 +376,9 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
             await asyncio.sleep(60)
 
 
+_TRAIN_SEMAPHORE = asyncio.Semaphore(1)
+
 async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
-    """
-    Выполняет один цикл переобучения для конкретного актива:
-    сборка датасета -> обучение baseline -> обучение LGBM с Quality Gate ->
-    автокалибровка -> детекция дрейфа -> продвижение в продакшн (или отказ).
-    """
     from src.core.db import AsyncSessionFactory
     from src.crud.kline import KlineRepository
     from src.datasets.build import build_and_save_dataset
@@ -402,176 +399,162 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             )
             return
 
-        version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+        # Дешёвая проверка (чтение из БД) сделана вне семафора — держать
+        # блокировку ради неё незачем. Всё, что тяжело по памяти, — под ней.
+        async with _TRAIN_SEMAPHORE:
+            version = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
 
-        parquet_path = await build_and_save_dataset(
-            session,
-            symbol=symbol,
-            timeframe=timeframe,
-            version=version,
-            horizon=settings.LABEL_HORIZON,
-            threshold=settings.LABEL_THRESHOLD,
-        )
-        json_path = parquet_path.replace(".parquet", ".json")
+            parquet_path = await build_and_save_dataset(
+                session,
+                symbol=symbol,
+                timeframe=timeframe,
+                version=version,
+                horizon=settings.LABEL_HORIZON,
+                threshold=settings.LABEL_THRESHOLD,
+            )
+            json_path = parquet_path.replace(".parquet", ".json")
 
-        baseline_result = await run_baseline_experiment(
-            session,
-            parquet_path,
-            json_path,
-            train_size=settings.TRAIN_SIZE,
-            test_size=settings.TEST_SIZE,
-        )
-        baseline_f1 = baseline_result["metrics"]["f1"]
-
-        # Безопасно запускаем обучение с отслеживанием Quality Gate
-        try:
-            lgbm_result = await run_lgbm_experiment(
+            baseline_result = await run_baseline_experiment(
                 session,
                 parquet_path,
                 json_path,
                 train_size=settings.TRAIN_SIZE,
                 test_size=settings.TEST_SIZE,
-                models_dir="models/staging",
-                baseline_f1=baseline_f1,
             )
-            new_f1 = lgbm_result["metrics"]["f1"]
-        except ValueError as gate_err:
-            err_msg = str(gate_err)
-            if "REJECTED" in err_msg:
-                # Если модель отклонена воротами качества - это ШТАТНАЯ ситуация
-                logger.warning(f"[Retrain - {symbol}] {err_msg}")
+            baseline_f1 = baseline_result["metrics"]["f1"]
 
-                # Отправляем предупреждение админу в Telegram
-                reject_msg = f"⚠️ [Retrain - {symbol}] {err_msg}. В продакшн остается старая модель."
-                for admin_id in settings.ADMIN_IDS:
-                    try:
-                        await bot.send_message(chat_id=admin_id, text=reject_msg)
-                    except Exception as e:
-                        logger.error(f"Не удалось отправить алерт админу: {e}")
-
-                # Завершаем функцию успешно, чтобы планировщик заснул на полный интервал
-                return
-            else:
-                # Если возник другой ValueError, пробрасываем его дальше
-                raise gate_err
-
-        if new_f1 <= baseline_f1:
-            msg = (
-                f"⚠️ [Retrain v{version} - {symbol}] Новая модель НЕ превзошла baseline "
-                f"(LGBM f1={new_f1:.3f} vs baseline f1={baseline_f1:.3f}). "
-                f"В продакшн НЕ продвигается."
-            )
-            logger.warning(msg)
-        else:
-            os_dir = os.path.dirname(model_path)
-            if os_dir:
-                os.makedirs(os_dir, exist_ok=True)
-
-            # Инициализируем базовое сообщение
-            msg = (
-                f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
-                f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
-                f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n"
-            )
-
-            # --- АВТОМАТИЧЕСКАЯ КАЛИБРОВКА И ВШИВАНИЕ РИСКОВ В АРТЕФАКТ ---
             try:
-                from scripts.calibrate import get_best_calibration
+                lgbm_result = await run_lgbm_experiment(
+                    session,
+                    parquet_path,
+                    json_path,
+                    train_size=settings.TRAIN_SIZE,
+                    test_size=settings.TEST_SIZE,
+                    models_dir="models/staging",
+                    baseline_f1=baseline_f1,
+                )
+                new_f1 = lgbm_result["metrics"]["f1"]
+            except ValueError as gate_err:
+                err_msg = str(gate_err)
+                if "REJECTED" in err_msg:
+                    logger.warning(f"[Retrain - {symbol}] {err_msg}")
+                    reject_msg = f"⚠️ [Retrain - {symbol}] {err_msg}. В продакшн остается старая модель."
+                    for admin_id in settings.ADMIN_IDS:
+                        try:
+                            await bot.send_message(chat_id=admin_id, text=reject_msg)
+                        except Exception as e:
+                            logger.error(f"Не удалось отправить алерт админу: {e}")
+                    return
+                else:
+                    raise gate_err
 
-                best_sl, best_tp, best_hz, cal_report = await get_best_calibration(
-                    symbol,
-                    timeframe,
-                    custom_model_path=lgbm_result["model_path"],
+            if new_f1 <= baseline_f1:
+                msg = (
+                    f"⚠️ [Retrain v{version} - {symbol}] Новая модель НЕ превзошла baseline "
+                    f"(LGBM f1={new_f1:.3f} vs baseline f1={baseline_f1:.3f}). "
+                    f"В продакшн НЕ продвигается."
+                )
+                logger.warning(msg)
+            else:
+                os_dir = os.path.dirname(model_path)
+                if os_dir:
+                    os.makedirs(os_dir, exist_ok=True)
+
+                msg = (
+                    f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
+                    f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
+                    f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n"
                 )
 
-                # Открываем артефакт в staging, обновляем параметры калибровки
-                with open(lgbm_result["model_path"], "rb") as f:
-                    artifact = pickle.load(f)
-
-                artifact.setdefault("calibration", {}).update(
-                    {
-                        "sl_pct": best_sl,
-                        "tp_pct": best_tp,
-                        "horizon": best_hz,
-                        "calibrated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-
-                with open(lgbm_result["model_path"], "wb") as f:
-                    pickle.dump(artifact, f)
-
-                # Добавляем отчет калибровки к Telegram-сообщению
-                msg += f"\n{cal_report}"
-                logger.info(
-                    f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}, Horizon={best_hz}"
-                )
-
-                # --- АВТОМАТИЧЕСКАЯ ДЕТЕКЦИЯ ДРЕЙФА ПРИЗНАКОВ ---
                 try:
-                    if os.path.exists(model_path):
-                        with open(model_path, "rb") as f:
-                            old_artifact = pickle.load(f)
+                    from scripts.calibrate import get_best_calibration
 
-                        df_old_oos = old_artifact.get("df_oos")
-                        if df_old_oos is not None:
-                            from src.features.drift import ConceptDriftDetector
-
-                            df_new = await asyncio.to_thread(
-                                pd.read_parquet, parquet_path
-                            )
-                            old_features = old_artifact.get("features", [])
-
-                            drift_report = await asyncio.to_thread(
-                                ConceptDriftDetector.detect_drift,
-                                reference_df=df_old_oos,
-                                current_df=df_new,
-                                features=old_features,
-                            )
-
-                            if drift_report["drift_detected"]:
-                                drift_warning = (
-                                    "📊 <b>[SRE] Обнаружен дрейф распределения признаков!</b> "
-                                    "Рыночный цикл меняется."
-                                )
-                                logger.warning(f"[SRE] Concept drift detected for {symbol}")
-                                msg += f"\n\n{drift_warning}"
-                except Exception as drift_err:
-                    logger.error(f"Не удалось выполнить проверку дрейфа признаков: {drift_err}")
-
-            except Exception as cal_err:
-                logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
-                msg += f"\n\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
-
-            # --- Бэкап старой продакшн-модели перед заменой ---
-            if os.path.exists(model_path):
-                clean_symbol = symbol.replace("/", "").replace(":", "")
-                clean_tf = timeframe.replace("/", "")
-                backup_filename = (
-                    f"lgbm_{clean_symbol}_{clean_tf}_backup_"
-                    f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}.pkl"
-                )
-                backup_path = os.path.join(os_dir, backup_filename)
-                try:
-                    _atomic_copy(model_path, backup_path)
-                    logger.info(
-                        f"[Retrain - {symbol}] Успешно создан бэкап старой стабильной модели: {backup_path}"
+                    best_sl, best_tp, best_hz, cal_report = await get_best_calibration(
+                        symbol,
+                        timeframe,
+                        custom_model_path=lgbm_result["model_path"],
                     )
 
-                    # Запускаем автоматическую ротацию бэкапов: храним только последние 5 стабильных версий
-                    _rotate_backups(os_dir, clean_symbol, clean_tf, keep_count=5)
+                    with open(lgbm_result["model_path"], "rb") as f:
+                        artifact = pickle.load(f)
 
-                except Exception as copy_err:
-                    logger.error(f"Не удалось скопировать бэкап для {symbol}: {copy_err}")
+                    artifact.setdefault("calibration", {}).update(
+                        {
+                            "sl_pct": best_sl,
+                            "tp_pct": best_tp,
+                            "horizon": best_hz,
+                            "calibrated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
 
-            # Финально копируем упакованный и откалиброванный артефакт в продакшн
-            _atomic_copy(lgbm_result["model_path"], model_path)
-            logger.info(f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}")
+                    with open(lgbm_result["model_path"], "wb") as f:
+                        pickle.dump(artifact, f)
 
-        for admin_id in settings.ADMIN_IDS:
-            try:
-                await bot.send_message(chat_id=admin_id, text=msg)
-            except Exception as e:
-                logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+                    msg += f"\n{cal_report}"
+                    logger.info(
+                        f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}, Horizon={best_hz}"
+                    )
+
+                    try:
+                        if os.path.exists(model_path):
+                            with open(model_path, "rb") as f:
+                                old_artifact = pickle.load(f)
+
+                            df_old_oos = old_artifact.get("df_oos")
+                            if df_old_oos is not None:
+                                from src.features.drift import ConceptDriftDetector
+
+                                df_new = await asyncio.to_thread(
+                                    pd.read_parquet, parquet_path
+                                )
+                                old_features = old_artifact.get("features", [])
+
+                                drift_report = await asyncio.to_thread(
+                                    ConceptDriftDetector.detect_drift,
+                                    reference_df=df_old_oos,
+                                    current_df=df_new,
+                                    features=old_features,
+                                )
+
+                                if drift_report["drift_detected"]:
+                                    drift_warning = (
+                                        "📊 <b>[SRE] Обнаружен дрейф распределения признаков!</b> "
+                                        "Рыночный цикл меняется."
+                                    )
+                                    logger.warning(f"[SRE] Concept drift detected for {symbol}")
+                                    msg += f"\n\n{drift_warning}"
+                    except Exception as drift_err:
+                        logger.error(f"Не удалось выполнить проверку дрейфа признаков: {drift_err}")
+
+                except Exception as cal_err:
+                    logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
+                    msg += f"\n\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
+
+                if os.path.exists(model_path):
+                    clean_symbol = symbol.replace("/", "").replace(":", "")
+                    clean_tf = timeframe.replace("/", "")
+                    backup_filename = (
+                        f"lgbm_{clean_symbol}_{clean_tf}_backup_"
+                        f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}.pkl"
+                    )
+                    backup_path = os.path.join(os_dir, backup_filename)
+                    try:
+                        _atomic_copy(model_path, backup_path)
+                        logger.info(
+                            f"[Retrain - {symbol}] Успешно создан бэкап старой стабильной модели: {backup_path}"
+                        )
+                        _rotate_backups(os_dir, clean_symbol, clean_tf, keep_count=5)
+                    except Exception as copy_err:
+                        logger.error(f"Не удалось скопировать бэкап для {symbol}: {copy_err}")
+
+                _atomic_copy(lgbm_result["model_path"], model_path)
+                logger.info(f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}")
+
+            for admin_id in settings.ADMIN_IDS:
+                try:
+                    await bot.send_message(chat_id=admin_id, text=msg)
+                except Exception as e:
+                    logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
 
 
 async def retrain_loop(bot: Bot, symbol: str, timeframe: str):
