@@ -3,7 +3,14 @@ import pandas as pd
 import numpy as np
 
 from src.features.engineering import add_features
-from src.labels.generator import generate_binary_labels, generate_triple_labels
+from src.labels.generator import (
+    generate_triple_labels,
+    MAX_ADAPTIVE_HORIZON_CANDLES,
+    MIN_ADAPTIVE_HORIZON_CANDLES,
+    generate_binary_labels,
+)
+from src.models.backtest import TimeSeriesWalkForwardSplitter
+
 
 
 def test_labels_correctness():
@@ -202,3 +209,64 @@ def test_adaptive_triple_labels_with_atr_path_dependency():
 
     # Последние строки (в пределах максимального горизонта) должны быть NaN
     assert pd.isna(labels.iloc[-1])
+
+def test_adaptive_horizon_capped_at_max_constant():
+    """
+    Регрессия на источник утечки (Quest 4): при растянутом адаптивном
+    горизонте последние MAX_ADAPTIVE_HORIZON_CANDLES строк обязаны
+    остаться неразмеченными (не хватает будущего) — это подтверждает,
+    что верхняя граница горизонта действительно достижима и равна
+    константе, используемой для purge.
+    """
+    np.random.seed(7)
+    n = 300
+    atr = np.concatenate([np.full(150, 5.0), np.full(150, 0.05)])
+    close = 100 + np.cumsum(np.random.normal(0, 0.1, n))
+    df = pd.DataFrame({
+        "close": close,
+        "high": close + 0.2,
+        "low": close - 0.2,
+        "atr": atr,
+    })
+
+    labels = generate_triple_labels(df, horizon=2, threshold=0.01)
+
+    assert labels.iloc[-MAX_ADAPTIVE_HORIZON_CANDLES:].isna().all()
+    assert not pd.isna(labels.iloc[-(MAX_ADAPTIVE_HORIZON_CANDLES + 1)])
+
+
+def test_walk_forward_purge_with_nominal_horizon_is_insufficient():
+    """
+    Показывает сам баг, который чинит Quest 4: purge на номинальном
+    LABEL_HORIZON (например 5) НЕ покрывает адаптивный горизонт, который
+    может достигать MAX_ADAPTIVE_HORIZON_CANDLES (15) — то есть при
+    недостаточном purge несколько последних строк train_df всё ещё
+    содержат метки, резолвившиеся внутри test-окна.
+    """
+    np.random.seed(11)
+    n = 200
+    atr = np.full(n, 5.0)
+    atr[:100] = 0.05
+    close = 100 + np.cumsum(np.random.normal(0, 0.1, n))
+    df = pd.DataFrame({
+        "open_time": np.arange(n),
+        "close": close,
+        "high": close + 0.2,
+        "low": close - 0.2,
+        "atr": atr,
+    })
+    nominal_horizon = 5
+    df["target_triple"] = generate_triple_labels(df, horizon=nominal_horizon, threshold=0.01)
+
+    insufficient_splitter = TimeSeriesWalkForwardSplitter(
+        train_size=100, test_size=20, label_horizon=nominal_horizon,
+    )
+    correct_splitter = TimeSeriesWalkForwardSplitter(
+        train_size=100, test_size=20, label_horizon=MAX_ADAPTIVE_HORIZON_CANDLES,
+    )
+
+    _, _, info_insufficient = next(insufficient_splitter.split(df))
+    _, _, info_correct = next(correct_splitter.split(df))
+
+    assert info_correct["train_size"] <= info_insufficient["train_size"]
+    assert info_correct["train_size"] == 100 - MAX_ADAPTIVE_HORIZON_CANDLES

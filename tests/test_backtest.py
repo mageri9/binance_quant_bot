@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 
-from src.models.backtest import TimeSeriesWalkForwardSplitter
+from src.models.backtest import TimeSeriesWalkForwardSplitter, purge_train_tail
 
 
 def test_walk_forward_splitter_success():
@@ -58,3 +58,27 @@ def test_walk_forward_splitter_label_horizon_trims_train():
         assert len(train_df) == 45  # 50 - label_horizon
         assert info["train_size"] == 45
         assert len(test_df) == 10  # test не трогаем
+
+def test_purge_train_tail_basic():
+    df = pd.DataFrame({"value": np.arange(20)})
+    purged = purge_train_tail(df, 5)
+    assert len(purged) == 15
+    assert purged["value"].iloc[-1] == 14
+
+
+def test_purge_train_tail_zero_purge_is_noop():
+    df = pd.DataFrame({"value": np.arange(10)})
+    purged = purge_train_tail(df, 0)
+    assert len(purged) == 10
+
+
+def test_purge_train_tail_purge_exceeds_length_returns_empty():
+    df = pd.DataFrame({"value": np.arange(3)})
+    purged = purge_train_tail(df, 5)
+    assert len(purged) == 0
+
+
+def test_purge_train_tail_purge_equals_length_returns_empty():
+    df = pd.DataFrame({"value": np.arange(5)})
+    purged = purge_train_tail(df, 5)
+    assert len(purged) == 0
