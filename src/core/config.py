@@ -67,6 +67,11 @@ class Settings(BaseSettings):
 
     CALIBRATION_MIN_TRADES: int = 10
 
+    # Binance API (Optional, for Live/Testnet trading)
+    BINANCE_API_KEY: str = ""
+    BINANCE_API_SECRET: str = ""
+    BINANCE_TESTNET: bool = True
+
     def get_model_path(self, symbol: str, timeframe: str) -> str:
         """Динамически рассчитывает путь к pkl-файлу модели."""
         clean_symbol = symbol.replace("/", "").replace(":", "")
