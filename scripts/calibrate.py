@@ -3,9 +3,8 @@
 Использование в терминале:
     python -m scripts.calibrate --symbol BTC/USDT --timeframe 1h
 """
-import argparse
-import asyncio
 import os
+import asyncio
 import pickle
 import pandas as pd
 from loguru import logger
@@ -15,6 +14,7 @@ from src.core.config import get_settings
 from src.crud.kline import KlineRepository
 from src.features.engineering import add_features
 from src.strategy.signals import simulate_strategy
+from src.utils.artifact_paths import get_oos_path
 
 
 def perform_grid_search(
@@ -62,13 +62,28 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
     with open(model_path, "rb") as f:
         saved_data = pickle.load(f)
 
-    # 1. Пробуем получить чистые OOS-данные из файла модели
-    df_valid = saved_data.get("df_oos")
+    # 1. Пробуем получить чистые OOS-данные из отдельного parquet-файла (текущий формат)
+    oos_path = get_oos_path(model_path)
+    df_valid = None
 
-    if df_valid is not None:
-        logger.info(f"Используются чистые Out-of-Sample данные ({len(df_valid)} строк) из {os.path.basename(model_path)}")
+    if os.path.exists(oos_path):
+        df_valid = await asyncio.to_thread(pd.read_parquet, oos_path)
+        logger.info(
+            f"Используются чистые Out-of-Sample данные ({len(df_valid)} строк) из {os.path.basename(oos_path)}"
+        )
     else:
-        logger.warning("Чистые OOS-данные не найдены в файле модели. Переход на резервный in-sample метод...")
+        # Обратная совместимость со старыми pkl-артефактами, где df_oos
+        # хранился внутри самого pickle. Актуально до тех пор,
+        # пока модель не пройдёт очередной цикл переобучения.
+        df_valid = saved_data.get("df_oos")
+        if df_valid is not None:
+            logger.info(
+                f"Используются чистые Out-of-Sample данные ({len(df_valid)} строк) "
+                f"из легаси-поля df_oos внутри {os.path.basename(model_path)}"
+            )
+
+    if df_valid is None:
+        logger.warning("Чистые OOS-данные не найдены ни в parquet, ни в pickle. Переход на резервный in-sample метод...")
         async with AsyncSessionFactory() as session:
             repo = KlineRepository(session)
             klines = await repo.get_klines(symbol, timeframe, limit=10000)
