@@ -1,9 +1,14 @@
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 from datetime import datetime, timezone
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects import postgresql
 
 from src.data.collector import DataCollector
 from src.crud.kline import KlineRepository
+from src.db.models import Kline
 
 
 @pytest.mark.asyncio
@@ -23,12 +28,10 @@ async def test_fetch_and_save_klines(temp_db_session):
         count = await collector.fetch_and_save_klines(
             symbol="BTC/USDT",
             timeframe="1h",
-            # Явно указываем международный часовой пояс UTC
             since_datetime=datetime(2023, 1, 1, tzinfo=timezone.utc),
             limit=2,
         )
 
-        # Проверяем вызов (теперь миллисекунды совпадут на любом компьютере)
         mock_exchange.fetch_ohlcv.assert_called_once_with(
             symbol="BTC/USDT", timeframe="1h", since=1672531200000, limit=2
         )
@@ -85,3 +88,45 @@ async def test_kline_upsert(temp_db_session):
     assert len(saved_klines) == 1
     assert saved_klines[0].close == 16999.0
     assert saved_klines[0].volume == 1500.0
+
+
+def test_kline_repository_dialect_selection():
+    pg_session = MagicMock()
+    pg_session.get_bind.return_value.dialect.name = "postgresql"
+    repo_pg = KlineRepository(pg_session)
+    assert repo_pg._insert() is pg_insert
+
+    sqlite_session = MagicMock()
+    sqlite_session.get_bind.return_value.dialect.name = "sqlite"
+    repo_sqlite = KlineRepository(sqlite_session)
+    assert repo_sqlite._insert() is sqlite_insert
+
+
+def test_postgresql_upsert_compilation():
+    stmt = pg_insert(Kline).values(
+        symbol="BTC/USDT",
+        timeframe="1h",
+        open_time=1672531200000,
+        open=16800.0,
+        high=16900.0,
+        low=16700.0,
+        close=16850.0,
+        volume=1000.0,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["symbol", "timeframe", "open_time"],
+        set_={
+            "open": stmt.excluded.open,
+            "high": stmt.excluded.high,
+            "low": stmt.excluded.low,
+            "close": stmt.excluded.close,
+            "volume": stmt.excluded.volume,
+        }
+    )
+
+    compiled = stmt.compile(dialect=postgresql.dialect())
+    sql_str = str(compiled)
+
+    assert "INSERT INTO klines" in sql_str
+    assert "ON CONFLICT (symbol, timeframe, open_time) DO UPDATE SET" in sql_str
+    assert "open = EXCLUDED.open" in sql_str

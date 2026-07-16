@@ -11,7 +11,8 @@ class KlineRepository:
         self.session = session
 
     def _insert(self):
-        if self.session.bind.dialect.name == "postgresql":
+        bind = self.session.get_bind()
+        if bind.dialect.name == "postgresql":
             return pg_insert
         return sqlite_insert
 
