@@ -2,6 +2,27 @@ import pandas as pd
 from typing import Generator, Tuple, Dict, Any
 
 
+def purge_train_tail(train_df: pd.DataFrame, purge_rows: int) -> pd.DataFrame:
+    """
+    Отбрасывает последние `purge_rows` строк train_df.
+
+    Используется двумя способами:
+      1) внутри TimeSeriesWalkForwardSplitter — покадрово, перед каждым
+         test-окном фолда;
+      2) отдельно в run_lgbm_experiment — на границе df_train_val/df_holdout,
+         где train/test режутся вручную, а не через сплиттер.
+
+    Оба случая защищают от одной и той же утечки: адаптивный горизонт
+    Triple Barrier может резолвить метку данными, лежащими уже за
+    границей train-окна.
+    """
+    if purge_rows <= 0:
+        return train_df
+    if len(train_df) <= purge_rows:
+        return train_df.iloc[0:0]
+    return train_df.iloc[:-purge_rows]
+
+
 class TimeSeriesWalkForwardSplitter:
     def __init__(
         self,
@@ -11,15 +32,16 @@ class TimeSeriesWalkForwardSplitter:
         label_horizon: int = 0,
     ):
         """
-        :param label_horizon: количество последних строк train_df,
-            которые отбрасываются перед обучением. Нужно, если метки
-            (target) размечены через shift(-horizon) на полном
-            датафрейме ДО разбиения на train/test — тогда последние
-            `label_horizon` строк train содержат метку, посчитанную
-            по цене закрытия, физически лежащей уже в test-окне
-            следующего сегмента (утечка будущего). При 0 (по
-            умолчанию) поведение не меняется — обратная совместимость
-            для случаев, где сплиттер используется без такой разметки.
+        :param label_horizon: purge — количество последних строк train_df,
+            которые отбрасываются перед обучением. ВАЖНО: это значение
+            должно отражать МАКСИМАЛЬНО ВОЗМОЖНЫЙ горизонт разметки, а не
+            номинальный (настроенный) horizon — при адаптивной Triple
+            Barrier разметке (см. src.labels.generator.MAX_ADAPTIVE_HORIZON_CANDLES)
+            фактический горизонт метки может быть значительно больше
+            конфигурационного LABEL_HORIZON. Недостаточный purge означает
+            утечку данных из test в train. При 0 (по умолчанию) поведение
+            не меняется — обратная совместимость для случаев без такой
+            разметки.
         """
         self.train_size = train_size
         self.test_size = test_size
@@ -46,10 +68,7 @@ class TimeSeriesWalkForwardSplitter:
             train_df = df.iloc[train_start:train_end].copy()
             test_df = df.iloc[test_start:test_end].copy()
 
-            # Отбрасываем последние label_horizon строк train_df: их метка
-            # рассчитана по close, лежащему уже в тестовом окне (см. docstring).
-            if self.label_horizon > 0:
-                train_df = train_df.iloc[: -self.label_horizon] if len(train_df) > self.label_horizon else train_df.iloc[0:0]
+            train_df = purge_train_tail(train_df, self.label_horizon)
 
             info = {
                 "fold": fold,
