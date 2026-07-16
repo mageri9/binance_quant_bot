@@ -1,4 +1,7 @@
 from enum import Enum
+from src.core.config import get_settings
+
+settings = get_settings()
 
 
 class RiskDecision(Enum):
@@ -11,11 +14,13 @@ class RiskDecision(Enum):
 class RiskEngine:
     """
     Защитный модуль управления рисками (Risk Engine).
+    Интегрирован с глобальными лимитами PAPER_RISK_PCT (10%).
     """
 
     def __init__(
         self,
-        max_allocation_pct: float = 0.15,
+        # По умолчанию берем 10% лимит из конфига
+        max_allocation_pct: float = settings.PAPER_RISK_PCT,
         max_open_positions: int = 3,
         max_daily_loss_pct: float = 0.05,
         consecutive_losses_limit: int = 5,
@@ -72,9 +77,9 @@ class RiskEngine:
             if is_close_order:
                 return RiskDecision.OPEN, active_pos["amount"], "Ордер закрытия позиции одобрен."
 
-        # 4. Проверка максимального размера сделки
+        # 4. Проверка максимального размера сделки (использует PAPER_RISK_PCT)
         requested_value = requested_amount * current_price
-        max_allowed_value = balance_total * self.max_allocation_pct
+        max_allowed_value = balance_free * self.max_allocation_pct
 
         adjusted_amount = requested_amount
         decision = RiskDecision.OPEN
@@ -83,7 +88,7 @@ class RiskEngine:
         if requested_value > max_allowed_value:
             adjusted_amount = max_allowed_value / current_price
             decision = RiskDecision.REDUCE_SIZE
-            reason = f"Объем ордера снижен с {requested_value:.2f}$ до лимита {max_allowed_value:.2f}$"
+            reason = f"Объем ордера снижен с {requested_value:.2f}$ до лимита 10% от свободного банка ({max_allowed_value:.2f}$)"
 
         # 5. Проверка фактической нехватки свободного кэша
         final_value = adjusted_amount * current_price
