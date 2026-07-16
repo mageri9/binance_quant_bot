@@ -59,11 +59,15 @@ async def test_build_and_save_dataset_success(temp_db_session):
         assert "target_triple" in df_loaded.columns
 
         # Так как горизонт = 3, последние 3 строки целей должны остаться NaN
-        assert pd.isna(df_loaded["target_binary"].iloc[-1])
-        assert pd.isna(df_loaded["target_binary"].iloc[-2])
-        assert pd.isna(df_loaded["target_binary"].iloc[-3])
-        # Строка до горизонта должна быть успешно размечена
-        assert not pd.isna(df_loaded["target_binary"].iloc[-4])
+        from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
+
+        assert (
+            df_loaded["target_binary"].iloc[-MAX_ADAPTIVE_HORIZON_CANDLES:].isna().all()
+        )
+
+        assert not pd.isna(
+            df_loaded["target_binary"].iloc[-(MAX_ADAPTIVE_HORIZON_CANDLES + 1)]
+        )
 
         # 4. Проверяем корректность паспорта метаданных
         with open(json_path, "r", encoding="utf-8") as f:
