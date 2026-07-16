@@ -22,6 +22,7 @@ from src.middlewares.db import DBSessionMiddleware
 from src.middlewares.logger import LoggerMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
+from src.utils.artifact_paths import get_oos_path
 
 
 def _atomic_copy(src: str, dst: str) -> None:
@@ -549,6 +550,16 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
                 _atomic_copy(lgbm_result["model_path"], model_path)
                 logger.info(f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}")
+
+                staging_oos_path = get_oos_path(lgbm_result["model_path"])
+                if os.path.exists(staging_oos_path):
+                    production_oos_path = get_oos_path(model_path)
+                    try:
+                        _atomic_copy(staging_oos_path, production_oos_path)
+                    except Exception as oos_copy_err:
+                        logger.error(
+                            f"Не удалось скопировать OOS-parquet для {symbol}: {oos_copy_err}"
+                        )
 
             for admin_id in settings.ADMIN_IDS:
                 try:
