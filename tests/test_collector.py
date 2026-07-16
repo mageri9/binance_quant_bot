@@ -127,6 +127,7 @@ def test_postgresql_upsert_compilation():
     compiled = stmt.compile(dialect=postgresql.dialect())
     sql_str = str(compiled)
 
+    # Проверяем ключевые блоки Postgres-синтаксиса (теперь в нижнем регистре)
     assert "INSERT INTO klines" in sql_str
     assert "ON CONFLICT (symbol, timeframe, open_time) DO UPDATE SET" in sql_str
-    assert "open = EXCLUDED.open" in sql_str
+    assert "open = excluded.open" in sql_str
