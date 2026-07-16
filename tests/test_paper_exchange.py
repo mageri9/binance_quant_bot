@@ -46,8 +46,8 @@ async def test_paper_exchange_execution_math(temp_db_session):
     # Объем выхода: 109.945 * 10 = 1099.45$
     # Комиссия за выход: 1099.45 * 0.001 = 1.09945$
     # Сырой PnL: (109.945 - 100.05) * 10 = 98.95$
-    # Чистый PnL с учетом двух комиссий: 98.95 - 1.0005 (вход) - 1.09945 (выход) = 96.84995$
-    # Итоговый кэш на балансе: 10000 + 96.84995 = 10096.84995$
+    # Чистый PnL с учетом двух комиссий: 98.95 - 1.0005 (вход) - 1.09945 (выход) = 96.85005$
+    # Итоговый кэш на балансе: 10000 + 96.85005 = 10096.85005$
     order_close = await exchange.create_order(
         symbol="BTC/USDT",
         side="sell",
@@ -59,11 +59,11 @@ async def test_paper_exchange_execution_math(temp_db_session):
     assert order_close["price"] == pytest.approx(109.945)
     assert order_close["commission"] == pytest.approx(1.09945)
     assert order_close["status"] == "closed"
-    assert order_close["pnl"] == pytest.approx(96.84995)
+    assert order_close["pnl"] == pytest.approx(96.85005)
 
     bal_end = await exchange.get_balance()
-    assert bal_end["free"] == pytest.approx(10096.84995)
-    assert bal_end["total"] == pytest.approx(10096.84995)
+    assert bal_end["free"] == pytest.approx(10096.85005)
+    assert bal_end["total"] == pytest.approx(10096.85005)
 
     # Позиция должна быть полностью закрыта
     assert await exchange.get_position("BTC/USDT") is None
