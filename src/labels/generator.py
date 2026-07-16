@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 
 
+MIN_ADAPTIVE_HORIZON_CANDLES = 2
+MAX_ADAPTIVE_HORIZON_CANDLES = 15
+
+
 def generate_binary_labels(
     df: pd.DataFrame, horizon: int = 5, threshold: float = 0.0
 ) -> pd.Series:
@@ -35,7 +39,13 @@ def generate_binary_labels(
             hz = horizon
         else:
             ratio = curr_atr_rolling / curr_atr
-            hz = int(np.clip(np.round(horizon * ratio), 2, 15))
+            hz = int(
+                np.clip(
+                    np.round(horizon * ratio),
+                    MIN_ADAPTIVE_HORIZON_CANDLES,
+                    MAX_ADAPTIVE_HORIZON_CANDLES,
+                )
+            )
 
         if t + hz >= n:
             labels[t] = np.nan
@@ -90,7 +100,13 @@ def generate_triple_labels(
             hz = horizon
         else:
             ratio = curr_atr_rolling / curr_atr
-            hz = int(np.clip(np.round(horizon * ratio), 2, 15))
+            hz = int(
+                np.clip(
+                    np.round(horizon * ratio),
+                    MIN_ADAPTIVE_HORIZON_CANDLES,
+                    MAX_ADAPTIVE_HORIZON_CANDLES,
+                )
+            )
 
         if t + hz >= n:
             labels[t] = np.nan
