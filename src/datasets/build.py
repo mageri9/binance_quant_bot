@@ -8,6 +8,7 @@ import subprocess
 from loguru import logger
 
 from src.crud.kline import KlineRepository
+from src.utils.memory import downcast_dtypes
 from src.features.engineering import add_features
 from src.labels.generator import generate_binary_labels, generate_triple_labels
 
@@ -63,6 +64,7 @@ async def build_and_save_dataset(
         df_feats = add_features(df)
         df_feats["target_binary"] = generate_binary_labels(df_feats, horizon=horizon, threshold=0.0)
         df_feats["target_triple"] = generate_triple_labels(df_feats, horizon=horizon, threshold=threshold)
+        df_feats = downcast_dtypes(df_feats)
         df_feats.to_parquet(parquet_path, index=False)
         return df_feats
 

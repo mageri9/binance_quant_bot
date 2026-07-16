@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 
+from src.utils.memory import downcast_dtypes
+
 
 def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """
@@ -162,4 +164,4 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df_out["atr"] = calculate_atr(df_out)
     df_out["adx"] = calculate_adx(df_out)
 
-    return df_out
+    return downcast_dtypes(df_out)
