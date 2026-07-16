@@ -406,6 +406,7 @@ async def run_lgbm_experiment(
         "calibration": {
             "sl_pct": settings.PAPER_SL_PCT,
             "tp_pct": settings.PAPER_TP_PCT,
+            "horizon": settings.LABEL_HORIZON,
             "sharpe_ratio": None,
             "calibrated_at": None,
         },
