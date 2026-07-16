@@ -31,7 +31,9 @@ def generate_binary_labels(
     atr_series = pd.Series(atr)
     atr_rolling = atr_series.rolling(window=100, min_periods=1).mean().values
 
-    for t in range(n):
+    safe_end = n - MAX_ADAPTIVE_HORIZON_CANDLES
+
+    for t in range(safe_end):
         curr_atr = atr[t]
         curr_atr_rolling = atr_rolling[t]
 
@@ -61,6 +63,8 @@ def generate_binary_labels(
                 break
 
         labels[t] = 1.0 if hit_tp else 0.0
+
+    labels[safe_end:] = np.nan
 
     return pd.Series(labels, index=df.index)
 
@@ -92,7 +96,9 @@ def generate_triple_labels(
     atr_series = pd.Series(atr)
     atr_rolling = atr_series.rolling(window=100, min_periods=1).mean().values
 
-    for t in range(n):
+    safe_end = n - MAX_ADAPTIVE_HORIZON_CANDLES
+
+    for t in range(safe_end):
         curr_atr = atr[t]
         curr_atr_rolling = atr_rolling[t]
 
@@ -108,6 +114,7 @@ def generate_triple_labels(
                 )
             )
 
+        # Дополнительная защита на случай изменения констант
         if t + hz >= n:
             labels[t] = np.nan
             continue
@@ -126,10 +133,13 @@ def generate_triple_labels(
                 sl_idx = k
 
         if tp_idx != -1 and (sl_idx == -1 or tp_idx < sl_idx):
-            labels[t] = 1.0  # Long
+            labels[t] = 1.0
         elif sl_idx != -1 and (tp_idx == -1 or sl_idx < tp_idx):
-            labels[t] = -1.0  # Short
+            labels[t] = -1.0
         else:
-            labels[t] = 0.0  # Hold (выход по вертикальному барьеру)
+            labels[t] = 0.0
+
+    # Хвост всегда остается неразмеченным
+    labels[safe_end:] = np.nan
 
     return pd.Series(labels, index=df.index)
