@@ -9,10 +9,14 @@ settings = get_settings()
 _is_sqlite = settings.db_url.startswith("sqlite")
 _connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
 
+# Настройки пула для долгоживущих соединений с внешними СУБД (Postgres)
+_pool_kwargs = {} if _is_sqlite else {"pool_pre_ping": True, "pool_recycle": 1800}
+
 engine = create_async_engine(
     settings.db_url,
     echo=False,
     connect_args=_connect_args,
+    **_pool_kwargs
 )
 
 if _is_sqlite:
