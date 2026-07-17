@@ -108,12 +108,14 @@ class BinanceExchange(BaseExchange):
         try:
             await self._ensure_markets()
 
-            precise_amount = self.exchange.amount_to_precision(symbol, amount)
-            precise_price = (
-                self.exchange.price_to_precision(symbol, price)
-                if price is not None
-                else None
-            )
+            # Применяем правила точности биржи (precision / step size) перед отправкой
+            precise_amount_str = self.exchange.amount_to_precision(symbol, amount)
+            precise_amount = float(precise_amount_str) if precise_amount_str is not None else amount
+
+            precise_price = None
+            if price is not None:
+                precise_price_str = self.exchange.price_to_precision(symbol, price)
+                precise_price = float(precise_price_str) if precise_price_str is not None else price
 
             order = await self.exchange.create_order(
                 symbol=symbol,
@@ -149,7 +151,7 @@ class BinanceExchange(BaseExchange):
             if filled_amount is None:
                 filled_amount = order.get("amount")
             if filled_amount is None:
-                filled_amount = amount
+                filled_amount = precise_amount
 
             fee_info = order.get("fee") or {}
             commission = fee_info.get("cost")
