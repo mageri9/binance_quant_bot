@@ -48,6 +48,14 @@ async def test_concurrent_retrain_cycles():
             return_value=mock_baseline_result,
         ),
         patch(
+            "src.models.baseline.compute_baseline_holdout_f1",
+            new_callable=AsyncMock,
+            return_value={
+                "f1": mock_baseline_result["metrics"]["f1"],
+                "holdout_size": 10,
+            },
+        ),
+        patch(
             "src.models.train.run_lgbm_experiment",
             new_callable=AsyncMock,
             return_value=mock_lgbm_result,
