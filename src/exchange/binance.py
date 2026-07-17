@@ -115,7 +115,9 @@ class BinanceExchange(BaseExchange):
             precise_price = None
             if price is not None:
                 precise_price_str = self.exchange.price_to_precision(symbol, price)
-                precise_price = float(precise_price_str) if precise_price_str is not None else price
+                precise_price = (
+                    float(precise_price_str) if precise_price_str is not None else price
+                )
 
             order = await self.exchange.create_order(
                 symbol=symbol,
@@ -125,45 +127,78 @@ class BinanceExchange(BaseExchange):
                 price=precise_price,
             )
 
+            # --- МНОГОУРОВНЕВЫЙ КАСКАД ДЛЯ ИЗБЕЖАНИЯ float(None) ---
             avg_price = order.get("average")
             if avg_price is None:
                 avg_price = order.get("price")
 
-            # CCXT часто не успевает вернуть average/price сразу после
-            # исполнения маркет-ордера на фьючерсах Binance — биржа досчитывает
-            # среднюю цену чуть позже. Добираем через fetch_order.
+            # 1. Используем цену входа из параметров вызова
+            if avg_price is None and price is not None:
+                avg_price = price
+
+            # 2. Пытаемся уточнить статус ордера через точечный запрос
             if avg_price is None:
                 order_id = order.get("id")
                 if order_id:
                     try:
                         refreshed = await self.exchange.fetch_order(order_id, symbol)
                         avg_price = refreshed.get("average") or refreshed.get("price")
-                        order = refreshed
+                        order = refreshed  # обновляем ордер актуальными данными
                     except Exception as fetch_err:
                         logger.warning(
-                            f"[BinanceExchange] Не удалось уточнить цену ордера {order_id} ({symbol}): {fetch_err}"
+                            f"[BinanceExchange] Не удалось уточнить цену ордера {order_id} ({symbol}) через fetch_order: {fetch_err}"
                         )
 
+            # 3. Запрашиваем цену последней сделки или тикер (latest_close)
             if avg_price is None:
-                avg_price = price if price is not None else 0.0
+                try:
+                    last_trade = await self.get_last_trade_price(symbol)
+                    if last_trade is not None:
+                        avg_price = last_trade
+                    else:
+                        ticker = await self.exchange.fetch_ticker(symbol)
+                        avg_price = ticker.get("last") or ticker.get("close")
+                except Exception as market_err:
+                    logger.warning(
+                        f"[BinanceExchange] Не удалось получить рыночную цену последней сделки для {symbol}: {market_err}"
+                    )
 
+            # Жесткий дефолт, исключающий TypeError при конвертации в float
+            if avg_price is None:
+                avg_price = 0.0
+
+            # 4. None-guard для объема сделки (filled_amount)
             filled_amount = order.get("filled")
             if filled_amount is None:
                 filled_amount = order.get("amount")
             if filled_amount is None:
                 filled_amount = precise_amount
 
-            fee_info = order.get("fee") or {}
+            try:
+                filled_amount = float(filled_amount)
+            except (ValueError, TypeError):
+                filled_amount = float(precise_amount)
+
+            # 5. None-guard для комиссии (fee)
+            fee_info = order.get("fee")
+            if fee_info is None or not isinstance(fee_info, dict):
+                fee_info = {}
+
             commission = fee_info.get("cost")
             if commission is None:
+                commission = 0.0
+
+            try:
+                commission = float(commission)
+            except (ValueError, TypeError):
                 commission = 0.0
 
             return {
                 "symbol": symbol,
                 "side": side,
                 "price": float(avg_price),
-                "amount": float(filled_amount),
-                "commission": float(commission),
+                "amount": filled_amount,
+                "commission": commission,
                 "status": "open"
                 if order.get("status") in ["open", "new"]
                 else "closed",
