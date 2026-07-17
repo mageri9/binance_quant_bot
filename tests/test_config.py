@@ -7,7 +7,10 @@ def test_db_url_postgresql_conversion():
     settings_pg = Settings(
         BOT_TOKEN="test_token",
         ADMIN_IDS=[123],
-        DATABASE_URL="postgresql://user:pass@localhost:5432/dbname"
+        DATABASE_URL="postgresql://user:pass@localhost:5432/dbname",
+        TRADING_MODE="testnet",
+        BINANCE_API_KEY="fake_key",
+        BINANCE_API_SECRET="fake_secret"
     )
     assert settings_pg.db_url == "postgresql+asyncpg://user:pass@localhost:5432/dbname"
 
@@ -17,7 +20,10 @@ def test_db_url_old_postgres_conversion():
     settings_old = Settings(
         BOT_TOKEN="test_token",
         ADMIN_IDS=[123],
-        DATABASE_URL="postgres://user:pass@localhost:5432/dbname"
+        DATABASE_URL="postgres://user:pass@localhost:5432/dbname",
+        TRADING_MODE="testnet",
+        BINANCE_API_KEY="fake_key",
+        BINANCE_API_SECRET="fake_secret"
     )
     assert settings_old.db_url == "postgresql+asyncpg://user:pass@localhost:5432/dbname"
 
@@ -27,6 +33,9 @@ def test_db_url_sqlite_default():
     settings_default = Settings(
         BOT_TOKEN="test_token",
         ADMIN_IDS=[123],
-        DATABASE_URL=""
+        DATABASE_URL="",
+        TRADING_MODE="testnet",
+        BINANCE_API_KEY="fake_key",
+        BINANCE_API_SECRET="fake_secret"
     )
     assert settings_default.db_url.startswith("sqlite+aiosqlite:///")

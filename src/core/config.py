@@ -1,5 +1,6 @@
 from pathlib import Path
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
@@ -72,13 +73,13 @@ class Settings(BaseSettings):
 
     CALIBRATION_MIN_TRADES: int = 10
 
-    # Binance API (Optional, for Live/Testnet trading)
-    BINANCE_API_KEY: str = ""
-    BINANCE_API_SECRET: str = ""
-    BINANCE_PROXY: str = ""
-    BINANCE_TESTNET: bool = False
+    # Trading Mode
+    TRADING_MODE: Literal["testnet", "mainnet"]
 
-    SHADOW_TRADING: bool = False
+    # Binance API
+    BINANCE_API_KEY: str
+    BINANCE_API_SECRET: str
+    BINANCE_PROXY: str = ""
 
     def get_model_path(self, symbol: str, timeframe: str) -> str:
         """Динамически рассчитывает путь к pkl-файлу модели."""
@@ -99,6 +100,22 @@ class Settings(BaseSettings):
             import json
             return json.loads(v)
         return v
+
+    @field_validator("BINANCE_API_KEY", "BINANCE_API_SECRET", mode="before")
+    @classmethod
+    def validate_api_keys(cls, v):
+        if isinstance(v, str) and not v.strip():
+            raise ValueError("Binance API Key и Secret не могут быть пустыми.")
+        return v
+
+    @property
+    def BINANCE_TESTNET(self) -> bool:
+        return self.TRADING_MODE == "testnet"
+
+    @property
+    def SHADOW_TRADING(self) -> bool:
+        # Временная совместимость до удаления в квестах 7/8
+        return False
 
     @property
     def db_url(self) -> str:

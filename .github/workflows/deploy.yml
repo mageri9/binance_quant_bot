@@ -20,6 +20,9 @@ jobs:
     env:
       BOT_TOKEN: "123456:fake_token_for_ci_tests"
       ADMIN_IDS: "[12345678]"
+      TRADING_MODE: "testnet"
+      BINANCE_API_KEY: "fake_api_key_for_ci_tests"
+      BINANCE_API_SECRET: "fake_api_secret_for_ci_tests"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
