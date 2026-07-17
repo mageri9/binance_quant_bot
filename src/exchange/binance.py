@@ -3,14 +3,10 @@ import pandas as pd
 from loguru import logger
 
 from src.exchange.base import BaseExchange
+from src.core.config import get_settings
 
 
 class BinanceExchange(BaseExchange):
-    """
-    Интеграция с API Binance / Binance Testnet через CCXT.
-    Настроена на работу с рынком деривативов (USDT-M Futures).
-    """
-
     def __init__(
         self,
         api_key: str = "",
@@ -27,14 +23,26 @@ class BinanceExchange(BaseExchange):
             "adjustForTimeDifference": True,
         }
 
-        self.exchange = ccxt.binance(
-            {
-                "enableRateLimit": True,
-                "apiKey": api_key,
-                "secret": secret,
-                "options": options,
+        # Базовая конфигурация
+        exchange_config = {
+            "enableRateLimit": True,
+            "apiKey": api_key,
+            "secret": secret,
+            "options": options,
+        }
+
+        # Получаем настройки и добавляем прокси, если он указан
+        settings = get_settings()
+        if settings.BINANCE_PROXY:
+            exchange_config["proxies"] = {
+                "http": settings.BINANCE_PROXY,
+                "https": settings.BINANCE_PROXY,
             }
-        )
+            logger.info(
+                f"[BinanceExchange] Подключение через прокси: {settings.BINANCE_PROXY}"
+            )
+
+        self.exchange = ccxt.binance(exchange_config)
 
         if testnet:
             self.exchange.set_sandbox_mode(True)

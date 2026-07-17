@@ -5,16 +5,29 @@ import ccxt.async_support as ccxt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.crud.kline import KlineRepository
+from src.core.config import get_settings
 
 
 class DataCollector:
     def __init__(self, session: AsyncSession):
         self.repo = KlineRepository(session)
-        self.exchange = ccxt.binance(
-            {
-                "enableRateLimit": True,
+
+        settings = get_settings()
+        exchange_config = {
+            "enableRateLimit": True,
+        }
+
+        # Применяем прокси для загрузки свечей
+        if settings.BINANCE_PROXY:
+            exchange_config["proxies"] = {
+                "http": settings.BINANCE_PROXY,
+                "https": settings.BINANCE_PROXY,
             }
-        )
+            logger.info(
+                f"[DataCollector] Инициализация CCXT с прокси: {settings.BINANCE_PROXY}"
+            )
+
+        self.exchange = ccxt.binance(exchange_config)
 
     async def __aenter__(self):
         return self

@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     # Binance API (Optional, for Live/Testnet trading)
     BINANCE_API_KEY: str = ""
     BINANCE_API_SECRET: str = ""
+    BINANCE_PROXY: str = ""
     BINANCE_TESTNET: bool = False
 
     SHADOW_TRADING: bool = False
