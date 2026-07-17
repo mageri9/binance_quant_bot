@@ -23,7 +23,6 @@ from src.middlewares.logger import LoggerMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 from src.utils.artifact_paths import get_oos_path
-from src.models.baseline import run_baseline_experiment, compute_baseline_holdout_f1
 
 
 def _atomic_copy(src: str, dst: str) -> None:
@@ -384,7 +383,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
     from src.core.db import AsyncSessionFactory
     from src.crud.kline import KlineRepository
     from src.datasets.build import build_and_save_dataset
-    from src.models.baseline import run_baseline_experiment
+    from src.models.baseline import run_baseline_experiment, compute_baseline_holdout_f1
     from src.models.train import run_lgbm_experiment
 
     settings = get_settings()

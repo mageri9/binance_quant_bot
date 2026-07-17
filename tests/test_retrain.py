@@ -57,6 +57,11 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
             return_value=mock_baseline_result,
         ) as mock_run_baseline,
         patch(
+            "src.models.baseline.compute_baseline_holdout_f1",
+            new_callable=AsyncMock,
+            return_value={"f1": baseline_f1_value, "holdout_size": 20},
+        ) as mock_compute_holdout,
+        patch(
             "src.models.train.run_lgbm_experiment",
             new_callable=AsyncMock,
             return_value=mock_lgbm_result,
@@ -80,11 +85,12 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
         # Не должно упасть с UnboundLocalError
         await _run_retrain_cycle(bot_mock, "BTC/USDT", "1h")
 
-    # run_lgbm_experiment должен быть вызван с корректным baseline_f1,
-    # а не с неопределённым значением
-    assert mock_run_lgbm.called
-    _, called_kwargs = mock_run_lgbm.call_args
-    assert called_kwargs["baseline_f1"] == pytest.approx(baseline_f1_value)
+        # run_lgbm_experiment должен быть вызван с честным (apples-to-apples)
+        # baseline_f1 из compute_baseline_holdout_f1, а не с неопределённым значением
+        assert mock_run_lgbm.called
+        assert mock_compute_holdout.called
+        _, called_kwargs = mock_run_lgbm.call_args
+        assert called_kwargs["baseline_f1"] == pytest.approx(baseline_f1_value)
 
     # Уведомление админу должно уйти (новая модель лучше baseline)
     bot_mock.send_message.assert_called_once()
@@ -131,11 +137,35 @@ async def test_retrain_cycle_copies_oos_parquet_to_production(temp_db_session, t
         patch("src.main.get_settings", return_value=mock_settings),
         patch("src.core.db.AsyncSessionFactory") as mock_session_factory,
         patch("src.crud.kline.KlineRepository") as mock_kline_repo_cls,
-        patch("src.datasets.build.build_and_save_dataset", new_callable=AsyncMock, return_value="ds.parquet"),
-        patch("src.models.baseline.run_baseline_experiment", new_callable=AsyncMock, return_value=mock_baseline_result),
-        patch("src.models.train.run_lgbm_experiment", new_callable=AsyncMock, return_value=mock_lgbm_result),
-        patch("scripts.calibrate.get_best_calibration", new_callable=AsyncMock, return_value=(0.02, 0.04, 5, "report")),
-        patch("os.path.exists", side_effect=lambda p: p == staging_oos_path or p == "ds.parquet"),
+        patch(
+            "src.datasets.build.build_and_save_dataset",
+            new_callable=AsyncMock,
+            return_value="ds.parquet",
+        ),
+        patch(
+            "src.models.baseline.run_baseline_experiment",
+            new_callable=AsyncMock,
+            return_value=mock_baseline_result,
+        ),
+        patch(
+            "src.models.baseline.compute_baseline_holdout_f1",
+            new_callable=AsyncMock,
+            return_value={"f1": 0.30, "holdout_size": 20},
+        ),
+        patch(
+            "src.models.train.run_lgbm_experiment",
+            new_callable=AsyncMock,
+            return_value=mock_lgbm_result,
+        ),
+        patch(
+            "scripts.calibrate.get_best_calibration",
+            new_callable=AsyncMock,
+            return_value=(0.02, 0.04, 5, "report"),
+        ),
+        patch(
+            "os.path.exists",
+            side_effect=lambda p: p == staging_oos_path or p == "ds.parquet",
+        ),
         patch("pandas.read_parquet", return_value=pd.DataFrame({"close": [1.0]})),
     ):
         mock_kline_repo_cls.return_value.get_klines = AsyncMock(return_value=fake_klines)
