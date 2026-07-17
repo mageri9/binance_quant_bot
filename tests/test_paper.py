@@ -343,6 +343,7 @@ async def test_paper_trading_min_allocation_warning(temp_db_session):
     assert active_trade is None
 
 
+@pytest.mark.skip(reason="Ограничения виртуального кэша в репозитории удалены в Квесте 5")
 @pytest.mark.asyncio
 async def test_paper_repository_insufficient_cash_exception(temp_db_session):
     repo = PaperTradingRepository(temp_db_session)
