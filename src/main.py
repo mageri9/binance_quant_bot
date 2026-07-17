@@ -23,6 +23,7 @@ from src.middlewares.logger import LoggerMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 from src.utils.artifact_paths import get_oos_path
+from src.models.baseline import run_baseline_experiment, compute_baseline_holdout_f1
 
 
 def _atomic_copy(src: str, dst: str) -> None:
@@ -422,7 +423,24 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 train_size=settings.TRAIN_SIZE,
                 test_size=settings.TEST_SIZE,
             )
+            # baseline_f1 (усредненный по всей истории Walk-Forward) используется
+            # ниже только для сравнения new_f1 vs baseline_f1 в отчете о продвижении
+            # в прод — там обе метрики одной природы (усреднение по фолдам).
             baseline_f1 = baseline_result["metrics"]["f1"]
+
+            # Для внутреннего Quality Gate в run_lgbm_experiment нужен baseline,
+            # честно сравнимый с holdout_f1 LGBM — то есть посчитанный на ТОМ ЖЕ
+            # train_val/holdout split, а не усредненный по всей истории.
+            baseline_holdout_result = await compute_baseline_holdout_f1(
+                session,
+                parquet_path,
+                json_path,
+                train_size=settings.TRAIN_SIZE,
+                test_size=settings.TEST_SIZE,
+            )
+            gate_baseline_f1 = baseline_holdout_result["f1"]
+            if gate_baseline_f1 is None:
+                gate_baseline_f1 = baseline_f1
 
             try:
                 lgbm_result = await run_lgbm_experiment(
@@ -432,7 +450,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     train_size=settings.TRAIN_SIZE,
                     test_size=settings.TEST_SIZE,
                     models_dir="models/staging",
-                    baseline_f1=baseline_f1,
+                    baseline_f1=gate_baseline_f1,
                 )
                 new_f1 = lgbm_result["metrics"]["f1"]
             except ValueError as gate_err:

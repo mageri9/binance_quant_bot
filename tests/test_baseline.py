@@ -85,3 +85,58 @@ async def test_run_baseline_experiment_success(temp_db_session):
         # Декодируем и сверяем параметры и метрики из базы данных
         loaded_metrics = json.loads(experiment_record.metrics)
         assert loaded_metrics["accuracy"] == result["metrics"]["accuracy"]
+
+@pytest.mark.asyncio
+async def test_compute_baseline_holdout_f1_matches_lgbm_split(temp_db_session):
+    """
+    Регрессионный тест: compute_baseline_holdout_f1 должен использовать
+    ровно тот же train_val/holdout split, что run_lgbm_experiment,
+    и возвращать F1, посчитанный именно на holdout-сегменте.
+    """
+    from src.models.baseline import compute_baseline_holdout_f1, _split_train_val_holdout
+
+    n_rows = 150
+    rng = np.random.default_rng(42)
+    dummy_data = {
+        "open_time": range(1000, 1000 + n_rows),
+        "rsi": rng.uniform(20, 80, n_rows),
+        "macd": rng.normal(0, 1, n_rows),
+        "macd_signal": rng.normal(0, 1, n_rows),
+        "macd_hist": rng.normal(0, 1, n_rows),
+        "volatility": rng.uniform(0.001, 0.05, n_rows),
+        "volume_ratio": rng.uniform(0.5, 2.0, n_rows),
+        "target_binary": rng.integers(0, 2, n_rows).astype(float),
+    }
+    df = pd.DataFrame(dummy_data)
+
+    metadata = {
+        "version": "test_v1",
+        "symbol": "BTC/USDT",
+        "timeframe": "1h",
+        "features": ["rsi", "macd", "macd_signal", "macd_hist", "volatility", "volume_ratio"],
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dataset_path = os.path.join(tmpdir, "test_dataset.parquet")
+        metadata_path = os.path.join(tmpdir, "test_metadata.json")
+        df.to_parquet(dataset_path)
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f)
+
+        result = await compute_baseline_holdout_f1(
+            temp_db_session,
+            dataset_path,
+            metadata_path,
+            train_size=50,
+            test_size=20,
+        )
+
+        assert result["f1"] is not None
+        assert 0.0 <= result["f1"] <= 1.0
+        assert result["holdout_size"] > 0
+
+        # Сверяем, что holdout_size совпадает с ручным вызовом сплиттера
+        feature_cols = metadata["features"]
+        df_clean = df.dropna(subset=feature_cols + ["target_binary"]).reset_index(drop=True)
+        _, df_holdout = _split_train_val_holdout(df_clean, train_size=50, test_size=20)
+        assert result["holdout_size"] == len(df_holdout)
