@@ -88,6 +88,18 @@ class TradingEngine:
             logger.info(msg)
             return msg
 
+        sl_pct = self.settings.PAPER_SL_PCT
+        tp_pct = self.settings.PAPER_TP_PCT
+
+        if side == "buy":
+            sl_price = latest_close * (1.0 - sl_pct)
+            tp_price = latest_close * (1.0 + tp_pct)
+            close_side = "sell"
+        else:
+            sl_price = latest_close * (1.0 + sl_pct)
+            tp_price = latest_close * (1.0 - tp_pct)
+            close_side = "buy"
+
         # Реальная отправка ордера на биржу
         try:
             order = await self.exchange.create_order(
@@ -98,12 +110,31 @@ class TradingEngine:
                 price=latest_close,
             )
 
+            stop_warning = ""
+            if hasattr(self.exchange, "create_stop_orders"):
+                try:
+                    stop_result = await self.exchange.create_stop_orders(
+                        symbol=symbol,
+                        side=close_side,
+                        amount=order["amount"],
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                    )
+                    if not stop_result.get("sl_order_id") or not stop_result.get("tp_order_id"):
+                        stop_warning = " ⚠️ SL/TP выставлены не полностью, проверьте позицию на бирже вручную!"
+                except Exception as stop_err:
+                    stop_warning = " ⚠️ SL/TP НЕ выставлены, проверьте позицию на бирже вручную!"
+                    logger.error(
+                        f"[TradingEngine] Не удалось выставить SL/TP по {symbol} после входа: {stop_err}"
+                    )
+
             pnl_str = (
                 f", PnL: {order['pnl']:.2f}$" if order.get("pnl") is not None else ""
             )
             msg = (
                 f"🚀 [ORDER {order['status'].upper()}] Исполнен ордер {side.upper()} по {symbol}. "
                 f"Цена: {order['price']:.2f}$, Количество: {order['amount']:.6f}{pnl_str}."
+                f"{stop_warning}"
             )
             logger.info(msg)
             return msg
@@ -113,7 +144,6 @@ class TradingEngine:
             )
             logger.error(err_msg)
 
-            # Аварийная остановка при сбое API
             await self.kill_switch_manager.set_state(
                 state=KillSwitchState.SAFE_MODE,
                 reason="API_FAILURE",

@@ -173,6 +173,55 @@ class BinanceExchange(BaseExchange):
             )
             raise e
 
+    async def create_stop_orders(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        sl_price: float | None,
+        tp_price: float | None,
+    ) -> dict:
+        """
+        Выставляет защитные reduce-only ордера SL/TP сразу после входа в позицию.
+        side — сторона ЗАКРЫТИЯ позиции (противоположна стороне входа).
+        """
+        await self._ensure_markets()
+        result = {"sl_order_id": None, "tp_order_id": None}
+
+        precise_amount = self.exchange.amount_to_precision(symbol, amount)
+
+        if sl_price is not None:
+            try:
+                precise_sl = self.exchange.price_to_precision(symbol, sl_price)
+                sl_order = await self.exchange.create_order(
+                    symbol=symbol,
+                    type="STOP_MARKET",
+                    side=side,
+                    amount=precise_amount,
+                    params={"stopPrice": precise_sl, "reduceOnly": True},
+                )
+                result["sl_order_id"] = sl_order.get("id")
+            except Exception as e:
+                logger.error(
+                    f"[BinanceExchange] Ошибка установки Stop-Loss по {symbol}: {e}"
+                )
+
+        if tp_price is not None:
+            try:
+                precise_tp = self.exchange.price_to_precision(symbol, tp_price)
+                tp_order = await self.exchange.create_order(
+                    symbol=symbol,
+                    type="TAKE_PROFIT_MARKET",
+                    side=side,
+                    amount=precise_amount,
+                    params={"stopPrice": precise_tp, "reduceOnly": True},
+                )
+                result["tp_order_id"] = tp_order.get("id")
+            except Exception as e:
+                logger.error(f"[BinanceExchange] Ошибка установки Take-Profit по {symbol}: {e}")
+
+        return result
+
     async def get_klines(self, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
         try:
             ohlcv = await self.exchange.fetch_ohlcv(
