@@ -295,7 +295,36 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                 else:
                     exchange = PaperExchange(session)
 
+                from src.exchange.engine import TradingEngine
+
+                trading_engine = TradingEngine(
+                    exchange=exchange,
+                    risk_engine=risk_engine,
+                    kill_switch_manager=kill_switch,
+                    session=session,
+                    settings=settings,
+                )
+
                 try:
+                    # 2.5. Синхронизируем закрытие живых позиций (SL/TP на бирже)
+                    # ДО сверки reconcile_positions, иначе легитимное закрытие
+                    # по SL/TP будет ложно трактовано как рассинхронизация
+                    # и заблокирует бота в SAFE_MODE.
+                    if isinstance(exchange, BinanceExchange):
+                        close_msg = await trading_engine.check_and_close_positions(
+                            symbol
+                        )
+                        if close_msg:
+                            for admin_id in settings.ADMIN_IDS:
+                                try:
+                                    await bot.send_message(
+                                        chat_id=admin_id, text=close_msg
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        f"Не удалось отправить лог о закрытии позиции админу: {e}"
+                                    )
+
                     # 3. Сверка позиций перед раундом (Биржа — источник истины)
                     symbols_to_sync = [config[0] for config in settings.ACTIVE_CONFIGS]
                     synced, error_details = await reconcile_positions(
@@ -344,17 +373,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     signal = predictor.predict(df)
                     latest_close = df["close"].iloc[-1]
 
-                    # 6. Запускаем торговый движок
-                    from src.exchange.engine import TradingEngine
-
-                    trading_engine = TradingEngine(
-                        exchange=exchange,
-                        risk_engine=risk_engine,
-                        kill_switch_manager=kill_switch,
-                        session=session,
-                        settings=settings,
-                    )
-
+                    # 6. Запускаем торговый движок (создан выше, в шаге 2.5)
                     log_msg = await trading_engine.process_signal(
                         symbol, signal, latest_close
                     )
