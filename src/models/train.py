@@ -293,8 +293,25 @@ async def run_lgbm_experiment(
     if fold_count == 0 or best_model is None:
         raise ValueError("Не удалось запустить Walk-Forward. Проверьте размер данных.")
 
-    # --- 3. СТРОГИЙ ТЕСТ НА HOLDOUT (QUALITY GATES) ---
+        # --- 3. СТРОГИЙ ТЕСТ НА HOLDOUT (QUALITY GATES) ---
+        # ВАЖНО: гейт проверяет НЕ best_model (лучший случайный фолд Walk-Forward —
+        # переобучение на удачном окне рынка) и НЕ final_model (она уже видела holdout
+        # при обучении на 100% данных — это была бы утечка). Гейт проверяет отдельного
+        # кандидата, обученного ровно на df_train_val (без holdout), максимально
+        # близкого по объему обучающих данных к тому, что реально уедет в прод.
     if len(df_holdout) > 0 and not bypass_quality_gates:
+        logger.info(
+            "[MLOps Train] Обучаю gate-кандидата на df_train_val (без holdout данных)..."
+        )
+        gate_candidate = LGBMClassifier(**model_kwargs)
+        X_train_val = df_train_val[feature_cols]
+        y_train_val = df_train_val[target_col]
+        if is_multiclass:
+            y_train_val_mapped = y_train_val.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+        else:
+            y_train_val_mapped = y_train_val.astype(int)
+        await asyncio.to_thread(gate_candidate.fit, X_train_val, y_train_val_mapped)
+
         X_holdout = df_holdout[feature_cols]
         y_holdout = df_holdout[target_col]
 
@@ -303,7 +320,7 @@ async def run_lgbm_experiment(
         else:
             y_holdout_mapped = y_holdout.astype(int)
 
-        y_holdout_pred = best_model.predict(X_holdout)
+        y_holdout_pred = gate_candidate.predict(X_holdout)
         holdout_f1 = f1_score(
             y_holdout_mapped, y_holdout_pred, average=avg_method, zero_division=0
         )

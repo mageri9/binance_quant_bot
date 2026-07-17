@@ -501,10 +501,13 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             with open(model_path, "rb") as f:
                                 old_artifact = pickle.load(f)
 
-                            df_old_oos = old_artifact.get("df_oos")
-                            if df_old_oos is not None:
+                            old_oos_path = get_oos_path(model_path)
+                            if os.path.exists(old_oos_path):
                                 from src.features.drift import ConceptDriftDetector
 
+                                df_old_oos = await asyncio.to_thread(
+                                    pd.read_parquet, old_oos_path
+                                )
                                 df_new = await asyncio.to_thread(
                                     pd.read_parquet, parquet_path
                                 )
