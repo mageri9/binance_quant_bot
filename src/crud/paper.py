@@ -123,7 +123,7 @@ class PaperTradingRepository:
         timeout_candle_time: int | None = None,
     ) -> PaperTrade:
         """
-        Открывает новую виртуальную сделку и списывает средства со свободного кэша.
+        Открывает новую виртуальную/реальную сделку без проверки достаточности виртуального кэша.
         Выполняется строго под реентерабельным локом портфеля.
         """
         async with _get_portfolio_lock():
@@ -137,10 +137,7 @@ class PaperTradingRepository:
             portfolio = await self.get_portfolio()
             cost = entry_price * amount
 
-            if portfolio.cash < cost:
-                raise ValueError(
-                    f"Недостаточно свободного кэша в портфеле. Требуется: {cost:.2f}$, Доступно: {portfolio.cash:.2f}$"
-                )
+            # Изменение по брифу: убрана блокирующая проверка достаточности виртуального кэша (portfolio.cash < cost)
 
             portfolio.cash -= cost
             portfolio.positions_value += cost
@@ -167,9 +164,18 @@ class PaperTradingRepository:
     ) -> None:
         """
         Закрывает сделку, возвращает кэш обратно на баланс и фиксирует финансовый результат.
-        Выполняется строго под реентерабельным локом портфеля.
+        Выполняется строго под реентерабельным локом портфеля с проверкой идемпотентности.
         """
         async with _get_portfolio_lock():
+            # Защита от повторного закрытия (идемпотентность)
+            if trade.status != "OPEN":
+                from loguru import logger
+
+                logger.warning(
+                    f"[PaperTradingRepository] Попытка повторного закрытия сделки id={trade.id}. Операция проигнорирована."
+                )
+                return
+
             trade.status = "CLOSED"
             trade.exit_price = exit_price
             trade.exit_time = datetime.now(timezone.utc)

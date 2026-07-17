@@ -187,15 +187,32 @@ class TradingEngine:
         if ex_pos is not None:
             return None  # позиция всё ещё открыта, всё штатно
 
-        # Позиция на бирже закрыта, а в БД числится открытой — SL/TP сработал
+        # Позиция на бирже закрыта, а в БД числится открытой — SL/TP сработал.
+        # Безопасно отменяем все повисшие ордера по данному активу.
         if hasattr(self.exchange, "get_open_orders"):
-            leftover_orders = await self.exchange.get_open_orders(symbol)
-            for o in leftover_orders:
-                await self.exchange.cancel_order(o["id"], symbol)
+            try:
+                leftover_orders = await self.exchange.get_open_orders(symbol)
+                for o in leftover_orders:
+                    try:
+                        await self.exchange.cancel_order(o["id"], symbol)
+                    except Exception as cancel_err:
+                        logger.warning(
+                            f"[TradingEngine] Не удалось отменить повисший ордер {o['id']} по {symbol}: {cancel_err}"
+                        )
+            except Exception as get_orders_err:
+                logger.error(
+                    f"[TradingEngine] Не удалось получить открытые ордера для отмены по {symbol}: {get_orders_err}"
+                )
 
         exit_price = None
         if hasattr(self.exchange, "get_last_trade_price"):
-            exit_price = await self.exchange.get_last_trade_price(symbol)
+            try:
+                exit_price = await self.exchange.get_last_trade_price(symbol)
+            except Exception as exit_price_err:
+                logger.error(
+                    f"[TradingEngine] Не удалось получить реальную цену закрытия для {symbol}: {exit_price_err}"
+                )
+
         if exit_price is None:
             exit_price = db_trade.sl_price or db_trade.tp_price or db_trade.entry_price
 
@@ -204,6 +221,7 @@ class TradingEngine:
         else:
             pnl = (exit_price - db_trade.entry_price) * db_trade.amount
 
+        # Безопасное закрытие под локом в репозитории
         await self.repo.close_trade(db_trade, exit_price, pnl)
 
         msg = (
