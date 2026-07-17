@@ -1,4 +1,6 @@
 import pytest
+
+from src.crud.paper import PaperTradingRepository
 from src.exchange.paper import PaperExchange
 
 
@@ -67,3 +69,23 @@ async def test_paper_exchange_execution_math(temp_db_session):
 
     # Позиция должна быть полностью закрыта
     assert await exchange.get_position("BTC/USDT") is None
+
+@pytest.mark.asyncio
+async def test_paper_exchange_rejects_pyramiding_same_direction(temp_db_session):
+    """Повторный SELL при уже открытом SHORT не должен открывать вторую позицию."""
+    exchange = PaperExchange(temp_db_session, commission_pct=0.0, slippage_pct=0.0)
+
+    order1 = await exchange.create_order(
+        symbol="BTC/USDT", side="sell", order_type="market", amount=1.0, price=100.0
+    )
+    assert order1["status"] == "open"
+
+    order2 = await exchange.create_order(
+        symbol="BTC/USDT", side="sell", order_type="market", amount=1.0, price=99.0
+    )
+    assert order2["status"] == "rejected"
+
+    repo = PaperTradingRepository(temp_db_session)
+    open_trades = await repo.get_all_open_trades()
+    btc_open = [t for t in open_trades if t.symbol == "BTC/USDT"]
+    assert len(btc_open) == 1

@@ -120,6 +120,7 @@ class PaperExchange(BaseExchange):
                     portfolio.balance = portfolio.cash + portfolio.positions_value
                     await self.session.commit()
 
+
                     return {
                         "symbol": symbol,
                         "side": side,
@@ -129,6 +130,16 @@ class PaperExchange(BaseExchange):
                         "status": "closed",
                         "pnl": real_net_pnl,
                     }
+                # Позиция уже открыта в ТОМ ЖЕ направлении — не пирамидим, отклоняем ордер
+                return {
+                    "symbol": symbol,
+                    "side": side,
+                    "price": execution_price,
+                    "amount": amount,
+                    "commission": 0.0,
+                    "status": "rejected",
+                    "pnl": None,
+                }
 
             # Открытие новой позиции
             is_short = side == "sell"

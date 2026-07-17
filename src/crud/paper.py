@@ -127,6 +127,13 @@ class PaperTradingRepository:
         Выполняется строго под реентерабельным локом портфеля.
         """
         async with _get_portfolio_lock():
+            existing = await self.get_active_trade(symbol)
+            if existing is not None:
+                raise ValueError(
+                    f"Попытка открыть вторую позицию по {symbol} при уже открытой "
+                    f"сделке id={existing.id}. Операция отклонена."
+                )
+
             portfolio = await self.get_portfolio()
             cost = entry_price * amount
 
