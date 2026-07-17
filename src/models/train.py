@@ -33,6 +33,7 @@ async def tune_lgbm_hyperparameters(
     metadata_version: str,
     n_trials: int = 15,
     label_horizon: int = 0,
+    max_folds: int | None = None,
 ) -> dict:
     """
     Проводит автоматический подбор параметров LightGBM с помощью Optuna.
@@ -60,7 +61,14 @@ async def tune_lgbm_hyperparameters(
         )
         f1_scores = []
 
-        for train_df, test_df, info in splitter.split(df_clean):
+        folds = list(splitter.split(df_clean))
+        if max_folds is not None and len(folds) > max_folds:
+            # Берем последние (самые свежие) фолды — тюнинг фокусируется
+            # на актуальном рыночном режиме и не тонет в дорогом переборе
+            # по всей годовой истории.
+            folds = folds[-max_folds:]
+
+        for train_df, test_df, info in folds:
             X_train = train_df[feature_cols]
             y_train = train_df[target_col]
 
@@ -253,6 +261,7 @@ async def run_lgbm_experiment(
             metadata_version=metadata["version"],
             n_trials=settings.OPTUNA_TRIALS,
             label_horizon=purge_rows,
+            max_folds=settings.OPTUNA_MAX_FOLDS,
         )
         logger.info(f"[+] Лучшие параметры подобраны: {best_params}")
 

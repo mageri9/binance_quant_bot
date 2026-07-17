@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # Optuna Sizing parameters
     OPTUNA_TUNING_ENABLED: bool = True
     OPTUNA_TRIALS: int = 15
+    # Сколько последних (самых свежих) фолдов Walk-Forward использовать
+    # при тюнинге. None = все фолды (старое поведение, дорого).
+    # Ограничение снижает cost тюнинга и одновременно фокусирует подбор
+    # параметров на актуальном рыночном режиме, а не на истории полугодовой давности.
+    OPTUNA_MAX_FOLDS: int | None = 8
 
     # Model Rollback SRE parameters
     ROLLBACK_CHECK_WINDOW: int = 10
