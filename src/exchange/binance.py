@@ -17,13 +17,11 @@ class BinanceExchange(BaseExchange):
         self.secret = secret
         self.testnet = testnet
 
-        # Конфигурируем CCXT на работу с фьючерсами USDT-M
         options = {
             "defaultType": "future",
             "adjustForTimeDifference": True,
         }
 
-        # Базовая конфигурация
         exchange_config = {
             "enableRateLimit": True,
             "apiKey": api_key,
@@ -31,7 +29,6 @@ class BinanceExchange(BaseExchange):
             "options": options,
         }
 
-        # Получаем настройки и добавляем прокси, если он указан
         settings = get_settings()
         if settings.BINANCE_PROXY:
             exchange_config["proxies"] = {
@@ -46,6 +43,13 @@ class BinanceExchange(BaseExchange):
 
         if testnet:
             self.exchange.set_sandbox_mode(True)
+
+        self._markets_loaded = False
+
+    async def _ensure_markets(self) -> None:
+        if not self._markets_loaded:
+            await self.exchange.load_markets()
+            self._markets_loaded = True
 
     async def close(self) -> None:
         await self.exchange.close()
@@ -102,12 +106,21 @@ class BinanceExchange(BaseExchange):
             raise ValueError("Параметр order_type должен быть 'market' или 'limit'.")
 
         try:
+            await self._ensure_markets()
+
+            precise_amount = self.exchange.amount_to_precision(symbol, amount)
+            precise_price = (
+                self.exchange.price_to_precision(symbol, price)
+                if price is not None
+                else None
+            )
+
             order = await self.exchange.create_order(
                 symbol=symbol,
                 type=order_type,
                 side=side,
-                amount=amount,
-                price=price,
+                amount=precise_amount,
+                price=precise_price,
             )
 
             avg_price = order.get("average")
