@@ -109,12 +109,46 @@ class BinanceExchange(BaseExchange):
                 amount=amount,
                 price=price,
             )
+
+            avg_price = order.get("average")
+            if avg_price is None:
+                avg_price = order.get("price")
+
+            # CCXT часто не успевает вернуть average/price сразу после
+            # исполнения маркет-ордера на фьючерсах Binance — биржа досчитывает
+            # среднюю цену чуть позже. Добираем через fetch_order.
+            if avg_price is None:
+                order_id = order.get("id")
+                if order_id:
+                    try:
+                        refreshed = await self.exchange.fetch_order(order_id, symbol)
+                        avg_price = refreshed.get("average") or refreshed.get("price")
+                        order = refreshed
+                    except Exception as fetch_err:
+                        logger.warning(
+                            f"[BinanceExchange] Не удалось уточнить цену ордера {order_id} ({symbol}): {fetch_err}"
+                        )
+
+            if avg_price is None:
+                avg_price = price if price is not None else 0.0
+
+            filled_amount = order.get("filled")
+            if filled_amount is None:
+                filled_amount = order.get("amount")
+            if filled_amount is None:
+                filled_amount = amount
+
+            fee_info = order.get("fee") or {}
+            commission = fee_info.get("cost")
+            if commission is None:
+                commission = 0.0
+
             return {
                 "symbol": symbol,
                 "side": side,
-                "price": float(order.get("average", order.get("price", price or 0.0))),
-                "amount": float(order.get("amount", amount)),
-                "commission": float(order.get("fee", {}).get("cost", 0.0)),
+                "price": float(avg_price),
+                "amount": float(filled_amount),
+                "commission": float(commission),
                 "status": "open"
                 if order.get("status") in ["open", "new"]
                 else "closed",
