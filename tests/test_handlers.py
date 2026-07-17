@@ -22,6 +22,15 @@ from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError
 from src.crud.user import UserRepository
 from src.filters.check_admin import IsAdmin
 
+# Автоматическая изоляция тестов обработчиков от реальных сетевых вызовов Binance
+@pytest.fixture(autouse=True)
+def mock_binance_exchange():
+    with patch("src.exchange.binance.BinanceExchange") as mock_class:
+        instance = mock_class.return_value
+        instance.get_balance = AsyncMock(return_value={"free": 500.0, "total": 1500.0})
+        instance.close = AsyncMock()
+        yield instance
+
 router = Router()
 
 
