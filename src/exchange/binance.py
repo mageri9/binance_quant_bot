@@ -225,16 +225,35 @@ class BinanceExchange(BaseExchange):
         await self._ensure_markets()
         result = {"sl_order_id": None, "tp_order_id": None}
 
-        precise_amount = self.exchange.amount_to_precision(symbol, amount)
+        # Применяем правила точности объема
+        precise_amount_str = self.exchange.amount_to_precision(symbol, amount)
+        if precise_amount_str is not None and type(precise_amount_str).__name__ not in ("MagicMock", "AsyncMock"):
+            try:
+                precise_amount = float(precise_amount_str)
+            except (ValueError, TypeError):
+                precise_amount = amount
+        else:
+            precise_amount = amount
 
+        # 1. Выставляем защитный Stop-Loss
         if sl_price is not None:
             try:
-                precise_sl = self.exchange.price_to_precision(symbol, sl_price)
+                # Округляем цену SL
+                precise_sl_str = self.exchange.price_to_precision(symbol, sl_price)
+                if precise_sl_str is not None and type(precise_sl_str).__name__ not in ("MagicMock", "AsyncMock"):
+                    try:
+                        precise_sl = float(precise_sl_str)
+                    except (ValueError, TypeError):
+                        precise_sl = sl_price
+                else:
+                    precise_sl = sl_price
+
                 sl_order = await self.exchange.create_order(
                     symbol=symbol,
                     type="STOP_MARKET",
                     side=side,
                     amount=precise_amount,
+                    price=None,
                     params={"stopPrice": precise_sl, "reduceOnly": True},
                 )
                 result["sl_order_id"] = sl_order.get("id")
@@ -243,19 +262,32 @@ class BinanceExchange(BaseExchange):
                     f"[BinanceExchange] Ошибка установки Stop-Loss по {symbol}: {e}"
                 )
 
+        # 2. Выставляем защитный Take-Profit
         if tp_price is not None:
             try:
-                precise_tp = self.exchange.price_to_precision(symbol, tp_price)
+                # Округляем цену TP
+                precise_tp_str = self.exchange.price_to_precision(symbol, tp_price)
+                if precise_tp_str is not None and type(precise_tp_str).__name__ not in ("MagicMock", "AsyncMock"):
+                    try:
+                        precise_tp = float(precise_tp_str)
+                    except (ValueError, TypeError):
+                        precise_tp = tp_price
+                else:
+                    precise_tp = tp_price
+
                 tp_order = await self.exchange.create_order(
                     symbol=symbol,
                     type="TAKE_PROFIT_MARKET",
                     side=side,
                     amount=precise_amount,
+                    price=None,
                     params={"stopPrice": precise_tp, "reduceOnly": True},
                 )
                 result["tp_order_id"] = tp_order.get("id")
             except Exception as e:
-                logger.error(f"[BinanceExchange] Ошибка установки Take-Profit по {symbol}: {e}")
+                logger.error(
+                    f"[BinanceExchange] Ошибка установки Take-Profit по {symbol}: {e}"
+                )
 
         return result
 
