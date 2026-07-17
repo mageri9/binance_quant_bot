@@ -6,6 +6,8 @@ from aiogram.types import Message
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
+from loguru import logger
+
 
 import src.keyboards.user as kb
 from src.services.user import UserService
@@ -27,6 +29,34 @@ async def status_handler(message: Message, session: AsyncSession):
     repo = PaperTradingRepository(session)
     portfolio = await repo.get_portfolio()
     settings = get_settings()
+
+    live_balance_text = ""
+    is_live_mode = (
+        settings.BINANCE_TESTNET
+        and not settings.SHADOW_TRADING
+        and settings.BINANCE_API_KEY
+        and settings.BINANCE_API_SECRET
+    )
+    if is_live_mode:
+        from src.exchange.binance import BinanceExchange
+
+        exchange = BinanceExchange(
+            api_key=settings.BINANCE_API_KEY,
+            secret=settings.BINANCE_API_SECRET,
+            testnet=settings.BINANCE_TESTNET,
+        )
+        try:
+            live_balance = await exchange.get_balance()
+            live_balance_text = (
+                f"🏦 <b>Реальный баланс Binance (Testnet)</b>\n"
+                f"💵 Свободно: <code>{live_balance['free']:.2f}$</code>\n"
+                f"📈 Всего: <code>{live_balance['total']:.2f}$</code>\n\n"
+            )
+        except Exception as e:
+            logger.error(f"[status_handler] Не удалось получить баланс Binance: {e}")
+            live_balance_text = "🏦 ⚠️ <i>Не удалось получить реальный баланс с Binance.</i>\n\n"
+        finally:
+            await exchange.close()
 
     active_trades_text = ""
     has_any_active = False
@@ -107,6 +137,7 @@ async def status_handler(message: Message, session: AsyncSession):
     portfolio.balance = portfolio.cash + total_positions_value
 
     status_text = (
+        f"{live_balance_text}"
         f"📊 <b>Виртуальный портфель (Multi-Asset Paper Trading)</b>\n\n"
         f"💵 Свободный кэш: <code>{portfolio.cash:.2f}$</code>\n"
         f"📊 Стоимость позиций: <code>{portfolio.positions_value:.2f}$</code>\n"
