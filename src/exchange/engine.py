@@ -1,6 +1,7 @@
 import pandas as pd
 from loguru import logger
 
+from datetime import datetime, timezone
 from src.exchange.base import BaseExchange
 from src.risk.engine import RiskEngine, RiskDecision
 from src.risk.kill_switch import KillSwitchManager, KillSwitchState
@@ -123,10 +124,31 @@ class TradingEngine:
                     if not stop_result.get("sl_order_id") or not stop_result.get("tp_order_id"):
                         stop_warning = " ⚠️ SL/TP выставлены не полностью, проверьте позицию на бирже вручную!"
                 except Exception as stop_err:
-                    stop_warning = " ⚠️ SL/TP НЕ выставлены, проверьте позицию на бирже вручную!"
+                    stop_warning = (
+                        " ⚠️ SL/TP НЕ выставлены, проверьте позицию на бирже вручную!"
+                    )
                     logger.error(
                         f"[TradingEngine] Не удалось выставить SL/TP по {symbol} после входа: {stop_err}"
                     )
+
+            db_warning = ""
+            try:
+                entry_candle_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+                await self.repo.create_trade(
+                    symbol=symbol,
+                    entry_price=order["price"],
+                    amount=order["amount"],
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    entry_candle_time=entry_candle_time,
+                    is_short=(side == "sell"),
+                )
+            except Exception as db_err:
+                db_warning = " ⚠️ Запись в БД не удалась, сверьте позицию вручную!"
+                logger.error(
+                    f"[TradingEngine] Ордер {side.upper()} {symbol} исполнен на бирже, "
+                    f"но не записан в БД: {db_err}"
+                )
 
             pnl_str = (
                 f", PnL: {order['pnl']:.2f}$" if order.get("pnl") is not None else ""
@@ -134,7 +156,7 @@ class TradingEngine:
             msg = (
                 f"🚀 [ORDER {order['status'].upper()}] Исполнен ордер {side.upper()} по {symbol}. "
                 f"Цена: {order['price']:.2f}$, Количество: {order['amount']:.6f}{pnl_str}."
-                f"{stop_warning}"
+                f"{stop_warning}, {db_warning}"
             )
             logger.info(msg)
             return msg
@@ -150,3 +172,43 @@ class TradingEngine:
                 details=str(e),
             )
             return err_msg
+
+
+    async def check_and_close_positions(self, symbol: str) -> str | None:
+        """
+        Проверяет, не закрылась ли живая позиция по symbol на бирже (сработал SL/TP).
+        Если да — отменяет второй "повисший" reduce-only ордер и фиксирует сделку в БД.
+        """
+        db_trade = await self.repo.get_active_trade(symbol)
+        if db_trade is None:
+            return None
+
+        ex_pos = await self.exchange.get_position(symbol)
+        if ex_pos is not None:
+            return None  # позиция всё ещё открыта, всё штатно
+
+        # Позиция на бирже закрыта, а в БД числится открытой — SL/TP сработал
+        if hasattr(self.exchange, "get_open_orders"):
+            leftover_orders = await self.exchange.get_open_orders(symbol)
+            for o in leftover_orders:
+                await self.exchange.cancel_order(o["id"], symbol)
+
+        exit_price = None
+        if hasattr(self.exchange, "get_last_trade_price"):
+            exit_price = await self.exchange.get_last_trade_price(symbol)
+        if exit_price is None:
+            exit_price = db_trade.sl_price or db_trade.tp_price or db_trade.entry_price
+
+        if db_trade.is_short:
+            pnl = (db_trade.entry_price - exit_price) * db_trade.amount
+        else:
+            pnl = (exit_price - db_trade.entry_price) * db_trade.amount
+
+        await self.repo.close_trade(db_trade, exit_price, pnl)
+
+        msg = (
+            f"✅ [LIVE CLOSE] Позиция по {symbol} закрыта на бирже. "
+            f"Цена выхода: {exit_price:.2f}$, PnL: {pnl:.2f}$"
+        )
+        logger.info(msg)
+        return msg

@@ -243,3 +243,30 @@ class BinanceExchange(BaseExchange):
         except Exception as e:
             logger.error(f"[BinanceExchange] Ошибка скачивания свечей {symbol}: {e}")
             raise e
+
+    async def get_open_orders(self, symbol: str) -> list[dict]:
+        try:
+            await self._ensure_markets()
+            return await self.exchange.fetch_open_orders(symbol)
+        except Exception as e:
+            logger.error(
+                f"[BinanceExchange] Ошибка получения открытых ордеров {symbol}: {e}"
+            )
+            return []
+
+    async def cancel_order(self, order_id: str, symbol: str) -> None:
+        try:
+            await self.exchange.cancel_order(order_id, symbol)
+        except Exception as e:
+            logger.warning(
+                f"[BinanceExchange] Не удалось отменить ордер {order_id} по {symbol}: {e}"
+            )
+
+    async def get_last_trade_price(self, symbol: str) -> float | None:
+        try:
+            trades = await self.exchange.fetch_my_trades(symbol, limit=1)
+            if trades:
+                return float(trades[-1]["price"])
+        except Exception as e:
+            logger.error(f"[BinanceExchange] Ошибка получения последней сделки {symbol}: {e}")
+        return None
