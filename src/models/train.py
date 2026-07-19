@@ -186,6 +186,8 @@ def _run_walk_forward_folds(
         model.fit(X_train, y_train)
 
         y_pred = model.predict(X_test)
+        y_proba = model.predict_proba(X_test)
+        confidence = y_proba.max(axis=1)
         fold_f1 = f1_score(y_test, y_pred, average=avg_method, zero_division=0)
 
         all_y_true.extend(y_test.tolist())
@@ -194,9 +196,12 @@ def _run_walk_forward_folds(
         test_df_copy = test_df.copy()
         if is_multiclass:
             signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
-            test_df_copy["predicted_signal"] = pd.Series(y_pred, index=test_df.index).map(signal_map)
+            test_df_copy["predicted_signal"] = pd.Series(
+                y_pred, index=test_df.index
+            ).map(signal_map)
         else:
             test_df_copy["predicted_signal"] = y_pred
+        test_df_copy["predicted_confidence"] = confidence
 
         oos_dfs.append(test_df_copy)
 
@@ -399,8 +404,39 @@ async def run_lgbm_experiment(
     # Объединяем OOS фолды
     df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
 
-    # Объединяем OOS фолды
-    df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
+    meta_model = None
+    meta_feature_cols = None
+    if getattr(settings, "META_LABELING_ENABLED", False):
+        try:
+            from src.models.meta import (
+                build_meta_dataset,
+                train_meta_model,
+                META_BASE_FEATURES,
+            )
+
+            meta_df = await asyncio.to_thread(build_meta_dataset, df_oos)
+            candidate_features = META_BASE_FEATURES + [
+                c
+                for c in ("predicted_signal", "predicted_confidence")
+                if c in meta_df.columns
+            ]
+            candidate_features = [
+                c
+                for c in candidate_features
+                if c not in meta_df.columns or not meta_df[c].isna().all()
+            ]
+            meta_model, meta_feature_cols = await asyncio.to_thread(
+                train_meta_model,
+                meta_df,
+                candidate_features,
+                settings.META_LABELING_MIN_TRADES,
+            )
+            if meta_model is not None:
+                logger.info(f"[Meta-Labeling] Вторичная модель обучена на {len(meta_df)} сделках.")
+            else:
+                logger.info(f"[Meta-Labeling] Недостаточно сделок ({len(meta_df)}) для вторичной модели.")
+        except Exception as meta_err:
+            logger.error(f"[Meta-Labeling] Ошибка обучения вторичной модели: {meta_err}")
 
     # 5. Метрики для записи в БД экспериментов
     metrics = {
@@ -478,6 +514,8 @@ async def run_lgbm_experiment(
             "calibrated_at": None,
         },
         "metrics": metrics,
+        "meta_model": meta_model,
+        "meta_features": meta_feature_cols,
         # df_oos больше не хранится внутри pickle — см. get_oos_path().
         # Каждая загрузка модели (инференс, откат) больше не тащит в память
         # весь OOS-датафрейм, который нужен только для калибровки/drift-проверки.
