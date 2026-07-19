@@ -304,6 +304,8 @@ async def run_lgbm_experiment(
     if fold_count == 0 or best_model is None:
         raise ValueError("Не удалось запустить Walk-Forward. Проверьте размер данных.")
 
+    holdout_f1 = None
+
         # --- 3. СТРОГИЙ ТЕСТ НА HOLDOUT (QUALITY GATES) ---
         # ВАЖНО: гейт проверяет НЕ best_model (лучший случайный фолд Walk-Forward —
         # переобучение на удачном окне рынка) и НЕ final_model (она уже видела holdout
@@ -389,6 +391,7 @@ async def run_lgbm_experiment(
         "f1": float(
             f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
         ),
+        "holdout_f1": float(holdout_f1) if holdout_f1 is not None else None,
         "total_folds": fold_count,
         "total_test_samples": len(all_y_true),
     }

@@ -476,10 +476,20 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 else:
                     raise gate_err
 
-            if new_f1 <= baseline_f1:
+            decision_f1 = lgbm_result["metrics"].get("holdout_f1")
+            if decision_f1 is None:
+                decision_f1 = (
+                    new_f1  # fallback для случая без holdout (крошечные датасеты)
+                )
+
+            # Решение о продвижении в прод опирается на ту же метрику, что уже
+            # прошла Quality Gate внутри run_lgbm_experiment (honest holdout F1),
+            # а не на усредненный по walk-forward фолдам F1 — это разные величины
+            # с разным составом тестовых окон, их расхождение давало ложные отклонения.
+            if decision_f1 <= gate_baseline_f1:
                 msg = (
                     f"⚠️ [Retrain v{version} - {symbol}] Новая модель НЕ превзошла baseline "
-                    f"(LGBM f1={new_f1:.3f} vs baseline f1={baseline_f1:.3f}). "
+                    f"(LGBM holdout f1={decision_f1:.3f} vs baseline f1={gate_baseline_f1:.3f}). "
                     f"В продакшн НЕ продвигается."
                 )
                 logger.warning(msg)
@@ -491,7 +501,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 msg = (
                     f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
                     f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
-                    f"f1={new_f1:.3f} (baseline f1={baseline_f1:.3f})\n"
+                    f"holdout_f1={decision_f1:.3f} (baseline f1={gate_baseline_f1:.3f}), "
+                    f"cv_avg_f1={new_f1:.3f}\n"
                 )
 
                 try:
