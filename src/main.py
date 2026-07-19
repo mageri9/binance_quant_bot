@@ -509,6 +509,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     f"cv_avg_f1={new_f1:.3f}\n"
                 )
 
+                artifact = None
                 try:
                     from scripts.calibrate import get_best_calibration
 
@@ -583,7 +584,87 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
                 except Exception as cal_err:
                     logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
+
                     msg += f"\n\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
+
+                    # --- ECONOMIC QUALITY GATE ---
+                    # F1-гейт проверяет только качество классификации. Модель может
+                    # иметь лучший F1, чем прод, и при этом быть убыточной (плохое R:R,
+                    # издержки, слишком широкий/узкий SL/TP). Сравниваем честные
+                    # (held-out, не участвовавшие в grid search) метрики прибыльности
+                    # кандидата с сохранёнными метриками текущей прод-модели.
+
+                economic_gate_passed = True
+                economic_gate_msg = ""
+
+                new_backtest_metrics = (
+                    artifact.get("backtest_metrics") if artifact is not None else None
+                )
+
+                if artifact is None:
+                    logger.warning(
+                        f"[Economic Gate] Калибровка для {symbol} не удалась — метрики "
+                        f"прибыльности недоступны, гейт пропущен (модель продвигается по F1-критерию)."
+                    )
+
+                if os.path.exists(model_path) and new_backtest_metrics is not None:
+                    try:
+                        with open(model_path, "rb") as f:
+                            current_prod_artifact = pickle.load(f)
+
+                        prod_backtest_metrics = current_prod_artifact.get(
+                            "backtest_metrics"
+                        )
+
+                    except Exception as read_err:
+                        logger.error(
+                            f"[Economic Gate] Не удалось прочитать метрики текущей прод-модели {symbol}: {read_err}"
+                        )
+
+                        prod_backtest_metrics = None
+
+                    if prod_backtest_metrics is None:
+                        logger.warning(
+                            f"[Economic Gate] У текущей прод-модели {symbol} нет сохранённых "
+                            f"backtest_metrics (задеплоена до внедрения гейта) — сравнение пропущено."
+                        )
+
+                    else:
+                        new_sharpe = new_backtest_metrics.get("sharpe_ratio", 0.0)
+                        new_expectancy = new_backtest_metrics.get("expectancy", 0.0)
+                        prod_sharpe = prod_backtest_metrics.get("sharpe_ratio", 0.0)
+
+                        if new_expectancy <= 0:
+                            economic_gate_passed = False
+
+                            economic_gate_msg = (
+                                f"⚠️ [Economic Gate - {symbol}] Модель ОТКЛОНЕНА: отрицательное "
+                                f"матожидание на честном held-out backtest (expectancy={new_expectancy:.3%})."
+                            )
+
+                        elif new_sharpe <= prod_sharpe:
+                            economic_gate_passed = False
+
+                            economic_gate_msg = (
+                                f"⚠️ [Economic Gate - {symbol}] Модель ОТКЛОНЕНА: honest Sharpe "
+                                f"({new_sharpe:.3f}) не превышает текущий прод Sharpe ({prod_sharpe:.3f})."
+                            )
+
+                if not economic_gate_passed:
+                    logger.warning(economic_gate_msg)
+
+                    msg += f"\n\n{economic_gate_msg}\nМодель прошла F1-гейт, но НЕ продвигается в продакшн (Economic Gate)."
+
+                    for admin_id in settings.ADMIN_IDS:
+                        try:
+                            await bot.send_message(chat_id=admin_id, text=msg)
+
+                        except Exception as e:
+                            logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+
+                    return
+
+                # --- END ECONOMIC QUALITY GATE ---
 
                 if os.path.exists(model_path):
                     clean_symbol = symbol.replace("/", "").replace(":", "")
@@ -593,17 +674,23 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}.pkl"
                     )
                     backup_path = os.path.join(os_dir, backup_filename)
+
                     try:
                         _atomic_copy(model_path, backup_path)
                         logger.info(
                             f"[Retrain - {symbol}] Успешно создан бэкап старой стабильной модели: {backup_path}"
                         )
                         _rotate_backups(os_dir, clean_symbol, clean_tf, keep_count=5)
+
                     except Exception as copy_err:
-                        logger.error(f"Не удалось скопировать бэкап для {symbol}: {copy_err}")
+                        logger.error(
+                            f"Не удалось скопировать бэкап для {symbol}: {copy_err}"
+                        )
 
                 _atomic_copy(lgbm_result["model_path"], model_path)
-                logger.info(f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}")
+                logger.info(
+                    f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}"
+                )
 
                 staging_oos_path = get_oos_path(lgbm_result["model_path"])
                 if os.path.exists(staging_oos_path):
