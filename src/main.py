@@ -100,7 +100,7 @@ async def check_and_rollback_model(
     """
     import glob
     import pickle
-    from src.crud.paper import PaperTradingRepository
+    from src.crud.paper import TradeRepository
     from src.strategy.signals import calculate_strategy_metrics
 
     settings = get_settings()
@@ -117,7 +117,7 @@ async def check_and_rollback_model(
     except Exception as re_err:
         logger.error(f"Ошибка проверки кулдауна в Redis для {symbol}: {re_err}")
 
-    repo = PaperTradingRepository(session)
+    repo = TradeRepository(session)
     closed_trades = await repo.get_closed_trades(
         symbol, limit=settings.ROLLBACK_CHECK_WINDOW
     )
