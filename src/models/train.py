@@ -425,16 +425,16 @@ async def run_lgbm_experiment(
                 for c in candidate_features
                 if c not in meta_df.columns or not meta_df[c].isna().all()
             ]
-            meta_model, meta_feature_cols = await asyncio.to_thread(
+            meta_model, meta_feature_cols, meta_metrics = await asyncio.to_thread(
                 train_meta_model,
                 meta_df,
                 candidate_features,
                 settings.META_LABELING_MIN_TRADES,
             )
             if meta_model is not None:
-                logger.info(f"[Meta-Labeling] Вторичная модель обучена на {len(meta_df)} сделках.")
+                logger.info(f"[Meta-Labeling] Модель прошла собственный гейт: {meta_metrics}")
             else:
-                logger.info(f"[Meta-Labeling] Недостаточно сделок ({len(meta_df)}) для вторичной модели.")
+                logger.info(f"[Meta-Labeling] Модель отклонена: {meta_metrics.get('rejected_reason')}")
         except Exception as meta_err:
             logger.error(f"[Meta-Labeling] Ошибка обучения вторичной модели: {meta_err}")
 
@@ -513,9 +513,9 @@ async def run_lgbm_experiment(
             "sharpe_ratio": None,
             "calibrated_at": None,
         },
-        "metrics": metrics,
         "meta_model": meta_model,
         "meta_features": meta_feature_cols,
+        "meta_metrics": meta_metrics,
         # df_oos больше не хранится внутри pickle — см. get_oos_path().
         # Каждая загрузка модели (инференс, откат) больше не тащит в память
         # весь OOS-датафрейм, который нужен только для калибровки/drift-проверки.

@@ -48,3 +48,46 @@ def test_train_meta_model_trains_when_enough_trades():
     model, feats = train_meta_model(meta_df, META_BASE_FEATURES, min_trades=30)
     assert model is not None
     assert feats == META_BASE_FEATURES
+
+    def test_train_meta_model_rejects_when_no_lift_over_baseline():
+        n = 60
+        meta_df = pd.DataFrame(
+            {
+                "adx": [25.0] * n,
+                "atr_pct": [0.01] * n,
+                "volume_ratio": [1.0] * n,
+                "volatility": [0.02] * n,
+                "success": (
+                    [1, 0] * (n // 2)
+                ),  # признаки одинаковые для success=0/1 -> модель не может отличить
+            }
+        )
+        model, feats, metrics = train_meta_model(
+            meta_df, META_BASE_FEATURES, min_trades=30
+        )
+        assert model is None
+        assert metrics["rejected_reason"] in (
+            "no_lift_over_baseline",
+            "single_class_in_split",
+        )
+
+    def test_train_meta_model_accepts_when_features_separate_classes():
+        n = 60
+        rng = np.random.default_rng(1)
+        adx = np.concatenate([rng.uniform(35, 45, n // 2), rng.uniform(5, 15, n // 2)])
+        success = np.concatenate([np.ones(n // 2), np.zeros(n // 2)]).astype(int)
+        meta_df = pd.DataFrame(
+            {
+                "adx": adx,
+                "atr_pct": rng.uniform(0.005, 0.02, n),
+                "volume_ratio": rng.uniform(0.5, 2.0, n),
+                "volatility": rng.uniform(0.01, 0.05, n),
+                "success": success,
+            }
+        )
+        model, feats, metrics = train_meta_model(
+            meta_df, META_BASE_FEATURES, min_trades=30
+        )
+        assert model is not None
+        assert metrics["rejected_reason"] is None
+        assert metrics["approved_success_rate"] > metrics["baseline_success_rate"]
