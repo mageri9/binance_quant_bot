@@ -33,7 +33,7 @@ async def build_and_save_dataset(
     output_dir: str = "datasets",
 ) -> str:
     repo = KlineRepository(session)
-    klines = await repo.get_klines(symbol, timeframe, limit=10000)
+    klines = await repo.get_klines(symbol, timeframe, limit=20000)
 
     if not klines:
         raise ValueError(

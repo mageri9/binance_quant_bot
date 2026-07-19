@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # Retraining
-    RETRAIN_INTERVAL_SECONDS: int = 86400  # раз в сутки
-    MIN_KLINES_FOR_TRAIN: int = 6000
-    TRAIN_SIZE: int = 4000
+    RETRAIN_INTERVAL_SECONDS: int = 43200  # 2 раза в сутки
+    MIN_KLINES_FOR_TRAIN: int = 8000
+    TRAIN_SIZE: int = 3500
     TEST_SIZE: int = 300
     LABEL_HORIZON: int = 5
     LABEL_THRESHOLD: float = 0.01
