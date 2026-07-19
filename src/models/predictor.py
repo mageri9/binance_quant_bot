@@ -10,9 +10,15 @@ class Predictor:
     по новым входящим свечам, а также предоставляет параметры калибровки рисков.
     """
 
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, confidence_threshold: float | None = None):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Файл модели по пути {model_path} не найден.")
+
+        if confidence_threshold is None:
+            from src.core.config import get_settings
+
+            confidence_threshold = get_settings().PREDICTION_CONFIDENCE_THRESHOLD
+        self.confidence_threshold = confidence_threshold
 
         with open(model_path, "rb") as f:
             saved_data = pickle.load(f)
@@ -97,5 +103,10 @@ class Predictor:
             # Бинарная разметка (классы 0 -> Hold/Short, 1 -> Long)
             prob_dict = {"prob_short": 0.0, "prob_hold": prob[0], "prob_long": prob[1]}
             signal = int(pred)
+
+        if signal == 1 and prob_dict["prob_long"] < self.confidence_threshold:
+            signal = 0
+        elif signal == -1 and prob_dict["prob_short"] < self.confidence_threshold:
+            signal = 0
 
         return signal, prob_dict

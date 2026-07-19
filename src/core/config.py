@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     # Model
     MODEL_PATH: str = "models/saved_models/lgbm_BTCUSDT_1h.pkl"
+    PREDICTION_CONFIDENCE_THRESHOLD: float = 0.40
 
     # Redis
     REDIS_HOST: str = "localhost"
