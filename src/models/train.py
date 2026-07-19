@@ -16,12 +16,14 @@ from src.datasets.build import get_git_sha
 from src.core.config import get_settings
 from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 from datetime import datetime, timezone
+from src.strategy.signals import simulate_strategy
 
 from src.utils.artifact_paths import get_oos_path
 
 # Отключаем избыточный вывод логов Optuna в консоль
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+SIGNAL_MAP_TRIPLE = {0: -1.0, 1: 0.0, 2: 1.0}
 
 async def tune_lgbm_hyperparameters(
     session: AsyncSession,
@@ -34,16 +36,41 @@ async def tune_lgbm_hyperparameters(
     n_trials: int = 15,
     label_horizon: int = 0,
     max_folds: int | None = None,
+    objective_metric: str = "f1",
 ) -> dict:
     """
     Проводит автоматический подбор параметров LightGBM с помощью Optuna.
-    Минимизирует или максимизирует средний F1-score по фолдам Walk-Forward.
+
+    objective_metric: "f1" (по умолчанию) — максимизирует средний F1-score
+    по фолдам Walk-Forward, как раньше. "sharpe" / "expectancy" — вместо
+    этого на каждом фолде строит predicted_signal из y_pred и запускает
+    simulate_strategy на test_df фолда (там уже есть close/high/low),
+    максимизируя средний Sharpe/Expectancy по фолдам. Требует наличия
+    колонок close/high/low в df_clean.
     """
     is_multiclass = target_col == "target_triple"
     avg_method = "macro" if is_multiclass else "binary"
 
+    if objective_metric not in ("f1", "sharpe", "expectancy"):
+        raise ValueError(f"Неизвестный objective_metric: {objective_metric}")
+
+    def _fold_score(y_test, y_pred, test_df):
+        if objective_metric == "f1":
+            return f1_score(y_test, y_pred, average=avg_method, zero_division=0)
+
+        if is_multiclass:
+            predicted_signal = pd.Series(y_pred, index=test_df.index).map(SIGNAL_MAP_TRIPLE)
+        else:
+            # Бинарная модель: 1 -> LONG, 0 -> HOLD (нет отдельного шорт-класса)
+            predicted_signal = pd.Series(y_pred, index=test_df.index).map({0: 0.0, 1: 1.0})
+
+        sim_df = test_df.copy()
+        sim_df["predicted_signal"] = predicted_signal
+
+        sim_metrics = simulate_strategy(sim_df, predicted_col="predicted_signal")
+        return sim_metrics["sharpe_ratio"] if objective_metric == "sharpe" else sim_metrics["expectancy"]
+
     def objective(trial):
-        # Задаем пространство поиска параметров
         params = {
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
             "n_estimators": trial.suggest_int("n_estimators", 50, 300),
@@ -60,13 +87,10 @@ async def tune_lgbm_hyperparameters(
             test_size=test_size,
             label_horizon=label_horizon,
         )
-        f1_scores = []
+        fold_scores = []
 
         folds = list(splitter.split(df_clean))
         if max_folds is not None and len(folds) > max_folds:
-            # Берем последние (самые свежие) фолды — тюнинг фокусируется
-            # на актуальном рыночном режиме и не тонет в дорогом переборе
-            # по всей годовой истории.
             folds = folds[-max_folds:]
 
         for train_df, test_df, info in folds:
@@ -87,22 +111,19 @@ async def tune_lgbm_hyperparameters(
             model.fit(X_train, y_train)
 
             y_pred = model.predict(X_test)
-            score = f1_score(y_test, y_pred, average=avg_method, zero_division=0)
-            f1_scores.append(score)
+            fold_scores.append(_fold_score(y_test, y_pred, test_df))
 
-        if not f1_scores:
+        if not fold_scores:
             return 0.0
 
-        return float(np.mean(f1_scores))
+        return float(np.mean(fold_scores))
 
-    # Запускаем оптимизацию
     study = optuna.create_study(direction="maximize")
     await asyncio.to_thread(study.optimize, objective, n_trials=n_trials)
 
     best_params = study.best_params
     best_value = study.best_value
 
-    # Записываем результаты поиска параметров в БД экспериментов
     repo = ExperimentRepository(session)
     tuning_parameters = {
         "model_type": "LightGBM_Optuna_Tuning",
@@ -115,9 +136,10 @@ async def tune_lgbm_hyperparameters(
         "best_params": best_params,
         "n_trials": n_trials,
         "features_used": feature_cols,
+        "objective_metric": objective_metric,
     }
     tuning_metrics = {
-        "best_cv_f1_score": best_value,
+        f"best_cv_{objective_metric}_score": best_value,
         "n_trials_completed": n_trials,
     }
 
@@ -263,6 +285,7 @@ async def run_lgbm_experiment(
             n_trials=settings.OPTUNA_TRIALS,
             label_horizon=purge_rows,
             max_folds=settings.OPTUNA_MAX_FOLDS,
+            objective_metric=getattr(settings, "OPTUNA_OBJECTIVE_METRIC", "f1"),
         )
         logger.info(f"[+] Лучшие параметры подобраны: {best_params}")
 

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # Model
     MODEL_PATH: str = "models/saved_models/lgbm_BTCUSDT_1h.pkl"
     PREDICTION_CONFIDENCE_THRESHOLD: float = 0.55
+    OPTUNA_OBJECTIVE_METRIC: str = "f1"  # "f1" | "sharpe" | "expectancy"
 
     # Redis
     REDIS_HOST: str = "localhost"
