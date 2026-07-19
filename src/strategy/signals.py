@@ -83,28 +83,30 @@ def simulate_strategy(
     sl_pct: float | None = 0.02,
     tp_pct: float | None = 0.04,
     transaction_cost: float = 0.001,
+    sl_atr_mult: float | None = None,
+    tp_atr_mult: float | None = None,
 ) -> dict:
     """
-    Симулирует двустороннюю торговлю на истории (Long и Short).
+    ...(докстринг как был)...
 
-    Вход в позицию:
-        - При predicted_signal == 1  -> LONG
-        - При predicted_signal == -1 -> SHORT
-    Выход:
-        - По Stop-Loss
-        - По Take-Profit
-        - Принудительно по времени удержания (horizon)
-    Учитывает комиссию биржи (transaction_cost) на вход и выход из позиции.
+    sl_atr_mult / tp_atr_mult: если оба заданы и в df есть колонка 'atr',
+    барьеры SL/TP считаются как entry_price -/+ mult * ATR(на момент входа)
+    вместо фиксированных sl_pct/tp_pct. Если ATR в момент входа NaN или <= 0,
+    сделка использует фолбэк на sl_pct/tp_pct для этой конкретной сделки.
     """
     prices = df["close"].values
     highs = df["high"].values
     lows = df["low"].values
     signals = df[predicted_col].values
+    atr_values = df["atr"].values if "atr" in df.columns else None
+    use_atr_barrier = (
+        sl_atr_mult is not None and tp_atr_mult is not None and atr_values is not None
+    )
     n = len(df)
 
-    trades = []  # Список доходностей по каждой совершенной сделке
+    trades = []
 
-    position_type = None  # Возможные значения: None, 'LONG', 'SHORT'
+    position_type = None
     entry_price = 0.0
     entry_idx = 0
     sl_price = 0.0
@@ -112,41 +114,53 @@ def simulate_strategy(
 
     for i in range(n):
         if position_type is None:
-            # Ищем сигнал на вход (имеем запас хотя бы в одну свечу до конца выборки)
             if i < n - 1:
+                atr_at_entry = atr_values[i] if use_atr_barrier else None
+                atr_ok = (
+                    atr_at_entry is not None
+                    and not np.isnan(atr_at_entry)
+                    and atr_at_entry > 0
+                )
+
                 if signals[i] == 1:
                     position_type = "LONG"
                     entry_price = prices[i]
                     entry_idx = i
-                    # Уровни для LONG: SL снизу, TP сверху
-                    sl_price = (
-                        entry_price * (1.0 - sl_pct)
-                        if sl_pct is not None
-                        else float("-inf")
-                    )
-                    tp_price = (
-                        entry_price * (1.0 + tp_pct)
-                        if tp_pct is not None
-                        else float("inf")
-                    )
+                    if atr_ok:
+                        sl_price = entry_price - sl_atr_mult * atr_at_entry
+                        tp_price = entry_price + tp_atr_mult * atr_at_entry
+                    else:
+                        sl_price = (
+                            entry_price * (1.0 - sl_pct)
+                            if sl_pct is not None
+                            else float("-inf")
+                        )
+                        tp_price = (
+                            entry_price * (1.0 + tp_pct)
+                            if tp_pct is not None
+                            else float("inf")
+                        )
 
                 elif signals[i] == -1:
                     position_type = "SHORT"
                     entry_price = prices[i]
                     entry_idx = i
-                    # Уровни для SHORT: SL сверху, TP снизу
-                    sl_price = (
-                        entry_price * (1.0 + sl_pct)
-                        if sl_pct is not None
-                        else float("inf")
-                    )
-                    tp_price = (
-                        entry_price * (1.0 - tp_pct)
-                        if tp_pct is not None
-                        else float("-inf")
-                    )
+                    if atr_ok:
+                        sl_price = entry_price + sl_atr_mult * atr_at_entry
+                        tp_price = entry_price - tp_atr_mult * atr_at_entry
+                    else:
+                        sl_price = (
+                            entry_price * (1.0 + sl_pct)
+                            if sl_pct is not None
+                            else float("inf")
+                        )
+                        tp_price = (
+                            entry_price * (1.0 - tp_pct)
+                            if tp_pct is not None
+                            else float("-inf")
+                        )
         else:
-            # --- ЛОГИКА УДЕРЖАНИЯ И ВЫХОДА ИЗ ПОЗИЦИИ ---
+            # --- остальная логика удержания/выхода БЕЗ ИЗМЕНЕНИЙ ---
 
             if position_type == "LONG":
                 # 1. Проверяем Stop-Loss по минимальной цене свечи

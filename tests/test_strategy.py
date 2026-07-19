@@ -134,3 +134,38 @@ def test_simulate_strategy_short_tp_hit():
     # Должна зафиксироваться прибыль ровно 3% (0.03)
     assert pytest.approx(metrics["total_return"], abs=1e-5) == 0.03
     assert metrics["win_rate"] == 1.0
+
+def test_simulate_strategy_atr_barrier_long_tp_hit():
+    df = pd.DataFrame({
+        "close": [100.0, 100.0, 102.5, 102.5],
+        "high":  [100.0, 100.0, 102.5, 102.5],
+        "low":   [100.0, 100.0, 101.5, 101.5],
+        "atr":   [1.0, 1.0, 1.0, 1.0],
+        "predicted_signal": [1, 0, 0, 0],
+    })
+    metrics = simulate_strategy(
+        df, horizon=5, sl_pct=None, tp_pct=None,
+        sl_atr_mult=1.0, tp_atr_mult=2.0,
+    )
+    # entry=100, tp=100+2*1=102 -> high=102.5 на баре i=2 пробивает TP
+    expected_return = (102.0 - 100.0) / 100.0 - (2 * 0.001)
+    assert metrics["total_trades"] == 1
+    assert abs(metrics["expectancy"] - expected_return) < 1e-9
+
+
+def test_simulate_strategy_atr_barrier_falls_back_when_atr_missing():
+    df = pd.DataFrame({
+        "close": [100.0, 100.0, 105.0, 105.0],
+        "high":  [100.0, 100.0, 105.0, 105.0],
+        "low":   [100.0, 100.0, 104.0, 104.0],
+        "atr":   [np.nan, np.nan, np.nan, np.nan],
+        "predicted_signal": [1, 0, 0, 0],
+    })
+    metrics = simulate_strategy(
+        df, horizon=5, sl_pct=0.02, tp_pct=0.04,
+        sl_atr_mult=1.0, tp_atr_mult=2.0,
+    )
+    # ATR NaN на входе -> фолбэк на фикс. tp_pct=0.04 -> tp=104 -> high=105 пробивает
+    expected_return = (104.0 - 100.0) / 100.0 - (2 * 0.001)
+    assert metrics["total_trades"] == 1
+    assert abs(metrics["expectancy"] - expected_return) < 1e-9
