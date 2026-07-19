@@ -522,6 +522,7 @@ async def run_lgbm_experiment(
         "meta_model": meta_model,
         "meta_features": meta_feature_cols,
         "meta_metrics": meta_metrics,
+        "regime_drift_pvalue_at_train": regime_drift_pvalue,
         # df_oos больше не хранится внутри pickle — см. get_oos_path().
         # Каждая загрузка модели (инференс, откат) больше не тащит в память
         # весь OOS-датафрейм, который нужен только для калибровки/drift-проверки.

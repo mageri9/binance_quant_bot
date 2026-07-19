@@ -36,6 +36,7 @@ class Predictor:
         self.scaler = saved_data.get("scaler", None)
         self.meta_model = saved_data.get("meta_model")
         self.meta_features = saved_data.get("meta_features")
+        self.regime_drift_pvalue_at_train = saved_data.get("regime_drift_pvalue_at_train")
 
         self.features = saved_data.get("features")
         if self.features is None:
@@ -118,6 +119,11 @@ class Predictor:
                     meta_row[feat] = signal
                 elif feat == "predicted_confidence":
                     meta_row[feat] = max(prob)
+                elif feat == "regime_drift_pvalue":
+                    if self.regime_drift_pvalue_at_train is None:
+                        meta_ok = False
+                        break
+                    meta_row[feat] = self.regime_drift_pvalue_at_train
                 elif feat in latest_row.index and pd.notna(latest_row[feat]):
                     meta_row[feat] = latest_row[feat]
                 else:
