@@ -114,3 +114,71 @@ async def test_run_lgbm_and_predict_success(temp_db_session):
 
         # Предсказание должно быть 0 или 1 (так как это бинарный классификатор)
         assert prediction in [0, 1]
+
+class _FakePrimaryModel:
+    classes_ = [0, 1]
+    def predict(self, X):
+        return np.array([1])
+    def predict_proba(self, X):
+        return np.array([[0.1, 0.9]])
+
+
+class _FakeMetaModel:
+    classes_ = [0, 1]
+    def __init__(self, success_prob):
+        self.success_prob = success_prob
+    def predict_proba(self, X):
+        return np.array([[1 - self.success_prob, self.success_prob]])
+
+
+def _build_artifact(meta_model, meta_features):
+    return {
+        "model": _FakePrimaryModel(),
+        "scaler": None,
+        "features": ["rsi", "macd", "macd_signal", "macd_hist", "volatility", "volume_ratio"],
+        "target_col": "target_binary",
+        "meta_model": meta_model,
+        "meta_features": meta_features,
+    }
+
+
+def _make_test_candles():
+    np.random.seed(0)
+    return pd.DataFrame({
+        "open_time": np.arange(2000, 2030),
+        "open": np.random.uniform(100, 110, 30),
+        "high": np.random.uniform(110, 120, 30),
+        "low": np.random.uniform(90, 100, 30),
+        "close": np.random.uniform(100, 110, 30),
+        "volume": np.random.uniform(1000, 5000, 30),
+    })
+
+
+def test_predictor_meta_model_gates_low_confidence_signal(tmp_path):
+    artifact = _build_artifact(_FakeMetaModel(success_prob=0.1), ["adx", "atr_pct", "predicted_signal"])
+    model_path = str(tmp_path / "fake_meta_low.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
+    assert predictor.predict(_make_test_candles()) == 0
+
+
+def test_predictor_meta_model_allows_high_confidence_signal(tmp_path):
+    artifact = _build_artifact(_FakeMetaModel(success_prob=0.9), ["adx", "atr_pct", "predicted_signal"])
+    model_path = str(tmp_path / "fake_meta_high.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
+    assert predictor.predict(_make_test_candles()) == 1
+
+
+def test_predictor_without_meta_model_unaffected(tmp_path):
+    artifact = _build_artifact(None, None)
+    model_path = str(tmp_path / "fake_no_meta.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    predictor = Predictor(model_path, confidence_threshold=0.5)
+    assert predictor.predict(_make_test_candles()) == 1

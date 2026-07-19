@@ -10,45 +10,46 @@ class Predictor:
     по новым входящим свечам, а также предоставляет параметры калибровки рисков.
     """
 
-    def __init__(self, model_path: str, confidence_threshold: float | None = None):
+    def __init__(
+        self,
+        model_path: str,
+        confidence_threshold: float | None = None,
+        meta_threshold: float | None = None,
+    ):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Файл модели по пути {model_path} не найден.")
 
         if confidence_threshold is None:
             from src.core.config import get_settings
-
             confidence_threshold = get_settings().PREDICTION_CONFIDENCE_THRESHOLD
         self.confidence_threshold = confidence_threshold
+
+        if meta_threshold is None:
+            from src.core.config import get_settings
+            meta_threshold = get_settings().META_LABELING_THRESHOLD
+        self.meta_threshold = meta_threshold
 
         with open(model_path, "rb") as f:
             saved_data = pickle.load(f)
 
         self.model = saved_data["model"]
         self.scaler = saved_data.get("scaler", None)
+        self.meta_model = saved_data.get("meta_model")
+        self.meta_features = saved_data.get("meta_features")
 
         self.features = saved_data.get("features")
         if self.features is None:
-            self.features = [
-                "rsi",
-                "macd",
-                "macd_signal",
-                "macd_hist",
-                "volatility",
-                "volume_ratio",
-            ]
+            self.features = ["rsi", "macd", "macd_signal", "macd_hist", "volatility", "volume_ratio"]
 
         self.target_col = saved_data.get("target_col")
         if self.target_col is None:
             self.target_col = "target_binary"
 
-        # Извлекаем новые MLOps-метаданные артефакта
         self.model_id = saved_data.get("model_id", "legacy_model")
         self.dataset_version = saved_data.get("dataset_version", "unknown")
         self.git_sha = saved_data.get("git_sha", "unknown")
         self.features_hash = saved_data.get("features_hash", "unknown")
-        self.calibration = saved_data.get(
-            "calibration", {"sl_pct": 0.02, "tp_pct": 0.04}
-        )
+        self.calibration = saved_data.get("calibration", {"sl_pct": 0.02, "tp_pct": 0.04})
 
     def predict(self, df: pd.DataFrame) -> int | None:
         """
@@ -108,5 +109,29 @@ class Predictor:
             signal = 0
         elif signal == -1 and prob_dict["prob_short"] < self.confidence_threshold:
             signal = 0
+
+        if signal != 0 and self.meta_model is not None and self.meta_features:
+            meta_row = {}
+            meta_ok = True
+            for feat in self.meta_features:
+                if feat == "predicted_signal":
+                    meta_row[feat] = signal
+                elif feat == "predicted_confidence":
+                    meta_row[feat] = max(prob)
+                elif feat in latest_row.index and pd.notna(latest_row[feat]):
+                    meta_row[feat] = latest_row[feat]
+                else:
+                    meta_ok = False
+                    break
+
+            if meta_ok:
+                meta_X = pd.DataFrame([meta_row])[self.meta_features]
+                meta_proba = self.meta_model.predict_proba(meta_X)[0]
+                classes = list(self.meta_model.classes_)
+                success_idx = classes.index(1) if 1 in classes else 1
+                meta_success_prob = meta_proba[success_idx]
+
+                if meta_success_prob < self.meta_threshold:
+                    signal = 0
 
         return signal, prob_dict
