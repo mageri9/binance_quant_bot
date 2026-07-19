@@ -123,3 +123,42 @@ def train_meta_model(
     final_model.fit(meta_df[feature_cols], meta_df["success"])
     metrics["rejected_reason"] = None
     return final_model, feature_cols, metrics
+
+def apply_meta_gate(
+    df: pd.DataFrame,
+    meta_model,
+    meta_features: list[str] | None,
+    meta_threshold: float = 0.5,
+    predicted_col: str = "predicted_signal",
+) -> pd.Series:
+    """
+    Возвращает копию колонки сигналов, где сигналы с низкой предсказанной
+    вероятностью успеха (по meta-модели) погашены до 0 (HOLD).
+    Если meta_model/meta_features отсутствуют — возвращает сигналы без изменений.
+    """
+    gated = df[predicted_col].copy()
+    if meta_model is None or not meta_features:
+        return gated
+
+    mask_nonzero = gated != 0
+    if not mask_nonzero.any():
+        return gated
+
+    sub = df.loc[mask_nonzero]
+    missing = [f for f in meta_features if f not in sub.columns and f != predicted_col]
+    if missing:
+        return gated  # недостаточно фичей для честного гейтинга — не гейтим вслепую
+
+    X = sub[[f for f in meta_features if f != predicted_col]].copy()
+    if predicted_col in meta_features:
+        X[predicted_col] = sub[predicted_col]
+    X = X[meta_features]
+
+    proba = meta_model.predict_proba(X)
+    classes = list(meta_model.classes_)
+    success_idx = classes.index(1) if 1 in classes else 1
+    success_prob = proba[:, success_idx]
+
+    reject_idx = sub.index[success_prob < meta_threshold]
+    gated.loc[reject_idx] = 0
+    return gated

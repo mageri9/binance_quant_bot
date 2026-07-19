@@ -82,6 +82,9 @@ async def get_best_calibration(
     timeframe: str,
     custom_model_path: str = None,
     use_atr_calibration: bool = False,
+    meta_model=None,
+    meta_features: list[str] | None = None,
+    meta_threshold: float | None = None,
 ) -> tuple[float, float, int, str, dict]:
     """
     Проводит калибровку рисков и горизонта, возвращает: (best_sl, best_tp, best_horizon, formatted_report_text).
@@ -164,6 +167,23 @@ async def get_best_calibration(
 
     if "open_time" in df_valid.columns:
         df_valid = df_valid.sort_values("open_time").reset_index(drop=True)
+
+    if meta_model is not None:
+        from src.models.meta import apply_meta_gate
+
+        settings_local = get_settings()
+        threshold = (
+            meta_threshold
+            if meta_threshold is not None
+            else settings_local.META_LABELING_THRESHOLD
+        )
+        df_valid["predicted_signal"] = apply_meta_gate(
+            df_valid,
+            meta_model,
+            meta_features,
+            threshold,
+        )
+        logger.info(f"[Calibration] Meta-gate применён к сигналам перед калибровкой ({symbol}).")
 
     calib_split_idx = int(len(df_valid) * 0.7)
     df_calib = df_valid.iloc[:calib_split_idx].reset_index(drop=True)

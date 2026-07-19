@@ -511,6 +511,9 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
                 artifact = None
                 try:
+                    with open(lgbm_result["model_path"], "rb") as f:
+                        artifact = pickle.load(f)
+
                     from scripts.calibrate import get_best_calibration
 
                     (
@@ -523,10 +526,10 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         symbol,
                         timeframe,
                         custom_model_path=lgbm_result["model_path"],
+                        meta_model=artifact.get("meta_model"),
+                        meta_features=artifact.get("meta_features"),
+                        meta_threshold=settings.META_LABELING_THRESHOLD,
                     )
-
-                    with open(lgbm_result["model_path"], "rb") as f:
-                        artifact = pickle.load(f)
 
                     artifact.setdefault("calibration", {}).update(
                         {
@@ -536,8 +539,6 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             "calibrated_at": datetime.now(timezone.utc).isoformat(),
                         }
                     )
-                    # Честные (held-out, не участвовавшие в grid search) метрики
-                    # прибыльности — источник данных для Economic Quality Gate.
                     artifact["backtest_metrics"] = honest_metrics
 
                     with open(lgbm_result["model_path"], "wb") as f:

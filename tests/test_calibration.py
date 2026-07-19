@@ -224,3 +224,35 @@ def test_perform_grid_search_atr_mode():
     assert "sl_atr_mult" in results[0]
     assert "tp_atr_mult" in results[0]
     assert "sl_pct" not in results[0]
+
+@pytest.mark.asyncio
+async def test_get_best_calibration_applies_meta_gate(tmp_path):
+    class RejectAllMeta:
+        classes_ = [0, 1]
+        def predict_proba(self, X):
+            return np.tile([1.0, 0.0], (len(X), 1))  # всегда "низкая вероятность успеха"
+
+    model_path = str(tmp_path / "lgbm_BTCUSDT_1h.pkl")
+    oos_path = get_oos_path(model_path)
+
+    n = 40
+    df_oos = pd.DataFrame({
+        "open_time": np.arange(n),
+        "close": [100.0] * n, "high": [100.5] * n, "low": [99.5] * n,
+        "adx": [25.0] * n, "atr_pct": [0.01] * n, "volume_ratio": [1.0] * n, "volatility": [0.02] * n,
+        "predicted_signal": ([1, 0, -1, 0] * (n // 4)),
+    })
+    df_oos.to_parquet(oos_path, index=False)
+
+    with open(model_path, "wb") as f:
+        pickle.dump({"model": None, "features": []}, f)
+
+    with pytest.raises(ValueError):
+        # Все сигналы погашены meta-гейтом -> сделок 0 -> min_trades не набирается
+        await get_best_calibration(
+            "BTC/USDT", "1h",
+            custom_model_path=model_path,
+            meta_model=RejectAllMeta(),
+            meta_features=["adx"],
+            meta_threshold=0.5,
+        )
