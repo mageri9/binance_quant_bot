@@ -142,16 +142,50 @@ class TradingEngine:
                             order_type="market",
                             amount=order["amount"],
                         )
-                        stop_warning = (
-                            f" 🚨 SL/TP не удалось выставить вообще — позиция АВАРИЙНО "
-                            f"закрыта маркет-ордером по цене {emergency_close.get('price', 0):.2f}$."
-                        )
+                        exit_price = emergency_close.get("price", order["price"])
+
+                        if side == "buy":
+                            emergency_pnl = (exit_price - order["price"]) * order[
+                                "amount"
+                            ]
+                        else:
+                            emergency_pnl = (order["price"] - exit_price) * order[
+                                "amount"
+                            ]
+
+                        # Пишем сделку в БД как обычную открытую-и-тут-же-закрытую —
+                        # чтобы Win Rate/Sharpe/Economic Gate не теряли эту сделку из
+                        # статистики и не завышали качество модели за счет "невидимых" дыр.
+                        try:
+                            entry_candle_time = int(
+                                datetime.now(timezone.utc).timestamp() * 1000
+                            )
+                            db_trade = await self.repo.create_trade(
+                                symbol=symbol,
+                                entry_price=order["price"],
+                                amount=order["amount"],
+                                sl_price=sl_price,
+                                tp_price=tp_price,
+                                entry_candle_time=entry_candle_time,
+                                is_short=(side == "sell"),
+                            )
+                            await self.repo.close_trade(
+                                db_trade, exit_price, emergency_pnl
+                            )
+                        except Exception as db_err:
+                            logger.error(
+                                f"[TradingEngine] Аварийное закрытие {symbol} исполнено на бирже, "
+                                f"но не записано в БД: {db_err}"
+                            )
+
                         logger.critical(
-                            f"[TradingEngine] Аварийное закрытие {symbol}: SL/TP оба недоступны."
+                            f"[TradingEngine] Аварийное закрытие {symbol}: SL/TP оба недоступны. "
+                            f"PnL: {emergency_pnl:.2f}$"
                         )
                         return (
                             f"🚨 [EMERGENCY CLOSE] Позиция {side.upper()} {symbol} открыта и немедленно "
-                            f"закрыта — биржа отклонила оба защитных ордера (SL/TP).{stop_warning}"
+                            f"закрыта — биржа отклонила оба защитных ордера (SL/TP). "
+                            f"Цена выхода: {exit_price:.2f}$, PnL: {emergency_pnl:.2f}$."
                         )
                     except Exception as emergency_err:
                         stop_warning = (
