@@ -25,42 +25,37 @@ router = Router()
 @router.message(Command("status"))
 @router.message(F.text == "📊 Статус портфеля")
 async def status_handler(message: Message, session: AsyncSession):
-    """Выводит сводное текущее состояние виртуального кошелька по всем парам."""
+    """Выводит сводное текущее состояние кошелька и позиций на Binance фьючерсах."""
     repo = PaperTradingRepository(session)
     portfolio = await repo.get_portfolio()
     settings = get_settings()
 
-    live_balance_text = ""
-    is_live_mode = (
-        settings.BINANCE_TESTNET
-        and not settings.SHADOW_TRADING
-        and settings.BINANCE_API_KEY
-        and settings.BINANCE_API_SECRET
-    )
-    if is_live_mode:
-        from src.exchange.binance import BinanceExchange
+    from src.exchange.binance import BinanceExchange
 
-        exchange = BinanceExchange(
-            api_key=settings.BINANCE_API_KEY,
-            secret=settings.BINANCE_API_SECRET,
-            testnet=settings.BINANCE_TESTNET,
+    exchange = BinanceExchange(
+        api_key=settings.BINANCE_API_KEY,
+        secret=settings.BINANCE_API_SECRET,
+        testnet=(settings.TRADING_MODE == "testnet"),
+    )
+
+    mode_name = "Testnet" if settings.TRADING_MODE == "testnet" else "Mainnet"
+    live_balance_text = ""
+    try:
+        live_balance = await exchange.get_balance()
+        live_balance_text = (
+            f"🏦 <b>Баланс Binance Futures ({mode_name})</b>\n"
+            f"💵 Свободно: <code>{live_balance['free']:.2f}$</code>\n"
+            f"📈 Всего: <code>{live_balance['total']:.2f}$</code>\n\n"
         )
-        try:
-            live_balance = await exchange.get_balance()
-            live_balance_text = (
-                f"🏦 <b>Реальный баланс Binance (Testnet)</b>\n"
-                f"💵 Свободно: <code>{live_balance['free']:.2f}$</code>\n"
-                f"📈 Всего: <code>{live_balance['total']:.2f}$</code>\n\n"
-            )
-        except Exception as e:
-            logger.error(f"[status_handler] Не удалось получить баланс Binance: {e}")
-            live_balance_text = "🏦 ⚠️ <i>Не удалось получить реальный баланс с Binance.</i>\n\n"
-        finally:
-            await exchange.close()
+    except Exception as e:
+        logger.error(f"[status_handler] Не удалось получить баланс Binance: {e}")
+        live_balance_text = f"🏦 ⚠️ <i>Не удалось получить баланс с Binance ({mode_name}).</i>\n\n"
+    finally:
+        await exchange.close()
 
     active_trades_text = ""
     has_any_active = False
-    total_positions_value = 0.0  # ← НОВОЕ
+    total_positions_value = 0.0
 
     for symbol, timeframe in settings.ACTIVE_CONFIGS:
         active_trade = await repo.get_active_trade(symbol)
@@ -70,10 +65,6 @@ async def status_handler(message: Message, session: AsyncSession):
             kline_repo = KlineRepository(session)
             klines = await kline_repo.get_klines(symbol, timeframe, limit=1)
 
-            # Направление сделки берём напрямую из БД (поле is_short),
-            # без пересчёта по sl_price/tp_price — это устраняет хрупкую
-            # эвристику, которая может разойтись с реальным направлением
-            # (например, если sl_price или tp_price не заданы).
             is_short = active_trade.is_short
 
             current_price_str = ""
@@ -83,12 +74,12 @@ async def status_handler(message: Message, session: AsyncSession):
                 if is_short:
                     unrealized_pnl = (
                         active_trade.entry_price - current_close
-                    ) * active_trade.amount
+                      ) * active_trade.amount
                     pos_type = "SHORT 🔴"
                 else:
                     unrealized_pnl = (
                         current_close - active_trade.entry_price
-                    ) * active_trade.amount
+                      ) * active_trade.amount
                     pos_type = "LONG 🟢"
 
                 # Считаем текущую стоимость позиции
@@ -132,16 +123,13 @@ async def status_handler(message: Message, session: AsyncSession):
             "📭 <i>Активных позиций нет. Бот находится вне рынка.</i>\n\n"
         )
 
-    # Обновляем стоимость позиций и баланс динамически на основе текущих рыночных котировок
+    # Обновляем портфель локального кэша
     portfolio.positions_value = total_positions_value
     portfolio.balance = portfolio.cash + total_positions_value
 
     status_text = (
         f"{live_balance_text}"
-        f"📊 <b>Виртуальный портфель (Multi-Asset Paper Trading)</b>\n\n"
-        f"💵 Свободный кэш: <code>{portfolio.cash:.2f}$</code>\n"
-        f"📊 Стоимость позиций: <code>{portfolio.positions_value:.2f}$</code>\n"
-        f"📈 Общий баланс: <code>{portfolio.balance:.2f}$</code>\n\n"
+        f"📊 <b>Текущий статус позиций</b>\n\n"
         f"{active_trades_text}"
     )
 
@@ -244,13 +232,13 @@ async def report_handler(message: Message, session: AsyncSession):
     metrics = calculate_strategy_metrics(trade_returns)
 
     await message.answer(
-        f"📈 <b>Отчёт по стратегии (Сводный Multi-Asset)</b>\n\n"  # Изменен заголовок под тесты
+        f"📈 <b>Отчёт по стратегии (Сводный Multi-Asset)</b>\n\n"
         f"🔢 Всего сделок (суммарно): <code>{metrics['total_trades']}</code>\n"
         f"✅ Win rate системы: <code>{metrics['win_rate']:.1%}</code>\n"
         f"💹 Profit Factor: <code>{metrics['profit_factor']:.2f}</code>\n"
         f"📊 Общий Sharpe: <code>{metrics['sharpe_ratio']:.3f}</code>\n"
         f"📊 Общий Sortino: <code>{metrics['sortino_ratio']:.3f}</code>\n"
-        f"📉 Макс. просадка портфеля: <code>{metrics['max_drawdown']:.1%}</code>\n"
+        f"📉 Макс. просадка: <code>{metrics['max_drawdown']:.1%}</code>\n"
         f"🎯 Матожидание (Expectancy): <code>{metrics['expectancy']:.3%}</code> на сделку\n"
         f"💰 Накопленная доходность: <code>{metrics['total_return']:.1%}</code>"
     )

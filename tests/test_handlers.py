@@ -155,7 +155,7 @@ async def test_status_handler_no_trades(temp_db_session):
     message.answer.assert_called_once()
     answer_text = message.answer.call_args[0][0]
 
-    assert "Виртуальный портфель" in answer_text
+    assert "Баланс Binance Futures" in answer_text
     assert "Активных позиций нет" in answer_text
 
 
