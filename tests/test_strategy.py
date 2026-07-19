@@ -169,3 +169,28 @@ def test_simulate_strategy_atr_barrier_falls_back_when_atr_missing():
     expected_return = (104.0 - 100.0) / 100.0 - (2 * 0.001)
     assert metrics["total_trades"] == 1
     assert abs(metrics["expectancy"] - expected_return) < 1e-9
+
+def test_simulate_strategy_trade_log_matches_metrics():
+    df = pd.DataFrame({
+        "close": [100.0, 100.0, 105.0, 105.0, 100.0, 100.0, 95.0, 95.0],
+        "high":  [100.0, 100.0, 105.0, 105.0, 100.0, 100.0, 95.0, 95.0],
+        "low":   [100.0, 100.0, 104.0, 104.0, 100.0, 100.0,  94.0, 94.0],
+        "predicted_signal": [1, 0, 0, 0, 1, 0, 0, 0],
+    })
+    metrics, trades_df = simulate_strategy(df, horizon=5, return_trade_log=True)
+
+    assert len(trades_df) == metrics["total_trades"]
+    assert set(trades_df.columns) == {"entry_idx", "exit_idx", "side", "return"}
+    assert trades_df.iloc[0]["entry_idx"] == 0
+    assert trades_df.iloc[0]["return"] > 0  # TP hit
+    assert trades_df.iloc[1]["entry_idx"] == 4
+    assert trades_df.iloc[1]["return"] < 0  # SL hit
+
+
+def test_simulate_strategy_default_no_trade_log():
+    df = pd.DataFrame({
+        "close": [100.0] * 5, "high": [100.0] * 5, "low": [100.0] * 5,
+        "predicted_signal": [0] * 5,
+    })
+    result = simulate_strategy(df)
+    assert isinstance(result, dict)  # старое поведение — просто dict, без изменений

@@ -85,7 +85,8 @@ def simulate_strategy(
     transaction_cost: float = 0.001,
     sl_atr_mult: float | None = None,
     tp_atr_mult: float | None = None,
-) -> dict:
+    return_trade_log: bool = False,
+) -> dict | tuple[dict, pd.DataFrame]:
     """
     ...(докстринг как был)...
 
@@ -105,12 +106,25 @@ def simulate_strategy(
     n = len(df)
 
     trades = []
+    trade_log = []
 
     position_type = None
     entry_price = 0.0
     entry_idx = 0
     sl_price = 0.0
     tp_price = 0.0
+
+    def _close_trade(exit_idx, trade_return):
+        trades.append(trade_return)
+        if return_trade_log:
+            trade_log.append(
+                {
+                    "entry_idx": entry_idx,
+                    "exit_idx": exit_idx,
+                    "side": position_type,
+                    "return": trade_return,
+                }
+            )
 
     for i in range(n):
         if position_type is None:
@@ -160,62 +174,54 @@ def simulate_strategy(
                             else float("-inf")
                         )
         else:
-            # --- остальная логика удержания/выхода БЕЗ ИЗМЕНЕНИЙ ---
-
             if position_type == "LONG":
-                # 1. Проверяем Stop-Loss по минимальной цене свечи
                 if lows[i] <= sl_price:
                     trade_return = (sl_price - entry_price) / entry_price - (
                         2 * transaction_cost
                     )
-                    trades.append(trade_return)
+                    _close_trade(i, trade_return)
                     position_type = None
                     continue
-
-                # 2. Проверяем Take-Profit по максимальной цене свечи
                 if highs[i] >= tp_price:
                     trade_return = (tp_price - entry_price) / entry_price - (
                         2 * transaction_cost
                     )
-                    trades.append(trade_return)
+                    _close_trade(i, trade_return)
                     position_type = None
                     continue
-
-                # 3. Выход по истечении горизонта времени (Time Exit)
                 if i - entry_idx >= horizon:
                     trade_return = (prices[i] - entry_price) / entry_price - (
                         2 * transaction_cost
                     )
-                    trades.append(trade_return)
+                    _close_trade(i, trade_return)
                     position_type = None
                     continue
 
             elif position_type == "SHORT":
-                # 1. Проверяем Stop-Loss (для SHORT это рост цены вверх)
                 if highs[i] >= sl_price:
                     trade_return = (entry_price - sl_price) / entry_price - (
                         2 * transaction_cost
                     )
-                    trades.append(trade_return)
+                    _close_trade(i, trade_return)
                     position_type = None
                     continue
-
-                # 2. Проверяем Take-Profit (для SHORT это падение цены вниз)
                 if lows[i] <= tp_price:
                     trade_return = (entry_price - tp_price) / entry_price - (
                         2 * transaction_cost
                     )
-                    trades.append(trade_return)
+                    _close_trade(i, trade_return)
                     position_type = None
                     continue
-
-                # 3. Выход по истечении горизонта времени (Time Exit)
                 if i - entry_idx >= horizon:
                     trade_return = (entry_price - prices[i]) / entry_price - (
                         2 * transaction_cost
                     )
-                    trades.append(trade_return)
+                    _close_trade(i, trade_return)
                     position_type = None
                     continue
 
-    return calculate_strategy_metrics(trades)
+    metrics = calculate_strategy_metrics(trades)
+    if return_trade_log:
+        trades_df = pd.DataFrame(trade_log, columns=["entry_idx", "exit_idx", "side", "return"])
+        return metrics, trades_df
+    return metrics
