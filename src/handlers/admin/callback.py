@@ -6,7 +6,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from src.filters.check_admin import IsAdmin
 from src.risk import KillSwitchManager, KillSwitchState, reconcile_positions
-from src.exchange.paper import PaperExchange
 from src.exchange.binance import BinanceExchange
 from src.core.config import get_settings
 from src.crud.paper import PaperTradingRepository
@@ -41,14 +40,11 @@ async def risk_reset_handler(query: CallbackQuery, session: AsyncSession, redis:
 
     await manager.set_state(KillSwitchState.NORMAL)
 
-    if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
-        exchange = BinanceExchange(
-            settings.BINANCE_API_KEY,
-            settings.BINANCE_API_SECRET,
-            settings.BINANCE_TESTNET,
-        )
-    else:
-        exchange = PaperExchange(session)
+    exchange = BinanceExchange(
+        settings.BINANCE_API_KEY,
+        settings.BINANCE_API_SECRET,
+        settings.BINANCE_TESTNET,
+    )
 
     try:
         success, error_details = await reconcile_positions(
@@ -117,14 +113,11 @@ async def risk_sync_db_handler(
     settings = get_settings()
     symbols = [config[0] for config in settings.ACTIVE_CONFIGS]
 
-    if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
-        exchange = BinanceExchange(
-            settings.BINANCE_API_KEY,
-            settings.BINANCE_API_SECRET,
-            settings.BINANCE_TESTNET,
-        )
-    else:
-        exchange = PaperExchange(session)
+    exchange = BinanceExchange(
+        settings.BINANCE_API_KEY,
+        settings.BINANCE_API_SECRET,
+        settings.BINANCE_TESTNET,
+    )
 
     try:
         repo = PaperTradingRepository(session)

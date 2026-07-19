@@ -262,7 +262,6 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
     from src.crud.kline import KlineRepository
 
     # Новые импорты SRE контура
-    from src.exchange.paper import PaperExchange
     from src.exchange.binance import BinanceExchange
     from src.risk.engine import RiskEngine
     from src.risk.kill_switch import KillSwitchManager, reconcile_positions
@@ -285,15 +284,12 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                 kill_switch = KillSwitchManager(redis)
                 risk_engine = RiskEngine()
 
-                # Динамическая регистрация API коннектора
-                if settings.BINANCE_API_KEY and settings.BINANCE_API_SECRET:
-                    exchange = BinanceExchange(
-                        api_key=settings.BINANCE_API_KEY,
-                        secret=settings.BINANCE_API_SECRET,
-                        testnet=settings.BINANCE_TESTNET,
-                    )
-                else:
-                    exchange = PaperExchange(session)
+                # Безальтернативная инициализация коннектора Binance фьючерсов
+                exchange = BinanceExchange(
+                    api_key=settings.BINANCE_API_KEY,
+                    secret=settings.BINANCE_API_SECRET,
+                    testnet=settings.BINANCE_TESTNET,
+                )
 
                 from src.exchange.engine import TradingEngine
 
