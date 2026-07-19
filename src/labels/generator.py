@@ -7,11 +7,17 @@ MAX_ADAPTIVE_HORIZON_CANDLES = 15
 
 
 def generate_binary_labels(
-    df: pd.DataFrame, horizon: int = 5, threshold: float = 0.0
+    df: pd.DataFrame,
+    horizon: int = 5,
+    threshold: float = 0.0,
+    tp_atr_mult: float | None = None,
 ) -> pd.Series:
     """
     Генерирует бинарную метку направления цены.
     С поддержкой фолбэка для простых тестов.
+
+    tp_atr_mult: если задан, барьер TP считается как close + tp_atr_mult * ATR
+    вместо фиксированного close * (1 + threshold). Требует наличия колонки 'atr'.
     """
     if "high" not in df.columns or "low" not in df.columns or "atr" not in df.columns:
         # Упрощенный фолбэк для совместимости со старыми тестами
@@ -54,7 +60,11 @@ def generate_binary_labels(
             continue
 
         p_close = close[t]
-        tp_barrier = p_close * (1.0 + threshold)
+
+        if tp_atr_mult is not None and not np.isnan(curr_atr) and curr_atr > 0:
+            tp_barrier = p_close + tp_atr_mult * curr_atr
+        else:
+            tp_barrier = p_close * (1.0 + threshold)
 
         hit_tp = False
         for k in range(t + 1, t + hz + 1):
@@ -70,11 +80,20 @@ def generate_binary_labels(
 
 
 def generate_triple_labels(
-    df: pd.DataFrame, horizon: int = 5, threshold: float = 0.01
+    df: pd.DataFrame,
+    horizon: int = 5,
+    threshold: float = 0.01,
+    tp_atr_mult: float | None = None,
+    sl_atr_mult: float | None = None,
 ) -> pd.Series:
     """
     Генерирует профессиональную трехклассовую разметку методом Triple Barrier
     с адаптивным временным горизонтом на основе волатильности ATR.
+
+    tp_atr_mult / sl_atr_mult: если оба заданы, барьеры TP/SL считаются как
+    close +/- mult * ATR вместо фиксированного close * (1 +/- threshold).
+    Требует наличия колонки 'atr'. Заданы независимо — но для консистентной
+    экономики стратегии их следует калибровать вместе (см. scripts/calibrate.py).
     """
     if "high" not in df.columns or "low" not in df.columns or "atr" not in df.columns:
         # Упрощенный фолбэк для совместимости со старыми тестами
@@ -97,6 +116,7 @@ def generate_triple_labels(
     atr_rolling = atr_series.rolling(window=100, min_periods=1).mean().values
 
     safe_end = n - MAX_ADAPTIVE_HORIZON_CANDLES
+    use_atr_barrier = tp_atr_mult is not None and sl_atr_mult is not None
 
     for t in range(safe_end):
         curr_atr = atr[t]
@@ -120,8 +140,13 @@ def generate_triple_labels(
             continue
 
         p_close = close[t]
-        tp_barrier = p_close * (1.0 + threshold)
-        sl_barrier = p_close * (1.0 - threshold)
+
+        if use_atr_barrier and not np.isnan(curr_atr) and curr_atr > 0:
+            tp_barrier = p_close + tp_atr_mult * curr_atr
+            sl_barrier = p_close - sl_atr_mult * curr_atr
+        else:
+            tp_barrier = p_close * (1.0 + threshold)
+            sl_barrier = p_close * (1.0 - threshold)
 
         tp_idx = -1
         sl_idx = -1

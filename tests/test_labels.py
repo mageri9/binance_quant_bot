@@ -270,3 +270,38 @@ def test_walk_forward_purge_with_nominal_horizon_is_insufficient():
 
     assert info_correct["train_size"] <= info_insufficient["train_size"]
     assert info_correct["train_size"] == 100 - MAX_ADAPTIVE_HORIZON_CANDLES
+
+def test_triple_labels_atr_barrier_wider_than_fixed_threshold():
+    """При большом ATR-множителе барьер TP/SL шире, чем узкий фикс.-threshold — сделка не закрывается так быстро."""
+    n = 30
+    close = [100.0] * n
+    high = [100.3] * n
+    low = [99.9] * n  # не пробивает ни фикс. SL (99.0), ни ATR-SL (99.8)
+    atr = [1.0] * n  # абсолютный ATR = 1.0 (1% от цены)
+
+    df = pd.DataFrame({"close": close, "high": high, "low": low, "atr": atr})
+
+    # Фикс. threshold=0.01 -> барьер TP=101, узкий high=100.3 его не достает -> HOLD
+    labels_fixed = generate_triple_labels(df, horizon=5, threshold=0.01)
+    assert labels_fixed.iloc[0] == 0.0
+
+    # ATR-барьер с малым множителем 0.2 -> tp=100.2, sl=99.8; high=100.3 пробивает TP, low=99.9 SL не трогает
+    labels_atr = generate_triple_labels(
+        df, horizon=5, threshold=0.01, tp_atr_mult=0.2, sl_atr_mult=0.2
+    )
+    assert labels_atr.iloc[0] == 1.0
+
+
+def test_triple_labels_atr_barrier_requires_both_mults():
+    """Если задан только один из множителей — используется старое поведение (fallback), а не половинчатый ATR-барьер."""
+    n = 20
+    df = pd.DataFrame({
+        "close": [100.0] * n,
+        "high": [100.3] * n,
+        "low": [99.7] * n,
+        "atr": [1.0] * n,
+    })
+
+    labels = generate_triple_labels(df, horizon=5, threshold=0.01, tp_atr_mult=0.2)
+    # sl_atr_mult не задан -> use_atr_barrier=False -> фикс.-threshold ветка -> HOLD
+    assert labels.iloc[0] == 0.0
