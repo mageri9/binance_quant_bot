@@ -183,15 +183,22 @@ def test_predictor_without_meta_model_unaffected(tmp_path):
     predictor = Predictor(model_path, confidence_threshold=0.5)
     assert predictor.predict(_make_test_candles()) == 1
 
-def test_predictor_meta_model_uses_stored_drift_pvalue(tmp_path):
-    class FakeMetaModelWithDrift:
-        classes_ = [0, 1]
-        def predict_proba(self, X):
-            assert "regime_drift_pvalue" in X.columns
-            return np.array([[0.1, 0.9]])
+class _FakeMetaModelWithDrift:
+    classes_ = [0, 1]
+    def predict_proba(self, X):
+        assert "regime_drift_pvalue" in X.columns
+        return np.array([[0.1, 0.9]])
 
+
+class _FakeMetaModelRejectAll:
+    classes_ = [0, 1]
+    def predict_proba(self, X):
+        return np.array([[0.9, 0.1]])
+
+
+def test_predictor_meta_model_uses_stored_drift_pvalue(tmp_path):
     artifact = _build_artifact(
-        FakeMetaModelWithDrift(), ["adx", "regime_drift_pvalue", "predicted_signal"],
+        _FakeMetaModelWithDrift(), ["adx", "regime_drift_pvalue", "predicted_signal"],
     )
     artifact["regime_drift_pvalue_at_train"] = 0.02
     model_path = str(tmp_path / "fake_meta_drift.pkl")
@@ -205,13 +212,8 @@ def test_predictor_meta_model_uses_stored_drift_pvalue(tmp_path):
 def test_predictor_meta_model_skips_gate_when_drift_missing(tmp_path):
     """Если meta-модель требует drift-признак, а он не был сохранён (старый артефакт до 6c) —
     гейт молча пропускается (meta_ok=False), сигнал первичной модели проходит без фильтра."""
-    class FakeMetaModelWithDrift:
-        classes_ = [0, 1]
-        def predict_proba(self, X):
-            return np.array([[0.9, 0.1]])  # если бы гейт сработал — сигнал бы погас
-
     artifact = _build_artifact(
-        FakeMetaModelWithDrift(), ["adx", "regime_drift_pvalue", "predicted_signal"],
+        _FakeMetaModelRejectAll(), ["adx", "regime_drift_pvalue", "predicted_signal"],
     )
     # regime_drift_pvalue_at_train намеренно не задан
     model_path = str(tmp_path / "fake_meta_no_drift.pkl")
