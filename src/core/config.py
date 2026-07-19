@@ -36,9 +36,9 @@ class Settings(BaseSettings):
 
     # Retraining
     RETRAIN_INTERVAL_SECONDS: int = 86400  # раз в сутки
-    MIN_KLINES_FOR_TRAIN: int = 1300
-    TRAIN_SIZE: int = 1000
-    TEST_SIZE: int = 200
+    MIN_KLINES_FOR_TRAIN: int = 6000
+    TRAIN_SIZE: int = 4000
+    TEST_SIZE: int = 300
     LABEL_HORIZON: int = 5
     LABEL_THRESHOLD: float = 0.01
     TARGET_COL: str = "target_triple"
