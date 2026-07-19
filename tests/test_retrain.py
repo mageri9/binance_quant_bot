@@ -69,7 +69,11 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
         patch(
             "scripts.calibrate.get_best_calibration",
             new_callable=AsyncMock,
-            return_value=(0.02, 0.04, 5, "report"),
+            return_value=(0.02, 0.04, 5, "report", {
+                "sharpe_ratio": 0.1, "expectancy": 0.001, "total_return": 0.02,
+                "total_trades": 15, "win_rate": 0.5, "profit_factor": 1.1,
+                "sortino_ratio": 0.1, "max_drawdown": 0.05,
+            }),
         ),
         patch("os.path.exists", return_value=False),
         patch("shutil.copy"),
@@ -160,7 +164,22 @@ async def test_retrain_cycle_copies_oos_parquet_to_production(temp_db_session, t
         patch(
             "scripts.calibrate.get_best_calibration",
             new_callable=AsyncMock,
-            return_value=(0.02, 0.04, 5, "report"),
+            return_value=(
+                0.02,
+                0.04,
+                5,
+                "report",
+                {
+                    "sharpe_ratio": 0.1,
+                    "expectancy": 0.001,
+                    "total_return": 0.02,
+                    "total_trades": 15,
+                    "win_rate": 0.5,
+                    "profit_factor": 1.1,
+                    "sortino_ratio": 0.1,
+                    "max_drawdown": 0.05,
+                },
+            ),
         ),
         patch(
             "os.path.exists",

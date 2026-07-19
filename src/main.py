@@ -323,9 +323,13 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     )
 
                     if not synced:
-                        # Если нашли рассинхронизацию, шлем критический алерт
+                        # error_details уже содержит точные символы всех найденных
+                        # mismatch'ей построчно — не привязываем заголовок к локальному
+                        # symbol этого цикла, иначе алерт вводит в заблуждение (баг:
+                        # три параллельных цикла проверяют один и тот же полный список
+                        # пар и репортят чужие детали под своим заголовком).
                         alert_msg = (
-                            f"🚨 [SRE RECONCILE ERROR] Рассинхронизация по {symbol}!\n"
+                            f"🚨 [SRE RECONCILE ERROR] Обнаружена рассинхронизация позиций!\n"
                             f"Бот заблокирован в SAFE_MODE.\n"
                             f"<code>{error_details}</code>"
                         )
@@ -531,6 +535,9 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             "calibrated_at": datetime.now(timezone.utc).isoformat(),
                         }
                     )
+                    # Честные (held-out, не участвовавшие в grid search) метрики
+                    # прибыльности — источник данных для Economic Quality Gate.
+                    artifact["backtest_metrics"] = honest_metrics
 
                     with open(lgbm_result["model_path"], "wb") as f:
                         pickle.dump(artifact, f)
