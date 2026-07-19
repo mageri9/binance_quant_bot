@@ -288,7 +288,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                 exchange = BinanceExchange(
                     api_key=settings.BINANCE_API_KEY,
                     secret=settings.BINANCE_API_SECRET,
-                    testnet=settings.BINANCE_TESTNET,
+                    testnet=(settings.TRADING_MODE == "testnet"),
                 )
 
                 from src.exchange.engine import TradingEngine

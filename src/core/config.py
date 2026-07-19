@@ -109,10 +109,6 @@ class Settings(BaseSettings):
         return v
 
     @property
-    def BINANCE_TESTNET(self) -> bool:
-        return self.TRADING_MODE == "testnet"
-
-    @property
     def SHADOW_TRADING(self) -> bool:
         # Временная совместимость до удаления в квестах 7/8
         return False

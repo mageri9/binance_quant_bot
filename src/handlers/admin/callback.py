@@ -43,7 +43,7 @@ async def risk_reset_handler(query: CallbackQuery, session: AsyncSession, redis:
     exchange = BinanceExchange(
         settings.BINANCE_API_KEY,
         settings.BINANCE_API_SECRET,
-        settings.BINANCE_TESTNET,
+        testnet=(settings.TRADING_MODE == "testnet"),
     )
 
     try:
@@ -116,7 +116,7 @@ async def risk_sync_db_handler(
     exchange = BinanceExchange(
         settings.BINANCE_API_KEY,
         settings.BINANCE_API_SECRET,
-        settings.BINANCE_TESTNET,
+        testnet=(settings.TRADING_MODE == "testnet"),
     )
 
     try:
