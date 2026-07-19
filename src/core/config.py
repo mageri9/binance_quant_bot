@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Model
     MODEL_PATH: str = "models/saved_models/lgbm_BTCUSDT_1h.pkl"
     PREDICTION_CONFIDENCE_THRESHOLD: float = 0.55
-    OPTUNA_OBJECTIVE_METRIC: str = "f1"  # "f1" | "sharpe" | "expectancy"
+    OPTUNA_OBJECTIVE_METRIC: str = "sharpe"  # "f1" | "sharpe" | "expectancy"
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # Retraining
-    RETRAIN_INTERVAL_SECONDS: int = 43200  # 2 раза в сутки
+    RETRAIN_INTERVAL_SECONDS: int = 21600  # 4 раза в сутки
     MIN_KLINES_FOR_TRAIN: int = 8000
     TRAIN_SIZE: int = 3500
     TEST_SIZE: int = 300
@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     META_LABELING_ENABLED: bool = True
     META_LABELING_THRESHOLD: float = 0.5
     META_LABELING_MIN_TRADES: int = 30
+
+    ATR_RISK_MODEL_ENABLED: bool = True
+    LABEL_TP_ATR_MULT: float = 1.5
+    LABEL_SL_ATR_MULT: float = 1.0
 
     def get_model_path(self, symbol: str, timeframe: str) -> str:
         """Динамически рассчитывает путь к pkl-файлу модели."""
