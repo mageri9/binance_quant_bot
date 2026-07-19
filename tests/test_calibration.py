@@ -208,3 +208,19 @@ async def test_get_best_calibration_prefers_sibling_oos_parquet(tmp_path):
     mock_get_klines.assert_not_called()
     assert sl is not None
     assert tp is not None
+
+def test_perform_grid_search_atr_mode():
+    df_valid = pd.DataFrame({
+        "close": [100.0, 100.0, 102.5, 102.5, 100.0] * 5,
+        "high":  [100.0, 100.0, 102.5, 102.5, 100.0] * 5,
+        "low":   [100.0, 100.0, 101.5, 101.5, 100.0] * 5,
+        "atr":   [1.0] * 25,
+        "predicted_signal": [1, 0, 0, 0, 0] * 5,
+    })
+    results = perform_grid_search(
+        df_valid, k_sl_grid=[1.0], k_tp_grid=[2.0], horizon_grid=[3], min_trades=1,
+    )
+    assert len(results) >= 1
+    assert "sl_atr_mult" in results[0]
+    assert "tp_atr_mult" in results[0]
+    assert "sl_pct" not in results[0]

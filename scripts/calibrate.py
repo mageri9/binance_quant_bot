@@ -20,12 +20,40 @@ from src.utils.artifact_paths import get_oos_path
 
 def perform_grid_search(
     df_valid: pd.DataFrame,
-    sl_grid: list[float],
-    tp_grid: list[float],
-    horizon_grid: list[int],
+    sl_grid: list[float] | None = None,
+    tp_grid: list[float] | None = None,
+    horizon_grid: list[int] = None,
     min_trades: int = 10,
+    k_sl_grid: list[float] | None = None,
+    k_tp_grid: list[float] | None = None,
 ) -> list[dict]:
     results = []
+    use_atr_mode = k_sl_grid is not None and k_tp_grid is not None
+
+    if use_atr_mode:
+        for k_sl in k_sl_grid:
+            for k_tp in k_tp_grid:
+                for hz in horizon_grid:
+                    metrics = simulate_strategy(
+                        df_valid, predicted_col="predicted_signal",
+                        horizon=hz, sl_pct=None, tp_pct=None,
+                        sl_atr_mult=k_sl, tp_atr_mult=k_tp,
+                    )
+                    if metrics["total_trades"] >= min_trades:
+                        results.append({
+                            "sl_atr_mult": k_sl,
+                            "tp_atr_mult": k_tp,
+                            "horizon": hz,
+                            "total_trades": metrics["total_trades"],
+                            "win_rate": metrics["win_rate"],
+                            "profit_factor": metrics["profit_factor"],
+                            "sharpe_ratio": metrics["sharpe_ratio"],
+                            "sortino_ratio": metrics["sortino_ratio"],
+                            "expectancy": metrics["expectancy"],
+                            "total_return": metrics["total_return"],
+                        })
+        return results
+
     for sl in sl_grid:
         for tp in tp_grid:
             for hz in horizon_grid:
@@ -49,7 +77,12 @@ def perform_grid_search(
     return results
 
 
-async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: str = None) -> tuple[float, float, int, str, dict]:
+async def get_best_calibration(
+    symbol: str,
+    timeframe: str,
+    custom_model_path: str = None,
+    use_atr_calibration: bool = False,
+) -> tuple[float, float, int, str, dict]:
     """
     Проводит калибровку рисков и горизонта, возвращает: (best_sl, best_tp, best_horizon, formatted_report_text).
     Использует чистые OOS-данные из файла модели для исключения утечек.
@@ -141,7 +174,73 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
         f"honest_eval={len(df_eval)} строк"
     )
 
-    # Набор сеток параметров
+    if use_atr_calibration and "atr" in df_calib.columns:
+        k_sl_grid = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+        k_tp_grid = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
+        horizon_grid = [3, 5, 8, 12]
+
+        results = await asyncio.to_thread(
+            perform_grid_search,
+            df_calib,
+            k_sl_grid=k_sl_grid,
+            k_tp_grid=k_tp_grid,
+            horizon_grid=horizon_grid,
+            min_trades=settings.CALIBRATION_MIN_TRADES,
+        )
+
+        if not results:
+            raise ValueError(
+                f"Ни одна ATR-комбинация параметров не набрала {settings.CALIBRATION_MIN_TRADES}+ сделок."
+            )
+
+        res_df = (
+            pd.DataFrame(results)
+            .sort_values(by=["sharpe_ratio", "expectancy"], ascending=False)
+            .reset_index(drop=True)
+        )
+        best = res_df.iloc[0]
+
+        honest_metrics = await asyncio.to_thread(
+            simulate_strategy,
+            df_eval,
+            "predicted_signal",
+            int(best["horizon"]),
+            None,
+            None,
+            0.001,
+            float(best["sl_atr_mult"]),
+            float(best["tp_atr_mult"]),
+        )
+
+        if honest_metrics["total_trades"] < settings.CALIBRATION_MIN_TRADES:
+            logger.warning(
+                f"[Calibration] Honest eval split дал только {honest_metrics['total_trades']} "
+                f"сделок (< {settings.CALIBRATION_MIN_TRADES}) — оценка может быть шумной."
+            )
+
+        report = (
+            f"⚙️ <b>Результаты автокалибровки рисков (ATR-режим):</b>\n"
+            f"📉 Stop-Loss: <code>{best['sl_atr_mult']:.2f} × ATR</code>\n"
+            f"📈 Take-Profit: <code>{best['tp_atr_mult']:.2f} × ATR</code>\n"
+            f"⏱ Горизонт (Horizon): <code>{int(best['horizon'])} свечей</code>\n"
+            f"📊 Sharpe (grid search, calibration): <code>{best['sharpe_ratio']:.3f}</code>\n"
+            f"📊 Sharpe (honest, held-out): <code>{honest_metrics['sharpe_ratio']:.3f}</code>\n"
+            f"🎯 Матожидание (honest): <code>{honest_metrics['expectancy']:.3%}</code> на сделку\n"
+            f"💰 Доходность (honest): <code>{honest_metrics['total_return']:.1%}</code> "
+            f"({honest_metrics['total_trades']} сделок)"
+        )
+
+        # ВАЖНО: в ATR-режиме первые два элемента кортежа — это множители ATR,
+        # а не проценты. Вызывающий код должен явно это учитывать (см. докстринг).
+        return (
+            float(best["sl_atr_mult"]),
+            float(best["tp_atr_mult"]),
+            int(best["horizon"]),
+            report,
+            honest_metrics,
+        )
+
+        # --- существующая фикс.-процентная ветка, без изменений ---
     sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
     tp_grid = [0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15]
     horizon_grid = [3, 5, 8, 12]
