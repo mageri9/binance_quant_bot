@@ -108,6 +108,8 @@ class TradingEngine:
             )
 
             stop_warning = ""
+            sl_ok = False
+            tp_ok = False
             if hasattr(self.exchange, "create_stop_orders"):
                 try:
                     stop_result = await self.exchange.create_stop_orders(
@@ -117,7 +119,9 @@ class TradingEngine:
                         sl_price=sl_price,
                         tp_price=tp_price,
                     )
-                    if not stop_result.get("sl_order_id") or not stop_result.get("tp_order_id"):
+                    sl_ok = bool(stop_result.get("sl_order_id"))
+                    tp_ok = bool(stop_result.get("tp_order_id"))
+                    if not sl_ok or not tp_ok:
                         stop_warning = " ⚠️ SL/TP выставлены не полностью, проверьте позицию на бирже вручную!"
                 except Exception as stop_err:
                     stop_warning = (
@@ -126,6 +130,43 @@ class TradingEngine:
                     logger.error(
                         f"[TradingEngine] Не удалось выставить SL/TP по {symbol} после входа: {stop_err}"
                     )
+
+                # Позиция без единого защитного ордера — это неприемлемый риск для
+                # автоматической системы без присмотра. Закрываем её немедленно тем же
+                # маркет-ордером, вместо того чтобы оставлять голой до следующего цикла.
+                if not sl_ok and not tp_ok:
+                    try:
+                        emergency_close = await self.exchange.create_order(
+                            symbol=symbol,
+                            side=close_side,
+                            order_type="market",
+                            amount=order["amount"],
+                        )
+                        stop_warning = (
+                            f" 🚨 SL/TP не удалось выставить вообще — позиция АВАРИЙНО "
+                            f"закрыта маркет-ордером по цене {emergency_close.get('price', 0):.2f}$."
+                        )
+                        logger.critical(
+                            f"[TradingEngine] Аварийное закрытие {symbol}: SL/TP оба недоступны."
+                        )
+                        return (
+                            f"🚨 [EMERGENCY CLOSE] Позиция {side.upper()} {symbol} открыта и немедленно "
+                            f"закрыта — биржа отклонила оба защитных ордера (SL/TP).{stop_warning}"
+                        )
+                    except Exception as emergency_err:
+                        stop_warning = (
+                            f" 🚨🚨 SL/TP НЕ выставлены И аварийное закрытие НЕ удалось: "
+                            f"{emergency_err}. ПОЗИЦИЯ ОТКРЫТА БЕЗ ЗАЩИТЫ, требуется немедленное ручное вмешательство!"
+                        )
+                        logger.critical(
+                            f"[TradingEngine] КРИТИЧНО: не удалось ни выставить SL/TP, ни закрыть "
+                            f"позицию {symbol} аварийно: {emergency_err}"
+                        )
+                        await self.kill_switch_manager.set_state(
+                            state=KillSwitchState.SAFE_MODE,
+                            reason="UNPROTECTED_POSITION",
+                            details=f"{symbol}: {emergency_err}",
+                        )
 
             db_warning = ""
             try:
