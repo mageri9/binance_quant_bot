@@ -88,6 +88,8 @@ async def test_build_and_save_dataset_atr_mode_records_metadata(temp_db_session)
     n = 150
     for i in range(n):
         klines_data.append({
+            "symbol": "BTC/USDT",
+            "timeframe": "1h",
             "open_time": start_time + i * 3600000,
             "open": 100.0 + i * 0.1, "high": 101.0 + i * 0.1,
             "low": 99.0 + i * 0.1, "close": 100.5 + i * 0.1,
