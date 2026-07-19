@@ -310,20 +310,15 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     # ДО сверки reconcile_positions, иначе легитимное закрытие
                     # по SL/TP будет ложно трактовано как рассинхронизация
                     # и заблокирует бота в SAFE_MODE.
-                    if isinstance(exchange, BinanceExchange):
-                        close_msg = await trading_engine.check_and_close_positions(
-                            symbol
-                        )
-                        if close_msg:
-                            for admin_id in settings.ADMIN_IDS:
-                                try:
-                                    await bot.send_message(
-                                        chat_id=admin_id, text=close_msg
-                                    )
-                                except Exception as e:
-                                    logger.error(
-                                        f"Не удалось отправить лог о закрытии позиции админу: {e}"
-                                    )
+                    close_msg = await trading_engine.check_and_close_positions(symbol)
+                    if close_msg:
+                        for admin_id in settings.ADMIN_IDS:
+                            try:
+                                await bot.send_message(chat_id=admin_id, text=close_msg)
+                            except Exception as e:
+                                logger.error(
+                                    f"Не удалось отправить лог о закрытии позиции админу: {e}"
+                                )
 
                     # 3. Сверка позиций перед раундом (Биржа — источник истины)
                     symbols_to_sync = [config[0] for config in settings.ACTIVE_CONFIGS]
