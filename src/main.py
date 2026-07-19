@@ -90,6 +90,22 @@ except ImportError:
     logger.warning("NexusSDK не установлен. Запуск без Nexus SRE.")
 
 
+def _format_calibration_risk(calibration: dict, settings) -> tuple[str, str]:
+    """
+    Форматирует SL/TP из артефакта калибровки для Telegram, учитывая, что
+    калибровка могла быть выполнена в режиме фиксированных процентов или
+    в режиме множителей ATR (см. ATR_RISK_MODEL_ENABLED). Без этой развилки
+    множитель вроде 1.5 отобразился бы как "150.0%".
+    """
+    risk_mode = calibration.get("risk_mode")
+    if risk_mode == "atr" and "sl_atr_mult" in calibration and "tp_atr_mult" in calibration:
+        return f"{calibration['sl_atr_mult']:.2f} × ATR", f"{calibration['tp_atr_mult']:.2f} × ATR"
+
+    sl_pct = calibration.get("sl_pct", settings.PAPER_SL_PCT)
+    tp_pct = calibration.get("tp_pct", settings.PAPER_TP_PCT)
+    return f"{sl_pct:.1%}", f"{tp_pct:.1%}"
+
+
 async def check_and_rollback_model(
     session: AsyncSession, bot: Bot, symbol: str, timeframe: str
 ):
@@ -223,8 +239,9 @@ async def check_and_rollback_model(
                 "model_id", os.path.basename(best_backup)
             )
             restored_cal = backup_artifact.get("calibration", {})
-            restored_sl = restored_cal.get("sl_pct", settings.PAPER_SL_PCT)
-            restored_tp = restored_cal.get("tp_pct", settings.PAPER_TP_PCT)
+            restored_sl_str, restored_tp_str = _format_calibration_risk(
+                restored_cal, settings
+            )
 
             msg = (
                 f"🚨 [CRITICAL SRE] Живые показатели по {symbol} ДЕГРАДИРОВАЛИ!\n"
@@ -233,8 +250,8 @@ async def check_and_rollback_model(
                 f"🔄 <b>Автоматический откат успешно выполнен по {symbol}!</b>\n"
                 f"Продакшн-модель заменена на стабильный бэкап-артефакт.\n\n"
                 f"🆔 ID восстановленной модели: <code>{restored_model_id}</code>\n"
-                f"📉 Восстановленный Stop-Loss: <code>{restored_sl:.1%}</code>\n"
-                f"📈 Восстановленный Take-Profit: <code>{restored_tp:.1%}</code>\n\n"
+                f"📉 Восстановленный Stop-Loss: <code>{restored_sl_str}</code>\n"
+                f"📈 Восстановленный Take-Profit: <code>{restored_tp_str}</code>\n\n"
                 f"⏱ SRE-проверки по паре заморожены на 24 часа для накопления истории."
             )
             logger.warning(msg)
@@ -426,6 +443,12 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 version=version,
                 horizon=settings.LABEL_HORIZON,
                 threshold=settings.LABEL_THRESHOLD,
+                tp_atr_mult=settings.LABEL_TP_ATR_MULT
+                if settings.ATR_RISK_MODEL_ENABLED
+                else None,
+                sl_atr_mult=settings.LABEL_SL_ATR_MULT
+                if settings.ATR_RISK_MODEL_ENABLED
+                else None,
             )
             json_path = parquet_path.replace(".parquet", ".json")
 
@@ -565,16 +588,24 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         meta_model=artifact.get("meta_model"),
                         meta_features=artifact.get("meta_features"),
                         meta_threshold=settings.META_LABELING_THRESHOLD,
+                        use_atr_calibration=settings.ATR_RISK_MODEL_ENABLED,
                     )
 
-                    artifact.setdefault("calibration", {}).update(
-                        {
-                            "sl_pct": best_sl,
-                            "tp_pct": best_tp,
-                            "horizon": best_hz,
-                            "calibrated_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
+                    calibration_update = {
+                        "horizon": best_hz,
+                        "calibrated_at": datetime.now(timezone.utc).isoformat(),
+                        "risk_mode": "atr"
+                        if settings.ATR_RISK_MODEL_ENABLED
+                        else "fixed_pct",
+                    }
+                    if settings.ATR_RISK_MODEL_ENABLED:
+                        calibration_update["sl_atr_mult"] = best_sl
+                        calibration_update["tp_atr_mult"] = best_tp
+                    else:
+                        calibration_update["sl_pct"] = best_sl
+                        calibration_update["tp_pct"] = best_tp
+
+                    artifact.setdefault("calibration", {}).update(calibration_update)
                     artifact["backtest_metrics"] = honest_metrics
 
                     with open(lgbm_result["model_path"], "wb") as f:
