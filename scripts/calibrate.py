@@ -3,6 +3,7 @@
 Использование в терминале:
     python -m scripts.calibrate --symbol BTC/USDT --timeframe 1h
 """
+import argparse
 import os
 import asyncio
 import pickle
@@ -48,7 +49,7 @@ def perform_grid_search(
     return results
 
 
-async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: str = None) -> tuple[float, float, int, str]:
+async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: str = None) -> tuple[float, float, int, str, dict]:
     """
     Проводит калибровку рисков и горизонта, возвращает: (best_sl, best_tp, best_horizon, formatted_report_text).
     Использует чистые OOS-данные из файла модели для исключения утечек.
@@ -122,11 +123,23 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
         raw_pred = model.predict(X)
         if target_col == "target_triple":
             signal_map = {0: -1.0, 1: 0.0, 2: 1.0}
-            df_valid["predicted_signal"] = pd.Series(raw_pred, index=df_valid.index).map(
-                signal_map
-            )
+            df_valid["predicted_signal"] = pd.Series(
+                raw_pred, index=df_valid.index
+            ).map(signal_map)
         else:
             df_valid["predicted_signal"] = raw_pred
+
+    if "open_time" in df_valid.columns:
+        df_valid = df_valid.sort_values("open_time").reset_index(drop=True)
+
+    calib_split_idx = int(len(df_valid) * 0.7)
+    df_calib = df_valid.iloc[:calib_split_idx].reset_index(drop=True)
+    df_eval = df_valid.iloc[calib_split_idx:].reset_index(drop=True)
+
+    logger.info(
+        f"[Calibration] Разделение OOS: calibration={len(df_calib)} строк, "
+        f"honest_eval={len(df_eval)} строк"
+    )
 
     # Набор сеток параметров
     sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
@@ -136,7 +149,7 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
     # Запускаем тяжелую симуляцию сделок бэктеста в потоке
     results = await asyncio.to_thread(
         perform_grid_search,
-        df_valid,
+        df_calib,
         sl_grid,
         tp_grid,
         horizon_grid=horizon_grid,
@@ -157,23 +170,41 @@ async def get_best_calibration(symbol: str, timeframe: str, custom_model_path: s
 
     best = res_df.iloc[0]
 
+    # Честная оценка выбранных параметров на данных, не участвовавших в подборе.
+    honest_metrics = await asyncio.to_thread(
+        simulate_strategy,
+        df_eval,
+        "predicted_signal",
+        int(best["horizon"]),
+        float(best["sl_pct"]),
+        float(best["tp_pct"]),
+    )
+
+    if honest_metrics["total_trades"] < settings.CALIBRATION_MIN_TRADES:
+        logger.warning(
+            f"[Calibration] Honest eval split дал только {honest_metrics['total_trades']} "
+            f"сделок (< {settings.CALIBRATION_MIN_TRADES}) — оценка может быть шумной."
+        )
+
     report = (
         f"⚙️ <b>Результаты автокалибровки рисков:</b>\n"
         f"📉 Stop-Loss (SL): <code>{best['sl_pct']:.1%}</code>\n"
         f"📈 Take-Profit (TP): <code>{best['tp_pct']:.1%}</code>\n"
         f"⏱ Горизонт (Horizon): <code>{int(best['horizon'])} свечей</code>\n"
-        f"📊 Коэффициент Шарпа: <code>{best['sharpe_ratio']:.3f}</code>\n"
-        f"🎯 Матожидание (Expectancy): <code>{best['expectancy']:.3%}</code> на сделку\n"
-        f"💰 Доходность бэктеста: <code>{best['total_return']:.1%}</code> ({best['total_trades']} сделок)"
+        f"📊 Sharpe (grid search, calibration): <code>{best['sharpe_ratio']:.3f}</code>\n"
+        f"📊 Sharpe (honest, held-out): <code>{honest_metrics['sharpe_ratio']:.3f}</code>\n"
+        f"🎯 Матожидание (honest): <code>{honest_metrics['expectancy']:.3%}</code> на сделку\n"
+        f"💰 Доходность (honest): <code>{honest_metrics['total_return']:.1%}</code> "
+        f"({honest_metrics['total_trades']} сделок)"
     )
 
-    return float(best["sl_pct"]), float(best["tp_pct"]), int(best["horizon"]), report
+    return float(best["sl_pct"]), float(best["tp_pct"]), int(best["horizon"]), report, honest_metrics
 
 
 async def run_calibration_cli(symbol: str, timeframe: str):
     """Обертка для запуска из консоли."""
     try:
-        sl, tp, hz, report = await get_best_calibration(symbol, timeframe)
+        sl, tp, hz, report, _honest_metrics = await get_best_calibration(symbol, timeframe)
         # Очистим HTML-теги для красивого вывода в терминал
         clean_report = report.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
         print("\n" + "="*60)

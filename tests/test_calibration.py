@@ -125,7 +125,7 @@ async def test_get_best_calibration_decodes_triple_model_classes():
                 return_value=fake_grid_result,
             ) as mock_grid_search,
         ):
-            sl, tp, hz, report = await get_best_calibration("BTC/USDT", "1h")
+            sl, tp, hz, report, honest_metrics = await get_best_calibration("BTC/USDT", "1h")
 
         await engine.dispose()
 
@@ -201,7 +201,7 @@ async def test_get_best_calibration_prefers_sibling_oos_parquet(tmp_path):
         patch("scripts.calibrate.get_settings", return_value=mock_settings),
         patch("src.crud.kline.KlineRepository.get_klines") as mock_get_klines,
     ):
-        sl, tp, hz, report = await get_best_calibration("BTC/USDT", "1h", custom_model_path=model_path)
+        sl, tp, hz, report, honest_metrics = await get_best_calibration("BTC/USDT", "1h", custom_model_path=model_path)
 
     # БД не должна была вызываться вообще — данные пришли из parquet
     mock_get_klines.assert_not_called()

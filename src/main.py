@@ -508,7 +508,13 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 try:
                     from scripts.calibrate import get_best_calibration
 
-                    best_sl, best_tp, best_hz, cal_report = await get_best_calibration(
+                    (
+                        best_sl,
+                        best_tp,
+                        best_hz,
+                        cal_report,
+                        honest_metrics,
+                    ) = await get_best_calibration(
                         symbol,
                         timeframe,
                         custom_model_path=lgbm_result["model_path"],
