@@ -164,4 +164,17 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df_out["atr"] = calculate_atr(df_out)
     df_out["adx"] = calculate_adx(df_out)
 
+    # 3. Нормализованные (стационарные) версии ценовых индикаторов — для модели.
+    # Абсолютные версии выше оставлены как есть: atr используется в src/labels/generator.py
+    # для расчета ценовых барьеров, остальные — для обратной совместимости.
+    df_out["bb_upper_pct"] = (bb_upper - df_out["close"]) / df_out["close"]
+    df_out["bb_middle_pct"] = (df_out["close"] - bb_middle) / df_out["close"]
+    df_out["bb_lower_pct"] = (df_out["close"] - bb_lower) / df_out["close"]
+
+    df_out["atr_pct"] = df_out["atr"] / df_out["close"]
+
+    df_out["macd_pct"] = macd_line / df_out["close"]
+    df_out["macd_signal_pct"] = signal_line / df_out["close"]
+    df_out["macd_hist_pct"] = macd_hist / df_out["close"]
+
     return downcast_dtypes(df_out)

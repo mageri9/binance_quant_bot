@@ -80,8 +80,8 @@ async def build_and_save_dataset(
         "timeframe": timeframe,
         "version": version,
         "features": [
-            "rsi", "macd", "macd_signal", "macd_hist", "volatility",
-            "volume_ratio", "bb_upper", "bb_middle", "bb_lower", "atr", "adx"
+            "rsi", "macd_pct", "macd_signal_pct", "macd_hist_pct", "volatility",
+            "volume_ratio", "bb_upper_pct", "bb_middle_pct", "bb_lower_pct", "atr_pct", "adx"
         ],
         "targets": {
             "target_binary": {"type": "binary", "horizon": horizon, "threshold": 0.0},

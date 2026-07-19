@@ -39,6 +39,13 @@ def test_add_features_success():
         "bb_lower",
         "atr",
         "adx",
+        "bb_upper_pct",
+        "bb_middle_pct",
+        "bb_lower_pct",
+        "atr_pct",
+        "macd_pct",
+        "macd_signal_pct",
+        "macd_hist_pct",
     ]
     for col in expected_cols:
         assert col in df_features.columns
@@ -51,6 +58,13 @@ def test_add_features_success():
     assert not np.isnan(row_30["bb_upper"])
     assert not np.isnan(row_30["atr"])
     assert not np.isnan(row_30["adx"])
+    assert not np.isnan(row_30["atr_pct"])
+    assert not np.isnan(row_30["macd_pct"])
+    assert not np.isnan(row_30["macd_signal_pct"])
+    assert not np.isnan(row_30["macd_hist_pct"])
+    assert not np.isnan(row_30["bb_upper_pct"])
+    assert not np.isnan(row_30["bb_middle_pct"])
+    assert not np.isnan(row_30["bb_lower_pct"])
 
     # Математические проверки на ограничения и логику новых признаков:
     # 1. Линии Боллинджера: верхняя полоса должна быть строго выше средней, а средняя — выше нижней.
@@ -63,6 +77,17 @@ def test_add_features_success():
 
     # 3. Индекс ADX математически ограничен пределами от 0 до 100
     assert df_features["adx"].dropna().between(0, 100).all()
+
+    # 4. Нормализованный ATR (в процентах от цены) не может быть отрицательным
+    assert (df_features["atr_pct"].dropna() >= 0).all()
+
+    # 5. Нормализованные признаки должны быть стационарны — разумный диапазон
+    #    относительно цены (не должны принимать абсурдные значения на плавном тренде)
+    assert df_features["bb_upper_pct"].dropna().abs().max() < 1.0
+    assert df_features["bb_lower_pct"].dropna().abs().max() < 1.0
+    assert df_features["bb_middle_pct"].dropna().abs().max() < 1.0
+    assert df_features["atr_pct"].dropna().abs().max() < 1.0
+    assert df_features["macd_pct"].dropna().abs().max() < 1.0
 
 
 def test_drift_detection_success():
