@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from aiogram import Bot
 
 from src.main import check_and_rollback_model, _get_backup_timestamp, _rotate_backups
-from src.crud.paper import PaperTradingRepository
+from src.crud.paper import TradeRepository
 
 
 @pytest.mark.asyncio
@@ -45,7 +45,7 @@ async def test_check_and_rollback_model_degradation(temp_db_session):
         mock_settings.get_model_path.return_value = model_path
 
         # Имитируем в БД 3 убыточные сделки (win_rate = 0%, drawdown большой)
-        repo = PaperTradingRepository(temp_db_session)
+        repo = TradeRepository(temp_db_session)
         for i in range(3):
             trade = await repo.create_trade(
                 symbol="BTC/USDT",

@@ -8,7 +8,7 @@ from src.filters.check_admin import IsAdmin
 from src.risk import KillSwitchManager, KillSwitchState, reconcile_positions
 from src.exchange.binance import BinanceExchange
 from src.core.config import get_settings
-from src.crud.paper import PaperTradingRepository
+from src.crud.paper import TradeRepository
 
 router = Router()
 
@@ -120,7 +120,7 @@ async def risk_sync_db_handler(
     )
 
     try:
-        repo = PaperTradingRepository(session)
+        repo = TradeRepository(session)
         closed_count = 0
 
         # Сверяем каждый актив и закрываем фантомные сделки в БД

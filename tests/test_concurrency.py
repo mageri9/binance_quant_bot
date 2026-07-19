@@ -7,7 +7,7 @@ from sqlalchemy import event
 
 from src.core.db import Base
 from src.crud.kline import KlineRepository
-from src.crud.paper import PaperTradingRepository
+from src.crud.paper import TradeRepository
 from src.crud.experiment import ExperimentRepository
 
 
@@ -49,7 +49,7 @@ async def test_concurrent_multi_session_db_stress():
 
         # Инициализируем портфель один раз перед запуском конкурентных задач
         async with session_factory() as session:
-            repo = PaperTradingRepository(session)
+            repo = TradeRepository(session)
             await repo.get_portfolio()
 
         # Воркер для записи свечей
@@ -78,7 +78,7 @@ async def test_concurrent_multi_session_db_stress():
             for i in range(5):
                 # Открытие сделки
                 async with session_factory() as session:
-                    repo = PaperTradingRepository(session)
+                    repo = TradeRepository(session)
                     await repo.create_trade(
                         symbol=symbol,
                         entry_price=10.0 * (worker_id + 1),
@@ -91,7 +91,7 @@ async def test_concurrent_multi_session_db_stress():
 
                 # Закрытие сделки с прибылью
                 async with session_factory() as session:
-                    repo = PaperTradingRepository(session)
+                    repo = TradeRepository(session)
                     active = await repo.get_active_trade(symbol)
                     if active:
                         await repo.close_trade(
@@ -127,7 +127,7 @@ async def test_concurrent_multi_session_db_stress():
 
         # Проверяем консистентность итоговых данных
         async with session_factory() as session:
-            pt_repo = PaperTradingRepository(session)
+            pt_repo = TradeRepository(session)
             portfolio = await pt_repo.get_portfolio()
 
             # Суммарный PnL: 5 * (1 + 2 + 3 + 4 + 5) = 75.0$

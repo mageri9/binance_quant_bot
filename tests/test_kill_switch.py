@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from src.risk.kill_switch import KillSwitchManager, KillSwitchState, reconcile_positions
-from src.crud.paper import PaperTradingRepository
+from src.crud.paper import TradeRepository
 
 
 class FakeRedis:
@@ -43,7 +43,7 @@ async def test_reconciliation_perfect_sync(temp_db_session):
     redis = FakeRedis()
     manager = KillSwitchManager(redis)
 
-    repo = PaperTradingRepository(temp_db_session)
+    repo = TradeRepository(temp_db_session)
     await repo.create_trade(
         symbol="BTC/USDT",
         entry_price=100.0,
@@ -79,7 +79,7 @@ async def test_reconciliation_detects_missing_exchange_position(temp_db_session)
     redis = FakeRedis()
     manager = KillSwitchManager(redis)
 
-    repo = PaperTradingRepository(temp_db_session)
+    repo = TradeRepository(temp_db_session)
     await repo.create_trade(
         symbol="BTC/USDT",
         entry_price=100.0,

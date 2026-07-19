@@ -11,15 +11,15 @@ import asyncio
 from sqlalchemy import select
 
 from src.core.db import AsyncSessionFactory
-from src.db.models import PaperTrade
-from src.crud.paper import PaperTradingRepository
+from src.db.models import Trade
+from src.crud.paper import TradeRepository
 from src.crud.kline import KlineRepository
 
 
 async def close_all_open(symbol: str, timeframe: str):
     async with AsyncSessionFactory() as session:
-        stmt = select(PaperTrade).where(
-            PaperTrade.symbol == symbol, PaperTrade.status == "OPEN"
+        stmt = select(Trade).where(
+            Trade.symbol == symbol, Trade.status == "OPEN"
         )
         res = await session.execute(stmt)
         open_trades = list(res.scalars().all())
@@ -35,7 +35,7 @@ async def close_all_open(symbol: str, timeframe: str):
             return
         current_price = klines[0].close
 
-        repo = PaperTradingRepository(session)
+        repo = TradeRepository(session)
         for trade in open_trades:
             if trade.is_short:
                 pnl = (trade.entry_price - current_price) * trade.amount

@@ -66,20 +66,20 @@ class Experiment(Base):
         return f"<Experiment id={self.id} model={self.model_name} metrics={self.metrics}>"
 
 
-class PaperPortfolio(Base):
-    __tablename__ = "paper_portfolios"
+class Portfolio(Base):
+    __tablename__ = "portfolios"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     balance: Mapped[float] = mapped_column(default=10000.0, nullable=False)
     cash: Mapped[float] = mapped_column(default=10000.0, nullable=False)
-    positions_value: Mapped[float] = mapped_column(default=0.0, nullable=False)  # ← НОВОЕ
+    positions_value: Mapped[float] = mapped_column(default=0.0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 
-class PaperTrade(Base):
-    __tablename__ = "paper_trades"
+class Trade(Base):
+    __tablename__ = "trades"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)

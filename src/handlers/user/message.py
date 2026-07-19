@@ -13,7 +13,7 @@ import src.keyboards.user as kb
 from src.services.user import UserService
 
 from src.core.config import get_settings
-from src.crud.paper import PaperTradingRepository
+from src.crud.paper import TradeRepository
 from src.crud.kline import KlineRepository
 from src.crud.user import UserRepository
 from src.models.predictor import Predictor
@@ -25,8 +25,7 @@ router = Router()
 @router.message(Command("status"))
 @router.message(F.text == "📊 Статус портфеля")
 async def status_handler(message: Message, session: AsyncSession):
-    """Выводит сводное текущее состояние кошелька и позиций на Binance фьючерсах."""
-    repo = PaperTradingRepository(session)
+    repo = TradeRepository(session)
     portfolio = await repo.get_portfolio()
     settings = get_settings()
 
@@ -202,7 +201,7 @@ async def signals_handler(message: Message, session: AsyncSession):
 async def report_handler(message: Message, session: AsyncSession):
     """Выводит сводный отчет по всем закрытым сделкам портфеля."""
     settings = get_settings()
-    repo = PaperTradingRepository(session)
+    repo = TradeRepository(session)
 
     all_closed_trades = []
     for symbol, timeframe in settings.ACTIVE_CONFIGS:

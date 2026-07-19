@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from weakref import WeakKeyDictionary
 import asyncio
 
-from src.db.models import PaperPortfolio, PaperTrade, PredictionLog
+from src.db.models import Portfolio, Trade, PredictionLog
 
 
 class AsyncRLock:
@@ -57,27 +57,27 @@ def _get_portfolio_lock() -> AsyncRLock:
     return lock
 
 
-class PaperTradingRepository:
+class TradeRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_portfolio(self) -> PaperPortfolio:
+    async def get_portfolio(self) -> Portfolio:
         """
         Загружает данные портфеля. Если портфель пуст, создаёт новый с балансом $10 000.
         Использует Double-Checked Locking с AsyncRLock для безопасной инициализации.
         """
-        stmt = select(PaperPortfolio).limit(1)
+        stmt = select(Portfolio).limit(1)
         res = await self.session.execute(stmt)
         portfolio = res.scalar_one_or_none()
 
         if not portfolio:
             async with _get_portfolio_lock():
                 # Повторная проверка под локом
-                res2 = await self.session.execute(select(PaperPortfolio).limit(1))
+                res2 = await self.session.execute(select(Portfolio).limit(1))
                 portfolio = res2.scalar_one_or_none()
 
                 if not portfolio:
-                    portfolio = PaperPortfolio(
+                    portfolio = Portfolio(
                         balance=10000.0, cash=10000.0, positions_value=0.0
                     )
                     self.session.add(portfolio)
@@ -89,23 +89,23 @@ class PaperTradingRepository:
 
         return portfolio
 
-    async def get_all_open_trades(self) -> list[PaperTrade]:
+    async def get_all_open_trades(self) -> list[Trade]:
         """Возвращает все открытые сделки"""
         stmt = (
-            select(PaperTrade)
-            .where(PaperTrade.status == "OPEN")
-            .order_by(PaperTrade.entry_candle_time)
+            select(Trade)
+            .where(Trade.status == "OPEN")
+            .order_by(Trade.entry_candle_time)
         )
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
 
-    async def get_active_trade(self, symbol: str) -> PaperTrade | None:
+    async def get_active_trade(self, symbol: str) -> Trade | None:
         """
         Возвращает текущую открытую сделку по паре.
         """
         stmt = (
-            select(PaperTrade)
-            .where(PaperTrade.symbol == symbol, PaperTrade.status == "OPEN")
+            select(Trade)
+            .where(Trade.symbol == symbol, Trade.status == "OPEN")
             .limit(1)
         )
         res = await self.session.execute(stmt)
@@ -121,9 +121,9 @@ class PaperTradingRepository:
         entry_candle_time: int,
         is_short: bool = False,
         timeout_candle_time: int | None = None,
-    ) -> PaperTrade:
+    ) -> Trade:
         """
-        Открывает новую виртуальную/реальную сделку без проверки достаточности виртуального кэша.
+        Открывает новую сделку и фиксирует изменения в локальном кэше баланса.
         Выполняется строго под реентерабельным локом портфеля.
         """
         async with _get_portfolio_lock():
@@ -137,13 +137,11 @@ class PaperTradingRepository:
             portfolio = await self.get_portfolio()
             cost = entry_price * amount
 
-            # Изменение по брифу: убрана блокирующая проверка достаточности виртуального кэша (portfolio.cash < cost)
-
             portfolio.cash -= cost
             portfolio.positions_value += cost
             portfolio.balance = portfolio.cash + portfolio.positions_value
 
-            trade = PaperTrade(
+            trade = Trade(
                 symbol=symbol,
                 status="OPEN",
                 entry_price=entry_price,
@@ -160,7 +158,7 @@ class PaperTradingRepository:
             return trade
 
     async def close_trade(
-        self, trade: PaperTrade, exit_price: float, pnl: float
+        self, trade: Trade, exit_price: float, pnl: float
     ) -> None:
         """
         Закрывает сделку, возвращает кэш обратно на баланс и фиксирует финансовый результат.
@@ -170,9 +168,8 @@ class PaperTradingRepository:
             # Защита от повторного закрытия (идемпотентность)
             if trade.status != "OPEN":
                 from loguru import logger
-
                 logger.warning(
-                    f"[PaperTradingRepository] Попытка повторного закрытия сделки id={trade.id}. Операция проигнорирована."
+                    f"[TradeRepository] Попытка повторного закрытия сделки id={trade.id}. Операция проигнорирована."
                 )
                 return
 
@@ -199,14 +196,14 @@ class PaperTradingRepository:
 
     async def get_closed_trades(
         self, symbol: str, limit: int = 500
-    ) -> list[PaperTrade]:
+    ) -> list[Trade]:
         """
         Возвращает историю закрытых сделок по паре (от старых к новым).
         """
         stmt = (
-            select(PaperTrade)
-            .where(PaperTrade.symbol == symbol, PaperTrade.status == "CLOSED")
-            .order_by(PaperTrade.entry_candle_time.desc())
+            select(Trade)
+            .where(Trade.symbol == symbol, Trade.status == "CLOSED")
+            .order_by(Trade.entry_candle_time.desc())
             .limit(limit)
         )
         res = await self.session.execute(stmt)

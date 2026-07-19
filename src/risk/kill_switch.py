@@ -55,8 +55,8 @@ async def reconcile_positions(
     Сверяет позиции на бирже (источник истины) с базой данных (кэш).
     При рассинхронизации блокирует бота в SAFE_MODE.
     """
-    from src.crud.paper import PaperTradingRepository
-    repo = PaperTradingRepository(db_session)
+    from src.crud.paper import TradeRepository
+    repo = TradeRepository(db_session)
 
     mismatches = []
 

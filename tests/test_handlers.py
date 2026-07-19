@@ -194,9 +194,9 @@ async def test_report_handler_no_trades(temp_db_session):
 
 @pytest.mark.asyncio
 async def test_report_handler_with_trades(temp_db_session):
-    from src.crud.paper import PaperTradingRepository
+    from src.crud.paper import TradeRepository
 
-    repo = PaperTradingRepository(temp_db_session)
+    repo = TradeRepository(temp_db_session)
     trade = await repo.create_trade(
         symbol="BTC/USDT", entry_price=100.0, amount=1.0,
         sl_price=98.0, tp_price=104.0, entry_candle_time=1000,
@@ -260,9 +260,9 @@ async def test_status_handler_shows_short_from_db_field(temp_db_session):
     старая эвристика (sl_price > entry_price) ошиблась бы и показала LONG,
     хотя сделка на самом деле SHORT.
     """
-    from src.crud.paper import PaperTradingRepository
+    from src.crud.paper import TradeRepository
 
-    repo = PaperTradingRepository(temp_db_session)
+    repo = TradeRepository(temp_db_session)
     # entry=100, sl_price ниже entry (как у LONG), но is_short=True явно
     await repo.create_trade(
         symbol="BTC/USDT",
@@ -296,9 +296,9 @@ async def test_status_handler_shows_short_without_klines(temp_db_session):
     То же самое, но для ветки без свежих свечей в БД (klines пуст) —
     там раньше была отдельная эвристика в блоке else.
     """
-    from src.crud.paper import PaperTradingRepository
+    from src.crud.paper import TradeRepository
 
-    repo = PaperTradingRepository(temp_db_session)
+    repo = TradeRepository(temp_db_session)
     await repo.create_trade(
         symbol="BTC/USDT",
         entry_price=100.0,

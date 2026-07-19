@@ -5,14 +5,10 @@ from datetime import datetime, timezone
 from src.exchange.base import BaseExchange
 from src.risk.engine import RiskEngine, RiskDecision
 from src.risk.kill_switch import KillSwitchManager, KillSwitchState
-from src.crud.paper import PaperTradingRepository
+from src.crud.paper import TradeRepository
 
 
 class TradingEngine:
-    """
-    Универсальный торговый движок, связывающий Биржу, Риски и Kill Switch.
-    """
-
     def __init__(
         self,
         exchange: BaseExchange,
@@ -26,7 +22,7 @@ class TradingEngine:
         self.kill_switch_manager = kill_switch_manager
         self.session = session
         self.settings = settings
-        self.repo = PaperTradingRepository(session)
+        self.repo = TradeRepository(session)
 
     async def process_signal(
         self, symbol: str, signal: int, latest_close: float
