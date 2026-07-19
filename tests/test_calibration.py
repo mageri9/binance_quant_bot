@@ -108,6 +108,7 @@ async def test_get_best_calibration_decodes_triple_model_classes():
         # Обучаем мок возвращать реальный путь к нашему временному файлу pickle
         mock_settings.get_model_path.return_value = model_path
         mock_settings.LABEL_HORIZON = 5
+        mock_settings.CALIBRATION_MIN_TRADES = 1
 
         # perform_grid_search мокаем, чтобы изолированно проверить только
         # декодирование сигнала, не завися от исхода реальной симуляции сделок
