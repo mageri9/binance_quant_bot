@@ -594,6 +594,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     # (held-out, не участвовавшие в grid search) метрики прибыльности
                     # кандидата с сохранёнными метриками текущей прод-модели.
 
+
                 economic_gate_passed = True
                 economic_gate_msg = ""
 
@@ -665,6 +666,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     return
 
                 # --- END ECONOMIC QUALITY GATE ---
+
+                msg = f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n" + msg
 
                 if os.path.exists(model_path):
                     clean_symbol = symbol.replace("/", "").replace(":", "")
