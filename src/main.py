@@ -455,6 +455,41 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             if gate_baseline_f1 is None:
                 gate_baseline_f1 = baseline_f1
 
+            regime_drift_pvalue = None
+            if os.path.exists(model_path):
+                try:
+                    with open(model_path, "rb") as f:
+                        old_artifact_for_drift = pickle.load(f)
+                    old_oos_path = get_oos_path(model_path)
+                    if os.path.exists(old_oos_path):
+                        from src.features.drift import ConceptDriftDetector
+
+                        df_old_oos_pre = await asyncio.to_thread(
+                            pd.read_parquet, old_oos_path
+                        )
+                        df_new_pre = await asyncio.to_thread(
+                            pd.read_parquet, parquet_path
+                        )
+                        old_features_pre = old_artifact_for_drift.get("features", [])
+
+                        pre_drift_report = await asyncio.to_thread(
+                            ConceptDriftDetector.detect_drift,
+                            reference_df=df_old_oos_pre,
+                            current_df=df_new_pre,
+                            features=old_features_pre,
+                        )
+                        p_values = [
+                            r["p_value"]
+                            for r in pre_drift_report.get("results", {}).values()
+                            if "p_value" in r
+                        ]
+                        if p_values:
+                            regime_drift_pvalue = float(min(p_values))
+                except Exception as pre_drift_err:
+                    logger.error(
+                        f"Не удалось посчитать дрейф до обучения для {symbol}: {pre_drift_err}"
+                    )
+
             try:
                 lgbm_result = await run_lgbm_experiment(
                     session,
@@ -464,6 +499,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     test_size=settings.TEST_SIZE,
                     models_dir="models/staging",
                     baseline_f1=gate_baseline_f1,
+                    regime_drift_pvalue=regime_drift_pvalue,
                 )
                 new_f1 = lgbm_result["metrics"]["f1"]
             except ValueError as gate_err:
@@ -503,7 +539,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     os.makedirs(os_dir, exist_ok=True)
 
                 msg = (
-                    f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n"
+                    f"🧪 [Retrain v{version} - {symbol}] Кандидат прошёл F1-гейт.\n"
                     f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
                     f"holdout_f1={decision_f1:.3f} (baseline f1={gate_baseline_f1:.3f}), "
                     f"cv_avg_f1={new_f1:.3f}\n"

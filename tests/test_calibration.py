@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from src.core.db import Base
 from src.crud.kline import KlineRepository
 from scripts.calibrate import get_best_calibration
+from src.utils.artifact_paths import get_oos_path
 
 def test_perform_grid_search_success():
     # Создадим фиктивную валидную выборку, где сигнал на покупку возникает на индексе 2 (вход по 102)

@@ -223,8 +223,8 @@ async def run_lgbm_experiment(
     n_estimators: int = 100,
     max_depth: int = -1,
     models_dir: str = "models/saved_models",
-    baseline_f1: float
-    | None = None,  # ← Передаем F1-score базовой модели для Quality Gate
+    baseline_f1: float | None = None,
+    regime_drift_pvalue: float | None = None,
     bypass_quality_gates: bool = False,  # ← Защитный флаг для юнит-тестов на случайных данных
 ) -> dict:
     """
@@ -406,6 +406,7 @@ async def run_lgbm_experiment(
 
     meta_model = None
     meta_feature_cols = None
+    meta_metrics = {}
     if getattr(settings, "META_LABELING_ENABLED", False):
         try:
             from src.models.meta import (
@@ -414,11 +415,16 @@ async def run_lgbm_experiment(
                 META_BASE_FEATURES,
             )
 
-            meta_df = await asyncio.to_thread(build_meta_dataset, df_oos)
-            candidate_features = META_BASE_FEATURES + [
-                c
-                for c in ("predicted_signal", "predicted_confidence")
-                if c in meta_df.columns
+            meta_df = await asyncio.to_thread(
+                build_meta_dataset,
+                df_oos,
+                drift_pvalue=regime_drift_pvalue,
+            )
+            candidate_features = list(META_BASE_FEATURES)
+            if regime_drift_pvalue is not None:
+                candidate_features.append("regime_drift_pvalue")
+            candidate_features += [
+                c for c in ("predicted_signal", "predicted_confidence") if c in meta_df.columns
             ]
             candidate_features = [
                 c

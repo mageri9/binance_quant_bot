@@ -12,6 +12,7 @@ def build_meta_dataset(
     df_oos: pd.DataFrame,
     predicted_col: str = "predicted_signal",
     transaction_cost: float = 0.001,
+    drift_pvalue: float | None = None,
 ) -> pd.DataFrame:
     """
     Строит обучающий датасет для вторичной модели из OOS-предсказаний
@@ -30,8 +31,10 @@ def build_meta_dataset(
         transaction_cost=transaction_cost, return_trade_log=True,
     )
 
-    cols = META_BASE_FEATURES + [predicted_col, "predicted_confidence", "success"]
     if trades_df.empty:
+        cols = META_BASE_FEATURES + [predicted_col, "predicted_confidence", "success"]
+        if drift_pvalue is not None:
+            cols.append("regime_drift_pvalue")
         return pd.DataFrame(columns=cols)
 
     rows = []
@@ -42,6 +45,8 @@ def build_meta_dataset(
         row[predicted_col] = entry_row[predicted_col]
         row["predicted_confidence"] = entry_row.get("predicted_confidence", None)
         row["success"] = int(trade["return"] > 0)
+        if drift_pvalue is not None:
+            row["regime_drift_pvalue"] = drift_pvalue
         rows.append(row)
 
     return pd.DataFrame(rows)
