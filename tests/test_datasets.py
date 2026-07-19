@@ -79,3 +79,31 @@ async def test_build_and_save_dataset_success(temp_db_session):
         assert "target_binary" in meta["targets"]
         assert meta["total_rows"] == 35
         assert "git_sha" in meta
+
+@pytest.mark.asyncio
+async def test_build_and_save_dataset_atr_mode_records_metadata(temp_db_session):
+    repo = KlineRepository(temp_db_session)
+    klines_data = []
+    start_time = 1672531200000
+    n = 150
+    for i in range(n):
+        klines_data.append({
+            "open_time": start_time + i * 3600000,
+            "open": 100.0 + i * 0.1, "high": 101.0 + i * 0.1,
+            "low": 99.0 + i * 0.1, "close": 100.5 + i * 0.1,
+            "volume": 1000.0,
+        })
+    await repo.save_klines(klines_data)
+
+    parquet_path = await build_and_save_dataset(
+        temp_db_session, symbol="BTC/USDT", timeframe="1h", version="atr-test",
+        horizon=5, threshold=0.01, tp_atr_mult=1.5, sl_atr_mult=1.0,
+    )
+    json_path = parquet_path.replace(".parquet", ".json")
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    assert meta["targets"]["target_triple"]["label_mode"] == "atr"
+    assert meta["targets"]["target_triple"]["tp_atr_mult"] == 1.5
+    assert meta["targets"]["target_triple"]["sl_atr_mult"] == 1.0

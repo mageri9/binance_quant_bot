@@ -31,6 +31,8 @@ async def build_and_save_dataset(
     horizon: int = 5,
     threshold: float = 0.01,
     output_dir: str = "datasets",
+    tp_atr_mult: float | None = None,
+    sl_atr_mult: float | None = None,
 ) -> str:
     repo = KlineRepository(session)
     klines = await repo.get_klines(symbol, timeframe, limit=20000)
@@ -59,11 +61,15 @@ async def build_and_save_dataset(
     parquet_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.parquet")
     json_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.json")
 
-    # Переносим расчет признаков, меток и сохранение Parquet в фоновый поток
     def process_data_sync() -> pd.DataFrame:
         df_feats = add_features(df)
-        df_feats["target_binary"] = generate_binary_labels(df_feats, horizon=horizon, threshold=0.0)
-        df_feats["target_triple"] = generate_triple_labels(df_feats, horizon=horizon, threshold=threshold)
+        df_feats["target_binary"] = generate_binary_labels(
+            df_feats, horizon=horizon, threshold=0.0, tp_atr_mult=tp_atr_mult,
+        )
+        df_feats["target_triple"] = generate_triple_labels(
+            df_feats, horizon=horizon, threshold=threshold,
+            tp_atr_mult=tp_atr_mult, sl_atr_mult=sl_atr_mult,
+        )
         df_feats = downcast_dtypes(df_feats)
         df_feats.to_parquet(parquet_path, index=False)
         return df_feats
@@ -75,6 +81,8 @@ async def build_and_save_dataset(
     start_date = datetime.fromtimestamp(first_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
     end_date = datetime.fromtimestamp(last_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
+    is_atr_mode = tp_atr_mult is not None and sl_atr_mult is not None
+
     metadata = {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -84,8 +92,17 @@ async def build_and_save_dataset(
             "volume_ratio", "bb_upper_pct", "bb_middle_pct", "bb_lower_pct", "atr_pct", "adx"
         ],
         "targets": {
-            "target_binary": {"type": "binary", "horizon": horizon, "threshold": 0.0},
-            "target_triple": {"type": "triple", "horizon": horizon, "threshold": threshold},
+            "target_binary": {
+                "type": "binary", "horizon": horizon, "threshold": 0.0,
+                "label_mode": "atr" if tp_atr_mult is not None else "fixed_threshold",
+                "tp_atr_mult": tp_atr_mult,
+            },
+            "target_triple": {
+                "type": "triple", "horizon": horizon, "threshold": threshold,
+                "label_mode": "atr" if is_atr_mode else "fixed_threshold",
+                "tp_atr_mult": tp_atr_mult,
+                "sl_atr_mult": sl_atr_mult,
+            },
         },
         "date_range": {
             "start_time_ms": first_time_ms,
