@@ -36,7 +36,7 @@ class BinanceExchange(BaseExchange):
                 "http": settings.BINANCE_PROXY,
                 "https": settings.BINANCE_PROXY,
             }
-            logger.info(
+            logger.debug(
                 f"[BinanceExchange] Подключение через прокси: {settings.BINANCE_PROXY}"
             )
 

@@ -654,8 +654,9 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         logger.error(f"Не удалось выполнить проверку дрейфа признаков: {drift_err}")
 
                 except Exception as cal_err:
-                    logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
-                    msg += f"\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
+                    logger.exception(f"Ошибка автокалибровки для {symbol}")
+
+                    msg += f"\n⚠️ Автокалибровка завершилась с ошибкой: {type(cal_err).__name__}: {cal_err}"
 
                     # --- ECONOMIC QUALITY GATE ---
                 economic_gate_passed = True

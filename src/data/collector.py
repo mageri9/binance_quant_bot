@@ -23,7 +23,7 @@ class DataCollector:
                 "http": settings.BINANCE_PROXY,
                 "https": settings.BINANCE_PROXY,
             }
-            logger.info(
+            logger.debug(
                 f"[DataCollector] Инициализация CCXT с прокси: {settings.BINANCE_PROXY}"
             )
 
@@ -88,5 +88,5 @@ class DataCollector:
             )
 
         await self.repo.save_klines(klines_data)
-        logger.debug(f"Успешно сохранено {len(klines_data)} свечей в базу данных.")
+        logger.info(f"Успешно сохранено {len(klines_data)} свечей в базу данных.")
         return len(klines_data)

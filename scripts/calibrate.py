@@ -87,8 +87,12 @@ async def get_best_calibration(
     meta_threshold: float | None = None,
 ) -> tuple[float, float, int, str, dict]:
     """
-    Проводит калибровку рисков и горизонта, возвращает: (best_sl, best_tp, best_horizon, formatted_report_text).
-    Использует чистые OOS-данные из файла модели для исключения утечек.
+    Проводит калибровку рисков и горизонта, возвращает: (best_sl, best_tp, best_horizon, formatted_report_text, honest_metrics).
+
+    ВАЖНО: в ATR-режиме (use_atr_calibration=True и колонка 'atr' присутствует)
+    возвращаемые best_sl/best_tp — это МНОЖИТЕЛИ ATR, а не проценты.
+    Вызывающий код обязан проверять settings.ATR_RISK_MODEL_ENABLED
+    и интерпретировать значения соответственно.
     """
     settings = get_settings()
     model_path = custom_model_path if custom_model_path is not None else settings.get_model_path(symbol, timeframe)
@@ -99,7 +103,6 @@ async def get_best_calibration(
     with open(model_path, "rb") as f:
         saved_data = pickle.load(f)
 
-    # 1. Пробуем получить чистые OOS-данные из отдельного parquet-файла (текущий формат)
     oos_path = get_oos_path(model_path)
     df_valid = None
 
@@ -109,9 +112,6 @@ async def get_best_calibration(
             f"Используются чистые Out-of-Sample данные ({len(df_valid)} строк) из {os.path.basename(oos_path)}"
         )
     else:
-        # Обратная совместимость со старыми pkl-артефактами, где df_oos
-        # хранился внутри самого pickle. Актуально до тех пор,
-        # пока модель не пройдёт очередной цикл переобучения.
         df_valid = saved_data.get("df_oos")
         if df_valid is not None:
             logger.info(
@@ -171,17 +171,11 @@ async def get_best_calibration(
     if meta_model is not None:
         from src.models.meta import apply_meta_gate
 
-        settings_local = get_settings()
         threshold = (
-            meta_threshold
-            if meta_threshold is not None
-            else settings_local.META_LABELING_THRESHOLD
+            meta_threshold if meta_threshold is not None else settings.META_LABELING_THRESHOLD
         )
         df_valid["predicted_signal"] = apply_meta_gate(
-            df_valid,
-            meta_model,
-            meta_features,
-            threshold,
+            df_valid, meta_model, meta_features, threshold,
         )
         logger.info(f"[Calibration] Meta-gate применён к сигналам перед калибровкой ({symbol}).")
 
@@ -194,7 +188,9 @@ async def get_best_calibration(
         f"honest_eval={len(df_eval)} строк"
     )
 
-    if use_atr_calibration and "atr" in df_calib.columns:
+    is_atr_mode = use_atr_calibration and "atr" in df_calib.columns
+
+    if is_atr_mode:
         k_sl_grid = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
         k_tp_grid = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
         horizon_grid = [3, 5, 8, 12]
@@ -232,65 +228,55 @@ async def get_best_calibration(
             float(best["tp_atr_mult"]),
         )
 
-        if honest_metrics["total_trades"] < settings.CALIBRATION_MIN_TRADES:
-            logger.warning(
-                f"[Calibration] Honest eval split дал только {honest_metrics['total_trades']} "
-                f"сделок (< {settings.CALIBRATION_MIN_TRADES}) — оценка может быть шумной."
+        best_sl_value = float(best["sl_atr_mult"])
+        best_tp_value = float(best["tp_atr_mult"])
+
+        risk_line = (
+            f"🛡️ <b>Риски:</b> SL <code>{best_sl_value:.2f} × ATR</code> • "
+            f"TP <code>{best_tp_value:.2f} × ATR</code> • "
+            f"Горизонт: <code>{int(best['horizon'])} св.</code>"
+        )
+    else:
+        sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
+        tp_grid = [0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15]
+        horizon_grid = [3, 5, 8, 12]
+
+        results = await asyncio.to_thread(
+            perform_grid_search,
+            df_calib,
+            sl_grid,
+            tp_grid,
+            horizon_grid=horizon_grid,
+            min_trades=settings.CALIBRATION_MIN_TRADES,
+        )
+
+        if not results:
+            raise ValueError(
+                f"Ни одна комбинация параметров не набрала {settings.CALIBRATION_MIN_TRADES}+ сделок."
             )
 
-        report = (
-            f"🛡 <b>Риски:</b> SL <code>{best['sl_pct']:.1%}</code> • TP <code>{best['tp_pct']:.1%}</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
-            f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • Return <code>{honest_metrics['total_return']:.1%}</code> (<code>{honest_metrics['total_trades']} сд.</code>)"
-        )
+        res_df = pd.DataFrame(results).sort_values(
+            by=["sharpe_ratio", "expectancy"], ascending=False
+        ).reset_index(drop=True)
+        best = res_df.iloc[0]
 
-        # ВАЖНО: в ATR-режиме первые два элемента кортежа — это множители ATR,
-        # а не проценты. Вызывающий код должен явно это учитывать (см. докстринг).
-        return (
-            float(best["sl_atr_mult"]),
-            float(best["tp_atr_mult"]),
+        honest_metrics = await asyncio.to_thread(
+            simulate_strategy,
+            df_eval,
+            "predicted_signal",
             int(best["horizon"]),
-            report,
-            honest_metrics,
+            float(best["sl_pct"]),
+            float(best["tp_pct"]),
         )
 
-        # --- существующая фикс.-процентная ветка, без изменений ---
-    sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
-    tp_grid = [0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15]
-    horizon_grid = [3, 5, 8, 12]
+        best_sl_value = float(best["sl_pct"])
+        best_tp_value = float(best["tp_pct"])
 
-    # Запускаем тяжелую симуляцию сделок бэктеста в потоке
-    results = await asyncio.to_thread(
-        perform_grid_search,
-        df_calib,
-        sl_grid,
-        tp_grid,
-        horizon_grid=horizon_grid,
-        min_trades=settings.CALIBRATION_MIN_TRADES,
-    )
-
-    if not results:
-        raise ValueError(
-            f"Ни одна комбинация параметров не набрала {settings.CALIBRATION_MIN_TRADES}+ сделок."
+        risk_line = (
+            f"🛡️ <b>Риски:</b> SL <code>{best_sl_value:.1%}</code> • "
+            f"TP <code>{best_tp_value:.1%}</code> • "
+            f"Горизонт: <code>{int(best['horizon'])} св.</code>"
         )
-
-    res_df = pd.DataFrame(results)
-
-    # Сортировка по Sharpe Ratio, а затем по Expectancy
-    res_df = res_df.sort_values(
-        by=["sharpe_ratio", "expectancy"], ascending=False
-    ).reset_index(drop=True)
-
-    best = res_df.iloc[0]
-
-    # Честная оценка выбранных параметров на данных, не участвовавших в подборе.
-    honest_metrics = await asyncio.to_thread(
-        simulate_strategy,
-        df_eval,
-        "predicted_signal",
-        int(best["horizon"]),
-        float(best["sl_pct"]),
-        float(best["tp_pct"]),
-    )
 
     if honest_metrics["total_trades"] < settings.CALIBRATION_MIN_TRADES:
         logger.warning(
@@ -299,11 +285,14 @@ async def get_best_calibration(
         )
 
     report = (
-        f"🛡️ <b>Риски:</b> SL <code>{best['sl_pct']:.1%}</code> • TP <code>{best['tp_pct']:.1%}</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
-        f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • Return <code>{honest_metrics['total_return']:.1%}</code> (<code>{honest_metrics['total_trades']} сд.</code>)"
+        f"{risk_line}\n"
+        f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • "
+        f"Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • "
+        f"Return <code>{honest_metrics['total_return']:.1%}</code> "
+        f"(<code>{honest_metrics['total_trades']} сд.</code>)"
     )
 
-    return float(best["sl_pct"]), float(best["tp_pct"]), int(best["horizon"]), report, honest_metrics
+    return best_sl_value, best_tp_value, int(best["horizon"]), report, honest_metrics
 
 
 async def run_calibration_cli(symbol: str, timeframe: str):
