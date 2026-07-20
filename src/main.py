@@ -535,8 +535,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 if "REJECTED" in err_msg:
                     logger.warning(f"[Retrain - {symbol}] {err_msg}")
                     reject_msg = (
-                        f"⚠️ [Retrain {symbol} - v{version}] ➔ <b>ОТКЛОНЕНА</b> (F1 Quality Gate)\n\n"
-                        f"🤖 <b>ML:</b> <code>{err_msg}</code>"
+                        f"⚠️ {symbol} v{version} → <b>ОТКЛОНЕНА</b> (F1 Quality Gate)\n\n"
+                        f"🤖 <code>{err_msg}</code>"
                     )
                     for admin_id in settings.ADMIN_IDS:
                         try:
@@ -552,17 +552,20 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 decision_f1 = new_f1
 
             # Формируем компактную строчку по классификации ML
+            f1_delta = decision_f1 - gate_baseline_f1
+            f1_delta_sign = "+" if f1_delta >= 0 else ""
             ml_metrics_block = (
-                f"🤖 <b>ML:</b> Acc <code>{lgbm_result['metrics']['accuracy']:.3f}</code> | "
-                f"F1 OOS <code>{decision_f1:.3f}</code> (vs Base: <code>{gate_baseline_f1:.3f}</code>) | "
+                f"🤖 F1 <code>{decision_f1:.3f}</code> "
+                f"(Δ{f1_delta_sign}{f1_delta:.3f} vs BL <code>{gate_baseline_f1:.3f}</code>) | "
+                f"Acc <code>{lgbm_result['metrics']['accuracy']:.3f}</code> | "
                 f"CV <code>{new_f1:.3f}</code>"
             )
 
             if decision_f1 <= gate_baseline_f1:
                 msg = (
-                    f"⚠️ [Retrain {symbol} - v{version}] ➔ <b>ОТКЛОНЕНА</b> (F1 Gate)\n\n"
+                    f"⚠️ {symbol} v{version} → <b>ОТКЛОНЕНА</b> (F1 Gate)\n\n"
                     f"{ml_metrics_block}\n"
-                    f"Причина: F1-кандидата не превысил базовый baseline регрессии."
+                    f"Причина: F1 не превысил baseline."
                 )
                 logger.warning(msg)
             else:
@@ -648,7 +651,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                                 )
 
                                 if drift_report["drift_detected"]:
-                                    drift_warning = "📡 <b>SRE:</b> Обнаружен дрейф распределения признаков (Режим рынка меняется)"
+                                    drift_warning = "📡 Дрейф обнаружен"
                                     logger.warning(f"[SRE] Concept drift detected for {symbol}")
                     except Exception as drift_err:
                         logger.error(f"Не удалось выполнить проверку дрейфа признаков: {drift_err}")
@@ -701,7 +704,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 if not economic_gate_passed:
                     logger.warning(economic_gate_msg)
 
-                    reject_header = f"⚠️ [Retrain {symbol} - v{version}] ➔ <b>ОТКЛОНЕНА</b> (Economic Gate)\n\n"
+                    reject_header = f"⚠️ {symbol} v{version} → <b>ОТКЛОНЕНА</b> (Economic Gate)\n\n"
                     reject_msg = reject_header + msg + cal_report + "\n"
                     if drift_warning:
                         reject_msg += f"{drift_warning}\n"
@@ -716,7 +719,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
                 # --- END ECONOMIC QUALITY GATE ---
 
-                accept_header = f"✅ [Retrain {symbol} - v{version}] ➔ <b>ПРИНЯТА В ПРОД</b>\n\n"
+                accept_header = f"✅ {symbol} v{version} → <b>ПРИНЯТА В ПРОД</b>\n\n"
                 msg = accept_header + msg + cal_report
                 if drift_warning:
                     msg += f"\n{drift_warning}"

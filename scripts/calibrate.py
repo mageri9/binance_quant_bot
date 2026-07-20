@@ -232,9 +232,9 @@ async def get_best_calibration(
         best_tp_value = float(best["tp_atr_mult"])
 
         risk_line = (
-            f"🛡️ <b>Риски:</b> SL <code>{best_sl_value:.2f} × ATR</code> • "
-            f"TP <code>{best_tp_value:.2f} × ATR</code> • "
-            f"Горизонт: <code>{int(best['horizon'])} св.</code>"
+            f"🛡️ SL <code>{best_sl_value:.2f}×ATR</code> • "
+            f"TP <code>{best_tp_value:.2f}×ATR</code> • "
+            f"HZ <code>{int(best['horizon'])}</code>"
         )
     else:
         sl_grid = [0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.04, 0.05]
@@ -273,9 +273,9 @@ async def get_best_calibration(
         best_tp_value = float(best["tp_pct"])
 
         risk_line = (
-            f"🛡️ <b>Риски:</b> SL <code>{best_sl_value:.1%}</code> • "
+            f"🛡️ SL <code>{best_sl_value:.1%}</code> • "
             f"TP <code>{best_tp_value:.1%}</code> • "
-            f"Горизонт: <code>{int(best['horizon'])} св.</code>"
+            f"HZ <code>{int(best['horizon'])}</code>"
         )
 
     if honest_metrics["total_trades"] < settings.CALIBRATION_MIN_TRADES:
@@ -286,9 +286,9 @@ async def get_best_calibration(
 
     report = (
         f"{risk_line}\n"
-        f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • "
-        f"Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • "
-        f"Return <code>{honest_metrics['total_return']:.1%}</code> "
+        f"📊 Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> | "
+        f"E[R] <code>{honest_metrics['expectancy']:.3%}</code> | "
+        f"Ret <code>{honest_metrics['total_return']:.1%}</code> "
         f"(<code>{honest_metrics['total_trades']} сд.</code>)"
     )
 
