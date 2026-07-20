@@ -14,6 +14,14 @@ from src.datasets.build import get_git_sha
 from src.core.config import get_settings
 from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 
+import warnings
+# Подавляем ложные предупреждения scipy-оптимизатора при обучении LogisticRegression
+try:
+    from scipy.optimize import OptimizeWarning
+    warnings.filterwarnings("ignore", category=OptimizeWarning)
+except ImportError:
+    pass
+
 
 
 def _run_baseline_folds(splitter, df_clean, feature_cols, target_col, is_multiclass, c_parameter):

@@ -55,6 +55,7 @@ async def status_handler(message: Message, session: AsyncSession):
     active_trades_text = ""
     has_any_active = False
     total_positions_value = 0.0
+    flat_inactive_symbols = []
 
     for symbol, timeframe in settings.ACTIVE_CONFIGS:
         active_trade = await repo.get_active_trade(symbol)
@@ -73,12 +74,12 @@ async def status_handler(message: Message, session: AsyncSession):
                 if is_short:
                     unrealized_pnl = (
                         active_trade.entry_price - current_close
-                      ) * active_trade.amount
+                    ) * active_trade.amount
                     pos_type = "SHORT 🔴"
                 else:
                     unrealized_pnl = (
                         current_close - active_trade.entry_price
-                      ) * active_trade.amount
+                    ) * active_trade.amount
                     pos_type = "LONG 🟢"
 
                 # Считаем текущую стоимость позиции
@@ -113,9 +114,11 @@ async def status_handler(message: Message, session: AsyncSession):
                 f"{current_price_str}\n"
             )
         else:
-            active_trades_text += (
-                f"📭 <b>{symbol}:</b> <i>Вне рынка. Бот ожидает сигнала.</i>\n\n"
-            )
+            flat_inactive_symbols.append(symbol)
+
+    if flat_inactive_symbols:
+        symbols_str = ", ".join(flat_inactive_symbols)
+        active_trades_text += f"📭 <b>Вне рынка:</b> <code>{symbols_str}</code>\n\n"
 
     if not has_any_active:
         active_trades_text += (

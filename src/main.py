@@ -24,6 +24,14 @@ from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 from src.utils.artifact_paths import get_oos_path
 
+import warnings
+# Подавляем ложные предупреждения scipy-оптимизатора при обучении LogisticRegression
+try:
+    from scipy.optimize import OptimizeWarning
+    warnings.filterwarnings("ignore", category=OptimizeWarning)
+except ImportError:
+    pass
+
 
 def _atomic_copy(src: str, dst: str) -> None:
     """Копия во временный файл + os.replace — исключает чтение частично записанного .pkl."""
@@ -281,7 +289,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
     # Новые импорты SRE контура
     from src.exchange.binance import BinanceExchange
     from src.risk.engine import RiskEngine
-    from src.risk.kill_switch import KillSwitchManager, reconcile_positions
+    from src.risk.kill_switch import KillSwitchManager, KillSwitchState, reconcile_positions
 
     settings = get_settings()
     model_path = settings.get_model_path(symbol, timeframe)
@@ -292,13 +300,18 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
             await asyncio.sleep(3600)
 
             async with AsyncSessionFactory() as session:
-                # 1. Скачиваем свечи
+                # 1. Скачиваем свечи (всегда полезно иметь актуальную историю для ML)
                 async with DataCollector(session) as collector:
                     await collector.fetch_and_save_klines(symbol, timeframe, limit=5)
 
-                # 2. Инициализируем SRE менеджеры и Биржу
+                # 2. Инициализируем SRE менеджеры и проверяем блокировку перед обращением к бирже
                 redis = await get_redis()
                 kill_switch = KillSwitchManager(redis)
+
+                if await kill_switch.is_trading_blocked():
+                    logger.debug(f"[paper_trading_loop] Торговля по {symbol} заблокирована (Kill Switch). Пропускаем раунд.")
+                    continue
+
                 risk_engine = RiskEngine()
 
                 # Безальтернативная инициализация коннектора Binance фьючерсов
@@ -320,9 +333,6 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
 
                 try:
                     # 2.5. Синхронизируем закрытие живых позиций (SL/TP на бирже)
-                    # ДО сверки reconcile_positions, иначе легитимное закрытие
-                    # по SL/TP будет ложно трактовано как рассинхронизация
-                    # и заблокирует бота в SAFE_MODE.
                     close_msg = await trading_engine.check_and_close_positions(symbol)
                     if close_msg:
                         for admin_id in settings.ADMIN_IDS:
@@ -340,25 +350,20 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     )
 
                     if not synced:
-                        # error_details уже содержит точные символы всех найденных
-                        # mismatch'ей построчно — не привязываем заголовок к локальному
-                        # symbol этого цикла, иначе алерт вводит в заблуждение (баг:
-                        # три параллельных цикла проверяют один и тот же полный список
-                        # пар и репортят чужие детали под своим заголовком).
                         alert_msg = (
                             f"🚨 [SRE RECONCILE ERROR] Обнаружена рассинхронизация позиций!\n"
                             f"Бот заблокирован в SAFE_MODE.\n"
                             f"<code>{error_details}</code>"
                         )
-                        for admin_id in settings.ADMIN_IDS:
-                            await bot.send_message(chat_id=admin_id, text=alert_msg)
+                        # Избегаем дублирования одинаковых сообщений в Telegram, если бот уже в аварийном статусе
+                        state, _, _ = await kill_switch.get_state()
+                        if state != KillSwitchState.SAFE_MODE:
+                            for admin_id in settings.ADMIN_IDS:
+                                await bot.send_message(chat_id=admin_id, text=alert_msg)
                         continue
 
                     # 4. Проверяем Kill Switch перед генерацией сигналов
                     if await kill_switch.is_trading_blocked():
-                        continue
-
-                    if not os.path.exists(model_path):
                         continue
 
                     # 5. Загружаем свежие данные для предиктора
@@ -426,8 +431,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             symbol, timeframe, limit=settings.MIN_KLINES_FOR_TRAIN
         )
         if len(klines) < settings.MIN_KLINES_FOR_TRAIN:
-            logger.info(
-                f"[Retrain - {symbol}] Недостаточно данных: {len(klines)}/{settings.MIN_KLINES_FOR_TRAIN}"
+            logger.debug(
+                f"[Retrain - {symbol}] Недостаточно данных для переобучения: {len(klines)}/{settings.MIN_KLINES_FOR_TRAIN}"
             )
             return
 

@@ -56,14 +56,13 @@ class DataCollector:
         else:
             since_ms = None
 
-        logger.info(f"Запрос свечей {symbol} ({timeframe}) с {since_datetime or 'начала'}")
+        logger.debug(
+            f"Запрос свечей {symbol} ({timeframe}) с {since_datetime or 'начала'}"
+        )
 
         try:
             ohlcv = await self.exchange.fetch_ohlcv(
-                symbol=symbol,
-                timeframe=timeframe,
-                since=since_ms,
-                limit=limit
+                symbol=symbol, timeframe=timeframe, since=since_ms, limit=limit
             )
         except Exception as e:
             logger.error(f"Не удалось скачать свечи с Binance: {e}")
@@ -75,17 +74,19 @@ class DataCollector:
 
         klines_data = []
         for candle in ohlcv:
-            klines_data.append({
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "open_time": candle[0],
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4]),
-                "volume": float(candle[5])
-            })
+            klines_data.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "open_time": candle[0],
+                    "open": float(candle[1]),
+                    "high": float(candle[2]),
+                    "low": float(candle[3]),
+                    "close": float(candle[4]),
+                    "volume": float(candle[5]),
+                }
+            )
 
         await self.repo.save_klines(klines_data)
-        logger.info(f"Успешно сохранено {len(klines_data)} свечей в базу данных.")
+        logger.debug(f"Успешно сохранено {len(klines_data)} свечей в базу данных.")
         return len(klines_data)

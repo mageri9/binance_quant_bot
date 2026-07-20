@@ -27,6 +27,7 @@ class BinanceExchange(BaseExchange):
             "apiKey": api_key,
             "secret": secret,
             "options": options,
+            "timeout": 15000,
         }
 
         settings = get_settings()
