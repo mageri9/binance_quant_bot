@@ -573,6 +573,9 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 msg = f"{ml_metrics_block}\n"
 
                 artifact = None
+                cal_report = ""
+                drift_warning = ""
+
                 try:
                     with open(lgbm_result["model_path"], "rb") as f:
                         artifact = pickle.load(f)

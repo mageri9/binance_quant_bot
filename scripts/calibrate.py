@@ -239,7 +239,7 @@ async def get_best_calibration(
             )
 
         report = (
-            f"🛡️ <b>Риски:</b> SL <code>{best['sl_atr_mult']:.2f} × ATR</code> • TP <code>{best['tp_atr_mult']:.2f} × ATR</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
+            f"🛡 <b>Риски:</b> SL <code>{best['sl_pct']:.1%}</code> • TP <code>{best['tp_pct']:.1%}</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
             f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • Return <code>{honest_metrics['total_return']:.1%}</code> (<code>{honest_metrics['total_trades']} сд.</code>)"
         )
 
@@ -299,7 +299,7 @@ async def get_best_calibration(
         )
 
     report = (
-        f"🛡️ <b>Риски:</b> SL <code>{best['sl_atr_mult']:.2f} × ATR</code> • TP <code>{best['tp_atr_mult']:.2f} × ATR</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
+        f"🛡️ <b>Риски:</b> SL <code>{best['sl_pct']:.1%}</code> • TP <code>{best['tp_pct']:.1%}</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
         f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • Return <code>{honest_metrics['total_return']:.1%}</code> (<code>{honest_metrics['total_trades']} сд.</code>)"
     )
 
