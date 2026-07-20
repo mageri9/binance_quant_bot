@@ -239,15 +239,8 @@ async def get_best_calibration(
             )
 
         report = (
-            f"⚙️ <b>Результаты автокалибровки рисков (ATR-режим):</b>\n"
-            f"📉 Stop-Loss: <code>{best['sl_atr_mult']:.2f} × ATR</code>\n"
-            f"📈 Take-Profit: <code>{best['tp_atr_mult']:.2f} × ATR</code>\n"
-            f"⏱ Горизонт (Horizon): <code>{int(best['horizon'])} свечей</code>\n"
-            f"📊 Sharpe (grid search, calibration): <code>{best['sharpe_ratio']:.3f}</code>\n"
-            f"📊 Sharpe (honest, held-out): <code>{honest_metrics['sharpe_ratio']:.3f}</code>\n"
-            f"🎯 Матожидание (honest): <code>{honest_metrics['expectancy']:.3%}</code> на сделку\n"
-            f"💰 Доходность (honest): <code>{honest_metrics['total_return']:.1%}</code> "
-            f"({honest_metrics['total_trades']} сделок)"
+            f"🛡️ <b>Риски:</b> SL <code>{best['sl_atr_mult']:.2f} × ATR</code> • TP <code>{best['tp_atr_mult']:.2f} × ATR</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
+            f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • Return <code>{honest_metrics['total_return']:.1%}</code> (<code>{honest_metrics['total_trades']} сд.</code>)"
         )
 
         # ВАЖНО: в ATR-режиме первые два элемента кортежа — это множители ATR,
@@ -306,15 +299,8 @@ async def get_best_calibration(
         )
 
     report = (
-        f"⚙️ <b>Результаты автокалибровки рисков:</b>\n"
-        f"📉 Stop-Loss (SL): <code>{best['sl_pct']:.1%}</code>\n"
-        f"📈 Take-Profit (TP): <code>{best['tp_pct']:.1%}</code>\n"
-        f"⏱ Горизонт (Horizon): <code>{int(best['horizon'])} свечей</code>\n"
-        f"📊 Sharpe (grid search, calibration): <code>{best['sharpe_ratio']:.3f}</code>\n"
-        f"📊 Sharpe (honest, held-out): <code>{honest_metrics['sharpe_ratio']:.3f}</code>\n"
-        f"🎯 Матожидание (honest): <code>{honest_metrics['expectancy']:.3%}</code> на сделку\n"
-        f"💰 Доходность (honest): <code>{honest_metrics['total_return']:.1%}</code> "
-        f"({honest_metrics['total_trades']} сделок)"
+        f"🛡️ <b>Риски:</b> SL <code>{best['sl_atr_mult']:.2f} × ATR</code> • TP <code>{best['tp_atr_mult']:.2f} × ATR</code> • Горизонт: <code>{int(best['horizon'])} св.</code>\n"
+        f"📊 <b>Бэктест:</b> Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> • Матожидание <code>{honest_metrics['expectancy']:.3%}</code> • Return <code>{honest_metrics['total_return']:.1%}</code> (<code>{honest_metrics['total_trades']} сд.</code>)"
     )
 
     return float(best["sl_pct"]), float(best["tp_pct"]), int(best["horizon"]), report, honest_metrics

@@ -534,7 +534,10 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 err_msg = str(gate_err)
                 if "REJECTED" in err_msg:
                     logger.warning(f"[Retrain - {symbol}] {err_msg}")
-                    reject_msg = f"⚠️ [Retrain - {symbol}] {err_msg}. В продакшн остается старая модель."
+                    reject_msg = (
+                        f"⚠️ [Retrain {symbol} - v{version}] ➔ <b>ОТКЛОНЕНА</b> (F1 Quality Gate)\n\n"
+                        f"🤖 <b>ML:</b> <code>{err_msg}</code>"
+                    )
                     for admin_id in settings.ADMIN_IDS:
                         try:
                             await bot.send_message(chat_id=admin_id, text=reject_msg)
@@ -546,19 +549,20 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
             decision_f1 = lgbm_result["metrics"].get("holdout_f1")
             if decision_f1 is None:
-                decision_f1 = (
-                    new_f1  # fallback для случая без holdout (крошечные датасеты)
-                )
+                decision_f1 = new_f1
 
-            # Решение о продвижении в прод опирается на ту же метрику, что уже
-            # прошла Quality Gate внутри run_lgbm_experiment (honest holdout F1),
-            # а не на усредненный по walk-forward фолдам F1 — это разные величины
-            # с разным составом тестовых окон, их расхождение давало ложные отклонения.
+            # Формируем компактную строчку по классификации ML
+            ml_metrics_block = (
+                f"🤖 <b>ML:</b> Acc <code>{lgbm_result['metrics']['accuracy']:.3f}</code> | "
+                f"F1 OOS <code>{decision_f1:.3f}</code> (vs Base: <code>{gate_baseline_f1:.3f}</code>) | "
+                f"CV <code>{new_f1:.3f}</code>"
+            )
+
             if decision_f1 <= gate_baseline_f1:
                 msg = (
-                    f"⚠️ [Retrain v{version} - {symbol}] Новая модель НЕ превзошла baseline "
-                    f"(LGBM holdout f1={decision_f1:.3f} vs baseline f1={gate_baseline_f1:.3f}). "
-                    f"В продакшн НЕ продвигается."
+                    f"⚠️ [Retrain {symbol} - v{version}] ➔ <b>ОТКЛОНЕНА</b> (F1 Gate)\n\n"
+                    f"{ml_metrics_block}\n"
+                    f"Причина: F1-кандидата не превысил базовый baseline регрессии."
                 )
                 logger.warning(msg)
             else:
@@ -566,12 +570,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 if os_dir:
                     os.makedirs(os_dir, exist_ok=True)
 
-                msg = (
-                    f"🧪 [Retrain v{version} - {symbol}] Кандидат прошёл F1-гейт.\n"
-                    f"accuracy={lgbm_result['metrics']['accuracy']:.3f}, "
-                    f"holdout_f1={decision_f1:.3f} (baseline f1={gate_baseline_f1:.3f}), "
-                    f"cv_avg_f1={new_f1:.3f}\n"
-                )
+                msg = f"{ml_metrics_block}\n"
 
                 artifact = None
                 try:
@@ -646,28 +645,16 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                                 )
 
                                 if drift_report["drift_detected"]:
-                                    drift_warning = (
-                                        "📊 <b>[SRE] Обнаружен дрейф распределения признаков!</b> "
-                                        "Рыночный цикл меняется."
-                                    )
+                                    drift_warning = "📡 <b>SRE:</b> Обнаружен дрейф распределения признаков (Режим рынка меняется)"
                                     logger.warning(f"[SRE] Concept drift detected for {symbol}")
-                                    msg += f"\n\n{drift_warning}"
                     except Exception as drift_err:
                         logger.error(f"Не удалось выполнить проверку дрейфа признаков: {drift_err}")
 
                 except Exception as cal_err:
                     logger.error(f"Ошибка автокалибровки для {symbol}: {cal_err}")
-
-                    msg += f"\n\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
+                    msg += f"\n⚠️ Автокалибровка завершилась с ошибкой: {cal_err}"
 
                     # --- ECONOMIC QUALITY GATE ---
-                    # F1-гейт проверяет только качество классификации. Модель может
-                    # иметь лучший F1, чем прод, и при этом быть убыточной (плохое R:R,
-                    # издержки, слишком широкий/узкий SL/TP). Сравниваем честные
-                    # (held-out, не участвовавшие в grid search) метрики прибыльности
-                    # кандидата с сохранёнными метриками текущей прод-модели.
-
-
                 economic_gate_passed = True
                 economic_gate_msg = ""
 
@@ -678,69 +665,57 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 if artifact is None:
                     logger.warning(
                         f"[Economic Gate] Калибровка для {symbol} не удалась — метрики "
-                        f"прибыльности недоступны, гейт пропущен (модель продвигается по F1-критерию)."
+                        f"прибыльности недоступны, гейт пропущен."
                     )
 
                 if os.path.exists(model_path) and new_backtest_metrics is not None:
                     try:
                         with open(model_path, "rb") as f:
                             current_prod_artifact = pickle.load(f)
-
                         prod_backtest_metrics = current_prod_artifact.get(
                             "backtest_metrics"
                         )
-
                     except Exception as read_err:
                         logger.error(
                             f"[Economic Gate] Не удалось прочитать метрики текущей прод-модели {symbol}: {read_err}"
                         )
-
                         prod_backtest_metrics = None
 
-                    if prod_backtest_metrics is None:
-                        logger.warning(
-                            f"[Economic Gate] У текущей прод-модели {symbol} нет сохранённых "
-                            f"backtest_metrics (задеплоена до внедрения гейта) — сравнение пропущено."
-                        )
-
-                    else:
+                    if prod_backtest_metrics is not None:
                         new_sharpe = new_backtest_metrics.get("sharpe_ratio", 0.0)
                         new_expectancy = new_backtest_metrics.get("expectancy", 0.0)
                         prod_sharpe = prod_backtest_metrics.get("sharpe_ratio", 0.0)
 
                         if new_expectancy <= 0:
                             economic_gate_passed = False
-
-                            economic_gate_msg = (
-                                f"⚠️ [Economic Gate - {symbol}] Модель ОТКЛОНЕНА: отрицательное "
-                                f"матожидание на честном held-out backtest (expectancy={new_expectancy:.3%})."
-                            )
-
+                            economic_gate_msg = f"отрицательное матожидание на честном OOS бэктесте (<code>{new_expectancy:.3%}</code>)"
                         elif new_sharpe <= prod_sharpe:
                             economic_gate_passed = False
+                            economic_gate_msg = f"honest Sharpe (<code>{new_sharpe:.3f}</code>) не превышает текущий прод Sharpe (<code>{prod_sharpe:.3f}</code>)"
 
-                            economic_gate_msg = (
-                                f"⚠️ [Economic Gate - {symbol}] Модель ОТКЛОНЕНА: honest Sharpe "
-                                f"({new_sharpe:.3f}) не превышает текущий прод Sharpe ({prod_sharpe:.3f})."
-                            )
-
+                # Сборка финального отчета
                 if not economic_gate_passed:
                     logger.warning(economic_gate_msg)
 
-                    msg += f"\n\n{economic_gate_msg}\nМодель прошла F1-гейт, но НЕ продвигается в продакшн (Economic Gate)."
+                    reject_header = f"⚠️ [Retrain {symbol} - v{version}] ➔ <b>ОТКЛОНЕНА</b> (Economic Gate)\n\n"
+                    reject_msg = reject_header + msg + cal_report + "\n"
+                    if drift_warning:
+                        reject_msg += f"{drift_warning}\n"
+                    reject_msg += f"Причина: {economic_gate_msg}."
 
                     for admin_id in settings.ADMIN_IDS:
                         try:
-                            await bot.send_message(chat_id=admin_id, text=msg)
-
+                            await bot.send_message(chat_id=admin_id, text=reject_msg)
                         except Exception as e:
                             logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
-
                     return
 
                 # --- END ECONOMIC QUALITY GATE ---
 
-                msg = f"✅ [Retrain v{version} - {symbol}] Модель обновлена в продакшне.\n" + msg
+                accept_header = f"✅ [Retrain {symbol} - v{version}] ➔ <b>ПРИНЯТА В ПРОД</b>\n\n"
+                msg = accept_header + msg + cal_report
+                if drift_warning:
+                    msg += f"\n{drift_warning}"
 
                 if os.path.exists(model_path):
                     clean_symbol = symbol.replace("/", "").replace(":", "")
