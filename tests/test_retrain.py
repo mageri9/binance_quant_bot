@@ -110,7 +110,7 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
     # Уведомление админу должно уйти (новая модель лучше baseline)
     bot_mock.send_message.assert_called_once()
     sent_text = bot_mock.send_message.call_args[1]["text"]
-    assert "обновлена в продакшне" in sent_text
+    assert "ПРИНЯТА В ПРОД" in sent_text
 
 @pytest.mark.asyncio
 async def test_retrain_cycle_copies_oos_parquet_to_production(temp_db_session, tmp_path):
@@ -319,4 +319,4 @@ async def test_retrain_cycle_blocked_by_economic_gate(temp_db_session, tmp_path)
     bot_mock.send_message.assert_called_once()
     sent_text = bot_mock.send_message.call_args[1]["text"]
     assert "Economic Gate" in sent_text
-    assert "НЕ продвигается" in sent_text
+    assert "ОТКЛОНЕНА" in sent_text
