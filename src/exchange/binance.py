@@ -220,75 +220,53 @@ class BinanceExchange(BaseExchange):
         tp_price: float | None,
     ) -> dict:
         """
-        Выставляет защитные reduce-only ордера SL/TP сразу после входа в позицию.
+        Выставляет защитные reduce-only ордера SL/TP через новый Algo Order API
+        (POST /fapi/v1/algoOrder). С 2025-12-09 Binance перевёл все conditional-ордера
+        (STOP_MARKET/TAKE_PROFIT_MARKET) на этот эндпоинт, старый /fapi/v1/order
+        их больше не принимает (код -4120).
         side — сторона ЗАКРЫТИЯ позиции (противоположна стороне входа).
         """
         await self._ensure_markets()
         result = {"sl_order_id": None, "tp_order_id": None}
 
-        # Применяем правила точности объема
         precise_amount_str = self.exchange.amount_to_precision(symbol, amount)
-        if precise_amount_str is not None and type(precise_amount_str).__name__ not in ("MagicMock", "AsyncMock"):
-            try:
-                precise_amount = float(precise_amount_str)
-            except (ValueError, TypeError):
-                precise_amount = amount
-        else:
+        try:
+            precise_amount = float(precise_amount_str)
+        except (ValueError, TypeError):
             precise_amount = amount
 
-        # 1. Выставляем защитный Stop-Loss
+        async def _place_algo_order(order_type: str, trigger_price: float) -> str | None:
+            try:
+                precise_trigger_str = self.exchange.price_to_precision(symbol, trigger_price)
+                try:
+                    precise_trigger = float(precise_trigger_str)
+                except (ValueError, TypeError):
+                    precise_trigger = trigger_price
+
+                params = {
+                    "algoType": "CONDITIONAL",
+                    "symbol": self.exchange.market_id(symbol),
+                    "side": side.upper(),
+                    "type": order_type,
+                    "quantity": precise_amount,
+                    "triggerPrice": precise_trigger,
+                    "reduceOnly": "true",
+                }
+                response = await self.exchange.request(
+                    "algoOrder", "fapiPrivate", "POST", params
+                )
+                return str(response.get("algoId")) if response else None
+            except Exception as e:
+                logger.error(
+                    f"[BinanceExchange] Ошибка установки {order_type} по {symbol}: {e}"
+                )
+                return None
+
         if sl_price is not None:
-            try:
-                # Округляем цену SL
-                precise_sl_str = self.exchange.price_to_precision(symbol, sl_price)
-                if precise_sl_str is not None and type(precise_sl_str).__name__ not in ("MagicMock", "AsyncMock"):
-                    try:
-                        precise_sl = float(precise_sl_str)
-                    except (ValueError, TypeError):
-                        precise_sl = sl_price
-                else:
-                    precise_sl = sl_price
+            result["sl_order_id"] = await _place_algo_order("STOP_MARKET", sl_price)
 
-                sl_order = await self.exchange.create_order(
-                    symbol=symbol,
-                    type="STOP_MARKET",
-                    side=side,
-                    amount=precise_amount,
-                    price=None,
-                    params={"stopPrice": precise_sl, "reduceOnly": True},
-                )
-                result["sl_order_id"] = sl_order.get("id")
-            except Exception as e:
-                logger.error(
-                    f"[BinanceExchange] Ошибка установки Stop-Loss по {symbol}: {e}"
-                )
-
-        # 2. Выставляем защитный Take-Profit
         if tp_price is not None:
-            try:
-                # Округляем цену TP
-                precise_tp_str = self.exchange.price_to_precision(symbol, tp_price)
-                if precise_tp_str is not None and type(precise_tp_str).__name__ not in ("MagicMock", "AsyncMock"):
-                    try:
-                        precise_tp = float(precise_tp_str)
-                    except (ValueError, TypeError):
-                        precise_tp = tp_price
-                else:
-                    precise_tp = tp_price
-
-                tp_order = await self.exchange.create_order(
-                    symbol=symbol,
-                    type="TAKE_PROFIT_MARKET",
-                    side=side,
-                    amount=precise_amount,
-                    price=None,
-                    params={"stopPrice": precise_tp, "reduceOnly": True},
-                )
-                result["tp_order_id"] = tp_order.get("id")
-            except Exception as e:
-                logger.error(
-                    f"[BinanceExchange] Ошибка установки Take-Profit по {symbol}: {e}"
-                )
+            result["tp_order_id"] = await _place_algo_order("TAKE_PROFIT_MARKET", tp_price)
 
         return result
 
@@ -317,16 +295,42 @@ class BinanceExchange(BaseExchange):
     async def get_open_orders(self, symbol: str) -> list[dict]:
         try:
             await self._ensure_markets()
-            return await self.exchange.fetch_open_orders(symbol)
+            regular = await self.exchange.fetch_open_orders(symbol)
+
+            algo_response = await self.exchange.request(
+                "openAlgoOrders",
+                "fapiPrivate",
+                "GET",
+                {"symbol": self.exchange.market_id(symbol)},
+            )
+            algo_orders = [
+                {
+                    "id": str(o.get("algoId")),
+                    "symbol": symbol,
+                    "type": o.get("orderType") or o.get("type"),
+                    "side": (o.get("side") or "").lower(),
+                    "is_algo": True,
+                }
+                for o in (algo_response or [])
+            ]
+            return list(regular) + algo_orders
         except Exception as e:
             logger.error(
                 f"[BinanceExchange] Ошибка получения открытых ордеров {symbol}: {e}"
             )
             return []
 
-    async def cancel_order(self, order_id: str, symbol: str) -> None:
+    async def cancel_order(self, order_id: str, symbol: str, is_algo: bool = False) -> None:
         try:
-            await self.exchange.cancel_order(order_id, symbol)
+            if is_algo:
+                await self.exchange.request(
+                    "algoOrder",
+                    "fapiPrivate",
+                    "DELETE",
+                    {"symbol": self.exchange.market_id(symbol), "algoId": order_id},
+                )
+            else:
+                await self.exchange.cancel_order(order_id, symbol)
         except Exception as e:
             logger.warning(
                 f"[BinanceExchange] Не удалось отменить ордер {order_id} по {symbol}: {e}"

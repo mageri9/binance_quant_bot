@@ -265,14 +265,16 @@ class TradingEngine:
                 leftover_orders = await self.exchange.get_open_orders(symbol)
                 for o in leftover_orders:
                     try:
-                        await self.exchange.cancel_order(o["id"], symbol)
+                        await self.exchange.cancel_order(
+                            o["id"], symbol, is_algo=o.get("is_algo", False)
+                        )
                     except Exception as cancel_err:
                         logger.warning(
                             f"[TradingEngine] Не удалось отменить повисший ордер {o['id']} по {symbol}: {cancel_err}"
                         )
             except Exception as get_orders_err:
                 logger.error(
-                    f"[TradingEngine] Не удалось получить открытые ордера для отмены по {symbol}: {get_orders_err}"
+                    f"[TradingEngine] Не удалось получить открытые ордера для отмены по {symbol}: {get_ordeмrs_err}"
                 )
 
         exit_price = None
