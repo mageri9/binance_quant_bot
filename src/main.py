@@ -555,10 +555,9 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             f1_delta = decision_f1 - gate_baseline_f1
             f1_delta_sign = "+" if f1_delta >= 0 else ""
             ml_metrics_block = (
-                f"🤖 F1 <code>{decision_f1:.3f}</code> "
-                f"(Δ{f1_delta_sign}{f1_delta:.3f} vs BL <code>{gate_baseline_f1:.3f}</code>) | "
-                f"Acc <code>{lgbm_result['metrics']['accuracy']:.3f}</code> | "
-                f"CV <code>{new_f1:.3f}</code>"
+                f"F1 {decision_f1:.3f} (+{f1_delta:.3f} vs BL {gate_baseline_f1:.3f})\n"
+                f"Acc {lgbm_result['metrics']['accuracy']:.3f}\n"
+                f"CV {new_f1:.3f}"
             )
 
             if decision_f1 <= gate_baseline_f1:
@@ -621,7 +620,6 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     with open(lgbm_result["model_path"], "wb") as f:
                         pickle.dump(artifact, f)
 
-                    msg += f"\n{cal_report}"
                     logger.info(
                         f"[Retrain v{version} - {symbol}] Автокалибровка завершена. SL={best_sl:.1%}, TP={best_tp:.1%}, Horizon={best_hz}"
                     )
@@ -705,7 +703,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     logger.warning(economic_gate_msg)
 
                     reject_header = f"⚠️ {symbol} v{version} → <b>ОТКЛОНЕНА</b> (Economic Gate)\n\n"
-                    reject_msg = reject_header + msg + cal_report + "\n"
+                    reject_msg = reject_header + msg + "\n"
                     if drift_warning:
                         reject_msg += f"{drift_warning}\n"
                     reject_msg += f"Причина: {economic_gate_msg}."

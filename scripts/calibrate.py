@@ -272,11 +272,6 @@ async def get_best_calibration(
         best_sl_value = float(best["sl_pct"])
         best_tp_value = float(best["tp_pct"])
 
-        risk_line = (
-            f"🛡️ SL <code>{best_sl_value:.1%}</code> • "
-            f"TP <code>{best_tp_value:.1%}</code> • "
-            f"HZ <code>{int(best['horizon'])}</code>"
-        )
 
     if honest_metrics["total_trades"] < settings.CALIBRATION_MIN_TRADES:
         logger.warning(
@@ -284,12 +279,25 @@ async def get_best_calibration(
             f"сделок (< {settings.CALIBRATION_MIN_TRADES}) — оценка может быть шумной."
         )
 
+    if is_atr_mode:
+        risk_line = (
+            f"SL {best_sl_value:.2f}×ATR\n"
+            f"TP {best_tp_value:.2f}×ATR\n"
+            f"Горизонт {best['horizon']} свечей"
+        )
+    else:
+        risk_line = (
+            f"SL {best_sl_value:.1%}\n"
+            f"TP {best_tp_value:.1%}\n"
+            f"Горизонт {best['horizon']} свечей"
+        )
+
     report = (
-        f"{risk_line}\n"
-        f"📊 Sharpe <code>{honest_metrics['sharpe_ratio']:.3f}</code> | "
-        f"E[R] <code>{honest_metrics['expectancy']:.3%}</code> | "
-        f"Ret <code>{honest_metrics['total_return']:.1%}</code> "
-        f"(<code>{honest_metrics['total_trades']} сд.</code>)"
+        f"{risk_line}\n\n"
+        f"Sharpe {honest_metrics['sharpe_ratio']:.3f}\n"
+        f"E[R] {honest_metrics['expectancy']:.3%}\n"
+        f"Доходность {honest_metrics['total_return']:.1%} "
+        f"({honest_metrics['total_trades']} сд.)"
     )
 
     return best_sl_value, best_tp_value, int(best["horizon"]), report, honest_metrics
