@@ -1,7 +1,7 @@
 """add transactional outbox event core
 
 Revision ID: m9060803ee89
-Revises: k9060803ee87
+Revises: l9060803ee88
 Create Date: 2026-07-23 02:25:00.000000
 """
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 revision: str = "m9060803ee89"
-down_revision: Union[str, None] = "k9060803ee87"
+down_revision: Union[str, None] = "l9060803ee88"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
