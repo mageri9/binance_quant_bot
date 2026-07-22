@@ -23,6 +23,7 @@ from src.middlewares.logger import LoggerMiddleware
 from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 from src.utils.artifact_paths import get_oos_path
+from src.telegram.formatter import TradingNotification, format_trading_notification
 
 import warnings
 # Подавляем ложные предупреждения scipy-оптимизатора при обучении LogisticRegression
@@ -384,6 +385,9 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     )
 
                     if log_msg:
+                        # TradingEngine emits a contract; Telegram owns the text.
+                        if isinstance(log_msg, TradingNotification):
+                            log_msg = format_trading_notification(log_msg)
                         # Оповещаем администраторов о всех событиях движка
                         for admin_id in settings.ADMIN_IDS:
                             try:

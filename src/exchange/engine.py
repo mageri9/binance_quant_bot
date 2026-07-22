@@ -10,6 +10,8 @@ from src.crud.paper import TradeRepository
 from src.exchange.base import BaseExchange
 from src.risk.engine import RiskDecision, RiskEngine
 from src.risk.kill_switch import KillSwitchManager, KillSwitchState
+from src.telegram.formatter import TradingNotification
+from src.events import EventStore
 
 
 class TradingEngine:
@@ -303,7 +305,7 @@ class TradingEngine:
             logger.critical(f"[TradingEngine] Не записана live-позиция {symbol}: {db_exc}")
 
         warning = " ".join(part for part in (stop_warning, db_warning) if part) or None
-        return _format_position_opened(
+        event = _format_position_opened(
             symbol=symbol,
             side=side,
             price=fill_price,
@@ -313,6 +315,8 @@ class TradingEngine:
             model_id=model_id,
             warning=warning,
         )
+        await self._publish_notification(event, correlation_id)
+        return event
 
     async def _record_order_failure(self, intent, symbol: str, side: str, exc: Exception) -> None:
         try:
@@ -342,14 +346,17 @@ class TradingEngine:
                 update_portfolio=False,
             )
             await self.execution_repo.link_trade(intent, trade.id)
-        return _format_position_closed(
+        event = _format_position_closed(
             symbol=symbol,
             side=side,
             price=price,
             amount=amount,
             pnl=pnl,
             order_id=order.get("order_id") or intent.client_order_id,
+            commissions=order.get("commission"),
         )
+        await self._publish_notification(event, intent.correlation_id)
+        return event
 
     async def _place_protection(
         self,
@@ -555,7 +562,7 @@ class TradingEngine:
                 else (price - active.entry_price) * amount
             )
             await self.repo.close_trade(active, price, pnl)
-            return _format_position_closed(
+            event = _format_position_closed(
                 symbol=symbol,
                 side=side,
                 price=price,
@@ -563,6 +570,8 @@ class TradingEngine:
                 pnl=pnl,
                 order_id="paper",
             )
+            await self._publish_notification(event, str(uuid.uuid4()))
+            return event
 
         trade = await self.repo.create_trade(
             symbol=symbol,
@@ -576,7 +585,7 @@ class TradingEngine:
             environment="paper",
             model_id=model_id,
         )
-        return _format_position_opened(
+        event = _format_position_opened(
             symbol=symbol,
             side=side,
             price=price,
@@ -585,6 +594,8 @@ class TradingEngine:
             order_id=f"paper-{trade.id}",
             model_id=model_id,
         )
+        await self._publish_notification(event, str(uuid.uuid4()))
+        return event
 
     async def check_and_close_positions(self, symbol: str) -> str | None:
         """Legacy polling fallback; reconciliation is the primary live synchronizer."""
@@ -616,7 +627,7 @@ class TradingEngine:
             else (exit_price - trade.entry_price) * trade.amount
         )
         await self.repo.close_trade(trade, exit_price, pnl, update_portfolio=False)
-        return _format_position_closed(
+        event = _format_position_closed(
             symbol=symbol,
             side="buy" if trade.is_short else "sell",
             price=exit_price,
@@ -624,6 +635,33 @@ class TradingEngine:
             pnl=pnl,
             order_id=trade.exit_order_id or "reconciled",
         )
+        await self._publish_notification(event, str(uuid.uuid4()))
+        return event
+
+    async def _publish_notification(
+        self, event: TradingNotification, correlation_id: str
+    ) -> None:
+        """Persist a transport-neutral business event before Telegram consumes it."""
+        EventStore(self.session).append(
+            "PositionOpened" if event.kind == "position_opened" else "PositionClosed",
+            {
+                "kind": event.kind,
+                "symbol": event.symbol,
+                "side": event.side,
+                "amount": str(event.amount),
+                "price": str(event.price),
+                "order_id": event.order_id,
+                "model_id": event.model_id,
+                "confidence": event.confidence,
+                "sl_ok": event.sl_ok,
+                "tp_ok": event.tp_ok,
+                "realized_pnl": str(event.realized_pnl) if event.realized_pnl is not None else None,
+                "commissions": str(event.commissions) if event.commissions is not None else None,
+                "exit_reason": event.exit_reason,
+            },
+            correlation_id=correlation_id,
+        )
+        await self.session.commit()
 
 
 def _get_execution_mode(settings) -> str:
@@ -748,4 +786,31 @@ def _format_position_closed(
         f"Исполнено: <code>{amount:.6f}</code> @ <code>{price:.2f}$</code>\n"
         f"Сторона закрытия: <code>{side.upper()}</code>"
         f"{pnl_line}\nОрдер: <code>{order_id}</code>"
+    )
+
+
+# The legacy string helpers remain above for compatibility with old imports.
+# These definitions make all new engine notifications structured contracts.
+def _format_position_opened(
+    *, symbol: str, side: str, price: float, amount: float, protection: str,
+    order_id: str, model_id: str | None, warning: str | None = None,
+) -> TradingNotification:
+    del warning
+    parts = protection.split("·")
+    return TradingNotification(
+        kind="position_opened", symbol=symbol, side=side, amount=amount,
+        price=price, order_id=str(order_id), model_id=model_id,
+        sl_ok="✅" in parts[0], tp_ok="✅" in parts[-1],
+    )
+
+
+def _format_position_closed(
+    *, symbol: str, side: str, price: float, amount: float,
+    pnl: float | None, order_id: str, commissions: float | None = None,
+) -> TradingNotification:
+    return TradingNotification(
+        kind="position_closed", symbol=symbol, side=side, amount=amount,
+        price=price, order_id=str(order_id), realized_pnl=pnl,
+        commissions=commissions,
+        exit_reason="signal/reconciliation",
     )

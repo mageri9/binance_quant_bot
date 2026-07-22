@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 from src.exchange.engine import TradingEngine
 from src.risk.engine import RiskEngine
 from src.risk.kill_switch import KillSwitchManager
+from src.db.models import OutboxEvent
+from src.telegram.formatter import TradingNotification
+from sqlalchemy import select
 
 
 class FakeRedis:
@@ -48,6 +51,29 @@ async def test_trading_engine_shadow_trading(temp_db_session):
     assert "SHADOW" in msg
     assert "не отправлялся на биржу" in msg
     mock_exchange.create_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paper_fill_publishes_structured_position_event(temp_db_session):
+    redis = FakeRedis()
+    settings = MagicMock()
+    settings.TRADING_MODE = "paper"
+    settings.PAPER_RISK_PCT = 0.10
+    settings.PAPER_SL_PCT = 0.02
+    settings.PAPER_TP_PCT = 0.04
+
+    engine = TradingEngine(
+        exchange=AsyncMock(), risk_engine=RiskEngine(),
+        kill_switch_manager=KillSwitchManager(redis), session=temp_db_session,
+        settings=settings,
+    )
+
+    event = await engine.process_signal("BTC/USDT", signal=1, latest_close=100.0)
+
+    assert isinstance(event, TradingNotification)
+    assert event.kind == "position_opened"
+    outbox = (await temp_db_session.execute(select(OutboxEvent))).scalars().all()
+    assert any(row.event_type == "PositionOpened" for row in outbox)
 
 
 @pytest.mark.asyncio

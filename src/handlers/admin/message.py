@@ -14,6 +14,7 @@ from redis.asyncio import Redis
 from src.crud.user import UserRepository
 from src.filters.check_admin import IsAdmin
 from src.risk import KillSwitchManager
+import src.keyboards.user as user_kb
 
 router = Router()
 
@@ -41,6 +42,7 @@ def get_risk_keyboard() -> InlineKeyboardMarkup:
 
 
 async def admin_handler(message: Message):
+    admin_keyboard = user_kb.admin_menu()
     await message.answer(
         f"👑 Привет, {html.escape(message.from_user.full_name)}!\n\n"
         f"Команды:\n"
@@ -48,6 +50,8 @@ async def admin_handler(message: Message):
         f"/risk — панель безопасности (SRE Kill Switch)\n"
         f"/broadcast — рассылка сообщений всем пользователям\n"
         f"/cancel — отмена текущего действия"
+        ,
+        reply_markup=admin_keyboard,
     )
 
 
