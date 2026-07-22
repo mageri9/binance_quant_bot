@@ -87,6 +87,14 @@ def _rotate_backups(os_dir: str, clean_symbol: str, clean_tf: str, keep_count: i
 
 
 nexus = None  # Инициализация для предотвращения NameError в on_shutdown
+background_tasks: set[asyncio.Task] = set()
+
+
+def _start_background_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    return task
 
 # Мягкая SRE интеграция
 try:
@@ -287,9 +295,8 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
     from src.crud.kline import KlineRepository
 
     # Новые импорты SRE контура
-    from src.exchange.binance import BinanceExchange
     from src.risk.engine import RiskEngine
-    from src.risk.kill_switch import KillSwitchManager, KillSwitchState, reconcile_positions
+    from src.risk.kill_switch import KillSwitchManager
 
     settings = get_settings()
     model_path = settings.get_model_path(symbol, timeframe)
@@ -301,8 +308,9 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
 
             async with AsyncSessionFactory() as session:
                 # 1. Скачиваем свечи (всегда полезно иметь актуальную историю для ML)
-                async with DataCollector(session) as collector:
-                    await collector.fetch_and_save_klines(symbol, timeframe, limit=5)
+                if settings.LIVE_TRADING:
+                    async with DataCollector(session) as collector:
+                        await collector.fetch_and_save_klines(symbol, timeframe, limit=5)
 
                 # 2. Инициализируем SRE менеджеры и проверяем блокировку перед обращением к бирже
                 redis = await get_redis()
@@ -315,11 +323,14 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                 risk_engine = RiskEngine()
 
                 # Безальтернативная инициализация коннектора Binance фьючерсов
-                exchange = BinanceExchange(
-                    api_key=settings.BINANCE_API_KEY,
-                    secret=settings.BINANCE_API_SECRET,
-                    testnet=(settings.TRADING_MODE == "testnet"),
-                )
+                exchange = None
+                if settings.LIVE_TRADING:
+                    from src.exchange.binance import BinanceExchange
+                    exchange = BinanceExchange(
+                        api_key=settings.BINANCE_API_KEY,
+                        secret=settings.BINANCE_API_SECRET,
+                        testnet=settings.BINANCE_TESTNET,
+                    )
 
                 from src.exchange.engine import TradingEngine
 
@@ -332,37 +343,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                 )
 
                 try:
-                    # 2.5. Синхронизируем закрытие живых позиций (SL/TP на бирже)
-                    close_msg = await trading_engine.check_and_close_positions(symbol)
-                    if close_msg:
-                        for admin_id in settings.ADMIN_IDS:
-                            try:
-                                await bot.send_message(chat_id=admin_id, text=close_msg)
-                            except Exception as e:
-                                logger.error(
-                                    f"Не удалось отправить лог о закрытии позиции админу: {e}"
-                                )
-
-                    # 3. Сверка позиций перед раундом (Биржа — источник истины)
-                    symbols_to_sync = [config[0] for config in settings.ACTIVE_CONFIGS]
-                    synced, error_details = await reconcile_positions(
-                        exchange, session, symbols_to_sync, kill_switch
-                    )
-
-                    if not synced:
-                        alert_msg = (
-                            f"🚨 [SRE RECONCILE ERROR] Обнаружена рассинхронизация позиций!\n"
-                            f"Бот заблокирован в SAFE_MODE.\n"
-                            f"<code>{error_details}</code>"
-                        )
-                        # Избегаем дублирования одинаковых сообщений в Telegram, если бот уже в аварийном статусе
-                        state, _, _ = await kill_switch.get_state()
-                        if state != KillSwitchState.SAFE_MODE:
-                            for admin_id in settings.ADMIN_IDS:
-                                await bot.send_message(chat_id=admin_id, text=alert_msg)
-                        continue
-
-                    # 4. Проверяем Kill Switch перед генерацией сигналов
+                    # Reconciliation работает централизованно отдельной фоновой задачей.
                     if await kill_switch.is_trading_blocked():
                         continue
 
@@ -392,7 +373,14 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
 
                     # 6. Запускаем торговый движок (создан выше, в шаге 2.5)
                     log_msg = await trading_engine.process_signal(
-                        symbol, signal, latest_close
+                        symbol,
+                        signal,
+                        latest_close,
+                        model_id=predictor.model_id,
+                        idempotency_key=(
+                            f"{predictor.model_id}:{symbol}:{timeframe}:"
+                            f"{int(df['open_time'].iloc[-1])}:{signal}"
+                        ),
                     )
 
                     if log_msg:
@@ -405,12 +393,131 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
 
                 finally:
                     # Закрываем асинхронную сессию CCXT
-                    if hasattr(exchange, "close"):
+                    if exchange is not None and hasattr(exchange, "close"):
                         await exchange.close()
 
         except Exception as e:
             logger.error(f"Ошибка в цикле торговли для {symbol}: {e}")
             await asyncio.sleep(60)
+
+
+async def account_reconciliation_loop(bot: Bot) -> None:
+    """Continuously projects Binance account state into the local ledger."""
+    settings = get_settings()
+    if not settings.LIVE_TRADING:
+        logger.info(
+            f"Account reconciliation не запускается в режиме {settings.TRADING_MODE}."
+        )
+        return
+
+    from src.exchange.binance import BinanceExchange
+    from src.risk.kill_switch import KillSwitchManager, KillSwitchState, reconcile_positions
+
+    exchange = BinanceExchange(
+        api_key=settings.BINANCE_API_KEY,
+        secret=settings.BINANCE_API_SECRET,
+        testnet=settings.BINANCE_TESTNET,
+    )
+    redis = await get_redis()
+    kill_switch = KillSwitchManager(redis)
+    symbols = [symbol for symbol, _ in settings.ACTIVE_CONFIGS]
+
+    try:
+        while True:
+            try:
+                async with AsyncSessionFactory() as session:
+                    synced, details = await reconcile_positions(
+                        exchange,
+                        session,
+                        symbols,
+                        kill_switch,
+                        environment=settings.TRADING_MODE,
+                        verify_protection=True,
+                    )
+                if not synced:
+                    alert_hash = str(hash(details))
+                    previous = await redis.get("marketmind:reconciliation:last_alert")
+                    if previous != alert_hash:
+                        await redis.set(
+                            "marketmind:reconciliation:last_alert",
+                            alert_hash,
+                            ex=300,
+                        )
+                        message = (
+                            "🚨 <b>RECONCILIATION · SAFE MODE</b>\n\n"
+                            f"<code>{details}</code>"
+                        )
+                        for admin_id in settings.ADMIN_IDS:
+                            await bot.send_message(chat_id=admin_id, text=message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception(f"Ошибка account reconciliation: {exc}")
+            await asyncio.sleep(settings.RECONCILIATION_INTERVAL_SECONDS)
+    finally:
+        await exchange.close()
+
+
+async def binance_user_data_loop(bot: Bot) -> None:
+    """Primary live-state feed; REST reconciliation remains a control snapshot."""
+    settings = get_settings()
+    if not settings.LIVE_TRADING:
+        return
+
+    from src.crud.execution import ExecutionRepository
+    from src.exchange.binance import BinanceExchange
+    from src.risk.kill_switch import KillSwitchManager, KillSwitchState, reconcile_positions
+
+    exchange = BinanceExchange(
+        api_key=settings.BINANCE_API_KEY,
+        secret=settings.BINANCE_API_SECRET,
+        testnet=settings.BINANCE_TESTNET,
+    )
+    redis = await get_redis()
+    kill_switch = KillSwitchManager(redis)
+    symbols = [symbol for symbol, _ in settings.ACTIVE_CONFIGS]
+
+    try:
+        async for event in exchange.user_data_stream():
+            try:
+                if event.get("e") == "_STREAM_RECONNECTED":
+                    async with AsyncSessionFactory() as session:
+                        await reconcile_positions(
+                            exchange,
+                            session,
+                            symbols,
+                            kill_switch,
+                            environment=settings.TRADING_MODE,
+                            verify_protection=True,
+                        )
+                    continue
+
+                async with AsyncSessionFactory() as session:
+                    result = await ExecutionRepository(session).apply_user_stream_event(
+                        settings.TRADING_MODE, event
+                    )
+                    if result["order_changed"] or result["symbols"]:
+                        # An event is authoritative for fills; the REST call is
+                        # a targeted control check for position/protection drift.
+                        await reconcile_positions(
+                            exchange,
+                            session,
+                            symbols,
+                            kill_switch,
+                            environment=settings.TRADING_MODE,
+                            verify_protection=True,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception(f"Ошибка обработки Binance User Data Stream: {exc}")
+                await kill_switch.set_state(
+                    KillSwitchState.SAFE_MODE,
+                    "USER_STREAM_EVENT_FAILED",
+                    str(exc),
+                )
+    finally:
+        await exchange.close()
 
 
 _TRAIN_SEMAPHORE = asyncio.Semaphore(1)
@@ -795,13 +902,21 @@ async def on_startup(bot: Bot):
         logger.info(
             f"[*] Запуск фоновых процессов параллельно для {symbol} ({timeframe})"
         )
-        asyncio.create_task(paper_trading_loop(bot, symbol, timeframe))
-        asyncio.create_task(retrain_loop(bot, symbol, timeframe))
+        _start_background_task(paper_trading_loop(bot, symbol, timeframe))
+        _start_background_task(retrain_loop(bot, symbol, timeframe))
+    _start_background_task(account_reconciliation_loop(bot))
+    _start_background_task(binance_user_data_loop(bot))
 
 
 async def on_shutdown(bot: Bot):
     global nexus
     logger.info("Shutting down...")
+
+    tasks = list(background_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     if NEXUS_AVAILABLE and nexus:
         try:

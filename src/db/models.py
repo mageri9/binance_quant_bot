@@ -1,6 +1,18 @@
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, DateTime, String, func, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.core.db import Base
@@ -70,9 +82,9 @@ class Portfolio(Base):
     __tablename__ = "portfolios"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    balance: Mapped[float] = mapped_column(default=10000.0, nullable=False)
-    cash: Mapped[float] = mapped_column(default=10000.0, nullable=False)
-    positions_value: Mapped[float] = mapped_column(default=0.0, nullable=False)
+    balance: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=Decimal("10000"), nullable=False)
+    cash: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=Decimal("10000"), nullable=False)
+    positions_value: Mapped[Decimal] = mapped_column(Numeric(38, 18), default=Decimal("0"), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -84,21 +96,190 @@ class Trade(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(10), default="OPEN", nullable=False)
-    entry_price: Mapped[float] = mapped_column(nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
     entry_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    exit_price: Mapped[float] = mapped_column(nullable=True)
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
     exit_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    amount: Mapped[float] = mapped_column(nullable=False)  # купленное количество монет
-    sl_price: Mapped[float] = mapped_column(nullable=True)
-    tp_price: Mapped[float] = mapped_column(nullable=True)
-    pnl: Mapped[float] = mapped_column(nullable=True)      # профит / лосс в долларах
+    amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    sl_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    tp_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    pnl: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
     entry_candle_time: Mapped[int] = mapped_column(BigInteger, nullable=False)
     is_short: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="0")
     timeout_candle_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(20), default="paper", server_default="paper", nullable=False
+    )
+    # A paper projection and a live projection may coexist for the same symbol.
+    environment: Mapped[str] = mapped_column(
+        String(20), default="paper", server_default="paper", nullable=False, index=True
+    )
+    client_order_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exit_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class OrderIntent(Base):
+    """Durable intent written before any private exchange request."""
+
+    __tablename__ = "order_intents"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    client_order_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    purpose: Mapped[str] = mapped_column(
+        String(24), default="ENTRY", server_default="ENTRY", nullable=False
+    )
+    parent_intent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("order_intents.id"), nullable=True
+    )
+    reduce_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), default="PENDING", server_default="PENDING", nullable=False, index=True
+    )
+    requested_amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    requested_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    filled_amount: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    average_fill_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(38, 18), nullable=True
+    )
+    commission: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    commission_asset: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    exchange_order_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    raw_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prediction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("prediction_logs.id"), nullable=True
+    )
+    trade_id: Mapped[int | None] = mapped_column(ForeignKey("trades.id"), nullable=True)
+    sl_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    tp_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exchange_update_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class ExchangeFill(Base):
+    __tablename__ = "exchange_fills"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    fill_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    exchange_trade_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exchange_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    commission: Mapped[Decimal] = mapped_column(
+        Numeric(38, 18), default=0, server_default="0", nullable=False
+    )
+    commission_asset: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    exchange_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    raw_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class PositionSnapshot(Base):
+    __tablename__ = "position_snapshots"
+    __table_args__ = (
+        UniqueConstraint("environment", "symbol", name="uq_position_environment_symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    side: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    entry_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    mark_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    leverage: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    exchange_update_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    raw_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reconciled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class BalanceSnapshot(Base):
+    """Exchange-reported futures balance; never derived from local trade cost."""
+
+    __tablename__ = "balance_snapshots"
+    __table_args__ = (
+        UniqueConstraint("environment", "asset", name="uq_balance_environment_asset"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    asset: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    wallet_balance: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    available_balance: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    cross_wallet_balance: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    update_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    raw_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reconciled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ExchangeEvent(Base):
+    """Idempotent event inbox for the Binance User Data Stream."""
+
+    __tablename__ = "exchange_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_key: Mapped[str] = mapped_column(String(160), unique=True, nullable=False)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    event_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class ReconciliationRun(Base):
+    __tablename__ = "reconciliation_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    actions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class PredictionLog(Base):

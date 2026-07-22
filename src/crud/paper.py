@@ -1,6 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone
+from decimal import Decimal
 from weakref import WeakKeyDictionary
 import asyncio
 
@@ -78,7 +79,7 @@ class TradeRepository:
 
                 if not portfolio:
                     portfolio = Portfolio(
-                        balance=10000.0, cash=10000.0, positions_value=0.0
+                        balance=Decimal("10000"), cash=Decimal("10000"), positions_value=Decimal("0")
                     )
                     self.session.add(portfolio)
                     await self.session.commit()
@@ -89,17 +90,19 @@ class TradeRepository:
 
         return portfolio
 
-    async def get_all_open_trades(self) -> list[Trade]:
+    async def get_all_open_trades(self, environment: str | None = None) -> list[Trade]:
         """Возвращает все открытые сделки"""
         stmt = (
             select(Trade)
             .where(Trade.status == "OPEN")
             .order_by(Trade.entry_candle_time)
         )
+        if environment is not None:
+            stmt = stmt.where(Trade.environment == environment)
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
 
-    async def get_active_trade(self, symbol: str) -> Trade | None:
+    async def get_active_trade(self, symbol: str, environment: str | None = None) -> Trade | None:
         """
         Возвращает текущую открытую сделку по паре.
         """
@@ -108,6 +111,8 @@ class TradeRepository:
             .where(Trade.symbol == symbol, Trade.status == "OPEN")
             .limit(1)
         )
+        if environment is not None:
+            stmt = stmt.where(Trade.environment == environment)
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
 
@@ -121,25 +126,36 @@ class TradeRepository:
         entry_candle_time: int,
         is_short: bool = False,
         timeout_candle_time: int | None = None,
+        source: str = "paper",
+        environment: str = "paper",
+        client_order_id: str | None = None,
+        entry_order_id: str | None = None,
+        model_id: str | None = None,
+        update_portfolio: bool = True,
     ) -> Trade:
         """
         Открывает новую сделку и фиксирует изменения в локальном кэше баланса.
         Выполняется строго под реентерабельным локом портфеля.
         """
         async with _get_portfolio_lock():
-            existing = await self.get_active_trade(symbol)
+            entry_price = Decimal(str(entry_price))
+            amount = Decimal(str(amount))
+            sl_price = Decimal(str(sl_price)) if sl_price is not None else None
+            tp_price = Decimal(str(tp_price)) if tp_price is not None else None
+            existing = await self.get_active_trade(symbol, environment)
             if existing is not None:
                 raise ValueError(
                     f"Попытка открыть вторую позицию по {symbol} при уже открытой "
                     f"сделке id={existing.id}. Операция отклонена."
                 )
 
-            portfolio = await self.get_portfolio()
-            cost = entry_price * amount
+            if update_portfolio:
+                portfolio = await self.get_portfolio()
+                cost = entry_price * amount
 
-            portfolio.cash -= cost
-            portfolio.positions_value += cost
-            portfolio.balance = portfolio.cash + portfolio.positions_value
+                portfolio.cash -= cost
+                portfolio.positions_value += cost
+                portfolio.balance = portfolio.cash + portfolio.positions_value
 
             trade = Trade(
                 symbol=symbol,
@@ -151,6 +167,14 @@ class TradeRepository:
                 entry_candle_time=entry_candle_time,
                 is_short=is_short,
                 timeout_candle_time=timeout_candle_time,
+                source=source,
+                environment=environment,
+                client_order_id=client_order_id,
+                entry_order_id=entry_order_id,
+                model_id=model_id,
+                last_reconciled_at=datetime.now(timezone.utc)
+                if source == "binance"
+                else None,
             )
             self.session.add(trade)
             await self.session.commit()
@@ -158,13 +182,21 @@ class TradeRepository:
             return trade
 
     async def close_trade(
-        self, trade: Trade, exit_price: float, pnl: float
+        self,
+        trade: Trade,
+        exit_price: float,
+        pnl: float,
+        *,
+        exit_order_id: str | None = None,
+        update_portfolio: bool = True,
     ) -> None:
         """
         Закрывает сделку, возвращает кэш обратно на баланс и фиксирует финансовый результат.
         Выполняется строго под реентерабельным локом портфеля с проверкой идемпотентности.
         """
         async with _get_portfolio_lock():
+            exit_price = Decimal(str(exit_price))
+            pnl = Decimal(str(pnl)) if pnl is not None else None
             # Защита от повторного закрытия (идемпотентность)
             if trade.status != "OPEN":
                 from loguru import logger
@@ -177,25 +209,29 @@ class TradeRepository:
             trade.exit_price = exit_price
             trade.exit_time = datetime.now(timezone.utc)
             trade.pnl = pnl
+            trade.exit_order_id = exit_order_id
+            if trade.source == "binance":
+                trade.last_reconciled_at = datetime.now(timezone.utc)
 
-            portfolio = await self.get_portfolio()
+            if update_portfolio:
+                portfolio = await self.get_portfolio()
 
-            # Получаем стоимость позиции
-            position_value = trade.entry_price * trade.amount
+                # Получаем стоимость позиции
+                position_value = trade.entry_price * trade.amount
 
-            # Возвращаем стоимость позиции и прибавляем PnL
-            portfolio.cash += position_value + pnl
+                # Возвращаем стоимость позиции и прибавляем PnL
+                portfolio.cash += position_value + pnl
 
-            # Убираем стоимость позиции
-            portfolio.positions_value -= position_value
+                # Убираем стоимость позиции
+                portfolio.positions_value -= position_value
 
-            # Обновляем баланс
-            portfolio.balance = portfolio.cash + portfolio.positions_value
+                # Обновляем баланс
+                portfolio.balance = portfolio.cash + portfolio.positions_value
 
             await self.session.commit()
 
     async def get_closed_trades(
-        self, symbol: str, limit: int = 500
+        self, symbol: str, limit: int = 500, environment: str | None = None
     ) -> list[Trade]:
         """
         Возвращает историю закрытых сделок по паре (от старых к новым).
@@ -206,6 +242,8 @@ class TradeRepository:
             .order_by(Trade.entry_candle_time.desc())
             .limit(limit)
         )
+        if environment is not None:
+            stmt = stmt.where(Trade.environment == environment)
         res = await self.session.execute(stmt)
         return list(reversed(res.scalars().all()))
 

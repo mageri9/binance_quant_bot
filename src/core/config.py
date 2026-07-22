@@ -2,7 +2,7 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -34,10 +34,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_PERIOD: int = 10  # seconds
 
     # Logging
-    LOG_LEVEL: str = "INFO"
+    LOG_LEVEL: str = "DEBUG"
 
     # Retraining
     RETRAIN_INTERVAL_SECONDS: int = 21600  # 4 раза в сутки
+    RECONCILIATION_INTERVAL_SECONDS: int = 30
     MIN_KLINES_FOR_TRAIN: int = 8000
     TRAIN_SIZE: int = 3500
     TEST_SIZE: int = 300
@@ -76,11 +77,11 @@ class Settings(BaseSettings):
     CALIBRATION_MIN_TRADES: int = 10
 
     # Trading Mode
-    TRADING_MODE: Literal["testnet", "mainnet"]
+    TRADING_MODE: Literal["paper", "shadow", "testnet", "mainnet"]
 
     # Binance API
-    BINANCE_API_KEY: str
-    BINANCE_API_SECRET: str
+    BINANCE_API_KEY: str = ""
+    BINANCE_API_SECRET: str = ""
     BINANCE_PROXY: str = ""
 
     META_LABELING_ENABLED: bool = True
@@ -111,17 +112,26 @@ class Settings(BaseSettings):
             return json.loads(v)
         return v
 
-    @field_validator("BINANCE_API_KEY", "BINANCE_API_SECRET", mode="before")
-    @classmethod
-    def validate_api_keys(cls, v):
-        if isinstance(v, str) and not v.strip():
-            raise ValueError("Binance API Key и Secret не могут быть пустыми.")
-        return v
+    @model_validator(mode="after")
+    def validate_live_api_keys(self):
+        if self.TRADING_MODE in {"testnet", "mainnet"}:
+            if not self.BINANCE_API_KEY.strip() or not self.BINANCE_API_SECRET.strip():
+                raise ValueError(
+                    "Binance API Key и Secret обязательны для testnet/mainnet."
+                )
+        return self
 
     @property
     def SHADOW_TRADING(self) -> bool:
-        # Временная совместимость до удаления в квестах 7/8
-        return False
+        return self.TRADING_MODE == "shadow"
+
+    @property
+    def LIVE_TRADING(self) -> bool:
+        return self.TRADING_MODE in {"testnet", "mainnet"}
+
+    @property
+    def BINANCE_TESTNET(self) -> bool:
+        return self.TRADING_MODE != "mainnet"
 
     @property
     def db_url(self) -> str:

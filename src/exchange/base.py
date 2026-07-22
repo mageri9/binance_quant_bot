@@ -37,11 +37,15 @@ class BaseExchange(ABC):
         order_type: str,
         amount: float,
         price: float | None = None,
+        client_order_id: str | None = None,
+        reduce_only: bool = False,
     ) -> dict:
         """
         Отправляет ордер на покупку/продажу.
         :param side: 'buy' или 'sell'
         :param order_type: 'market' или 'limit'
+        :param client_order_id: стабильный ключ идемпотентности клиента
+        :param reduce_only: ордер может только уменьшить существующую позицию
         """
         pass
 
