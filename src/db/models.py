@@ -186,7 +186,7 @@ class OrderIntent(Base):
 
 
 class ExchangeFill(Base):
-    __tablename__ = "exchange_fills"
+    __tablename__ = "fills"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     fill_key: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
@@ -280,6 +280,71 @@ class ReconciliationRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ExchangeOrder(Base):
+    """Latest exchange order projection, keyed by Binance's order identifier."""
+
+    __tablename__ = "exchange_orders"
+    __table_args__ = (
+        UniqueConstraint("environment", "binance_order_id", name="uq_exchange_order_environment_binance_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_intent_id: Mapped[int | None] = mapped_column(ForeignKey("order_intents.id"), nullable=True)
+    environment: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    binance_order_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    client_order_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    raw_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    exchange_update_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class OutboxEvent(Base):
+    """Append-only transactional outbox for in-process consumers and future transports."""
+
+    __tablename__ = "outbox_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    causation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    payload_version: Mapped[int] = mapped_column(default=1, nullable=False)
+    binance_event_id: Mapped[str | None] = mapped_column(String(160), unique=True, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    attempts: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProcessedEvent(Base):
+    """Consumer inbox used to make projections idempotent."""
+
+    __tablename__ = "processed_events"
+    __table_args__ = (UniqueConstraint("consumer", "event_id", name="uq_processed_event_consumer_event"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    consumer: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ModelDeployment(Base):
+    __tablename__ = "model_deployments"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    model_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    artifact_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class PredictionLog(Base):

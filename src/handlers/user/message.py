@@ -1,5 +1,6 @@
 import html
 import os
+from decimal import Decimal
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
@@ -54,7 +55,7 @@ async def status_handler(message: Message, session: AsyncSession):
 
     active_trades_text = ""
     has_any_active = False
-    total_positions_value = 0.0
+    total_positions_value = Decimal("0")
     flat_inactive_symbols = []
 
     for symbol, timeframe in settings.ACTIVE_CONFIGS:
@@ -69,7 +70,8 @@ async def status_handler(message: Message, session: AsyncSession):
 
             current_price_str = ""
             if klines:
-                current_close = klines[0].close
+                # Trade financials are Decimal; normalize candle data before arithmetic.
+                current_close = Decimal(str(klines[0].close))
 
                 if is_short:
                     unrealized_pnl = (

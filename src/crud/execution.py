@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.models import (
     ExchangeFill,
     ExchangeEvent,
+    ExchangeOrder,
     BalanceSnapshot,
     OrderIntent,
     PositionSnapshot,
     ReconciliationRun,
 )
+from src.events import EventStore
 
 
 def as_decimal(value: Any) -> Decimal | None:
@@ -85,6 +87,11 @@ class ExecutionRepository:
             prediction_id=prediction_id,
         )
         self.session.add(intent)
+        EventStore(self.session).append(
+            "OrderRequested",
+            _intent_payload(intent),
+            correlation_id=correlation_id,
+        )
         await self.session.commit()
         await self.session.refresh(intent)
         return intent, True
@@ -120,13 +127,55 @@ class ExecutionRepository:
             intent.filled_at = now
         intent.error = None
 
+        await self._record_order_projection(intent, order)
+        self._append_order_event(intent, order)
+
         await self.session.commit()
         await self.session.refresh(intent)
         return intent
 
+    async def _record_order_projection(self, intent: OrderIntent, order: dict) -> None:
+        binance_order_id = _string_or_none(order.get("order_id"))
+        if not binance_order_id:
+            return
+        result = await self.session.execute(
+            select(ExchangeOrder).where(
+                ExchangeOrder.environment == intent.environment,
+                ExchangeOrder.binance_order_id == binance_order_id,
+            )
+        )
+        projection = result.scalar_one_or_none()
+        if projection is None:
+            projection = ExchangeOrder(
+                environment=intent.environment,
+                binance_order_id=binance_order_id,
+                symbol=intent.symbol,
+                status=intent.status,
+            )
+            self.session.add(projection)
+        projection.order_intent_id = intent.id
+        projection.client_order_id = intent.client_order_id
+        projection.status = intent.status
+        projection.exchange_update_time = intent.exchange_update_time
+        projection.raw_payload = json_safe(order.get("raw") or order)
+
+    def _append_order_event(self, intent: OrderIntent, order: dict) -> None:
+        event_type = _order_event_type(intent.status)
+        if event_type is None:
+            return
+        EventStore(self.session).append(
+            event_type,
+            _intent_payload(intent),
+            correlation_id=intent.correlation_id,
+            binance_event_id=_string_or_none(order.get("event_id")),
+        )
+
     async def mark_failed(self, intent: OrderIntent, error: str) -> None:
         intent.status = "FAILED"
         intent.error = error
+        EventStore(self.session).append(
+            "OrderRejected", _intent_payload(intent), correlation_id=intent.correlation_id
+        )
         await self.session.commit()
 
     async def mark_submitted(self, intent: OrderIntent) -> None:
@@ -134,6 +183,9 @@ class ExecutionRepository:
         intent.status = "SUBMITTED"
         intent.submitted_at = intent.submitted_at or datetime.now(timezone.utc)
         intent.error = None
+        EventStore(self.session).append(
+            "OrderAccepted", _intent_payload(intent), correlation_id=intent.correlation_id
+        )
         await self.session.commit()
 
     async def mark_submission_uncertain(self, intent: OrderIntent, error: str) -> None:
@@ -353,6 +405,11 @@ class ExecutionRepository:
         intent.exchange_update_time = int(order_time) if order_time is not None else None
         if normalized == "FILLED":
             intent.filled_at = datetime.now(timezone.utc)
+        await self._record_order_projection(intent, {
+            "order_id": order.get("i"), "event_id": _event_key(environment, payload),
+            "raw": payload,
+        })
+        self._append_order_event(intent, {"event_id": _event_key(environment, payload)})
         await self.session.commit()
 
         last_amount = as_decimal(order.get("l")) or Decimal("0")
@@ -463,3 +520,25 @@ def _canonical_symbol(symbol: str) -> str:
     if symbol.endswith("USDT"):
         return f"{symbol[:-4]}/USDT"
     return symbol
+
+
+def _order_event_type(status: str) -> str | None:
+    return {
+        "SUBMITTED": "OrderAccepted",
+        "PARTIALLY_FILLED": "OrderPartiallyFilled",
+        "FILLED": "OrderFilled",
+        "REJECTED": "OrderRejected",
+    }.get(status)
+
+
+def _intent_payload(intent: OrderIntent) -> dict[str, Any]:
+    return {
+        "order_intent_id": intent.id,
+        "client_order_id": intent.client_order_id,
+        "environment": intent.environment,
+        "symbol": intent.symbol,
+        "side": intent.side,
+        "status": intent.status,
+        "exchange_order_id": intent.exchange_order_id,
+        "filled_amount": str(intent.filled_amount) if intent.filled_amount is not None else None,
+    }

@@ -18,7 +18,8 @@ def calculate_strategy_metrics(trades: list[float]) -> dict:
             "total_return": 0.0,
         }
 
-    trades_arr = np.array(trades)
+    # Database financial fields use Decimal, while NumPy metrics are float-domain.
+    trades_arr = np.asarray(trades, dtype=float)
 
     total_trades = len(trades_arr)
     wins = trades_arr[trades_arr > 0]
@@ -52,7 +53,7 @@ def calculate_strategy_metrics(trades: list[float]) -> dict:
     # 6. Расчет кривой капитала (Equity) и Максимальной Просадки (Max Drawdown)
     # Начинаем с баланса 1.0 (100%)
     equity_curve = [1.0]
-    for r in trades:
+    for r in trades_arr:
         equity_curve.append(equity_curve[-1] * (1.0 + r))
 
     equity_curve = np.array(equity_curve)
