@@ -6,6 +6,9 @@ from sklearn.metrics import precision_score, recall_score
 
 
 META_BASE_FEATURES = ["adx", "atr_pct", "volume_ratio", "volatility"]
+PRIMARY_OOF_FOLD_COLUMN = "primary_oof_fold"
+PRIMARY_TRAIN_END_COLUMN = "primary_train_end_idx"
+PRIMARY_OOF_ROW_COLUMN = "primary_oof_row_idx"
 
 
 def build_meta_dataset(
@@ -50,6 +53,51 @@ def build_meta_dataset(
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def build_cross_fitted_meta_dataset(
+    primary_oof: pd.DataFrame,
+    predicted_col: str = "predicted_signal",
+    transaction_cost: float = 0.001,
+    drift_pvalue: float | None = None,
+) -> pd.DataFrame:
+    """Build meta labels exclusively from primary-model out-of-fold predictions.
+
+    Meta-labeling is a trade selector, not a new alpha source.  Each candidate
+    signal must therefore have been emitted by a primary model trained strictly
+    before its OOS row.  The walk-forward trainer writes this provenance into
+    the frame; rejecting an unprovenanced frame makes accidental in-sample
+    primary predictions impossible to feed into the secondary model.
+    """
+    required = {
+        PRIMARY_OOF_FOLD_COLUMN,
+        PRIMARY_TRAIN_END_COLUMN,
+        PRIMARY_OOF_ROW_COLUMN,
+    }
+    missing = required - set(primary_oof.columns)
+    if missing:
+        raise ValueError(f"primary_oof lacks cross-fitted provenance: {missing}")
+
+    if primary_oof.empty:
+        return build_meta_dataset(
+            primary_oof, predicted_col=predicted_col,
+            transaction_cost=transaction_cost, drift_pvalue=drift_pvalue,
+        )
+
+    row_positions = pd.to_numeric(primary_oof[PRIMARY_OOF_ROW_COLUMN], errors="coerce")
+    train_end = pd.to_numeric(primary_oof[PRIMARY_TRAIN_END_COLUMN], errors="coerce")
+    invalid_provenance = (
+        row_positions.isna().any()
+        or train_end.isna().any()
+        or (train_end >= row_positions).any()
+    )
+    if invalid_provenance:
+        raise ValueError("primary_oof contains a non-cross-fitted primary prediction")
+
+    return build_meta_dataset(
+        primary_oof, predicted_col=predicted_col,
+        transaction_cost=transaction_cost, drift_pvalue=drift_pvalue,
+    )
 
 
 def train_meta_model(

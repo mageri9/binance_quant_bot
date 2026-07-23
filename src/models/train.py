@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from src.models.backtest import TimeSeriesWalkForwardSplitter, purge_train_tail
+from src.models.meta import (
+    PRIMARY_OOF_FOLD_COLUMN,
+    PRIMARY_OOF_ROW_COLUMN,
+    PRIMARY_TRAIN_END_COLUMN,
+)
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
 from src.core.config import get_settings
@@ -268,6 +273,10 @@ def _run_walk_forward_folds(
         else:
             test_df_copy["predicted_signal"] = y_pred
         test_df_copy["predicted_confidence"] = confidence
+        # Preserve proof that each primary prediction was generated out-of-fold.
+        test_df_copy[PRIMARY_OOF_FOLD_COLUMN] = info["fold"]
+        test_df_copy[PRIMARY_TRAIN_END_COLUMN] = info["train_end_idx"] - label_horizon - 1
+        test_df_copy[PRIMARY_OOF_ROW_COLUMN] = test_df.index
 
         oos_dfs.append(test_df_copy)
 
@@ -560,13 +569,13 @@ async def run_lgbm_experiment(
     if getattr(settings, "META_LABELING_ENABLED", False):
         try:
             from src.models.meta import (
-                build_meta_dataset,
+                build_cross_fitted_meta_dataset,
                 train_meta_model,
                 META_BASE_FEATURES,
             )
 
             meta_df = await asyncio.to_thread(
-                build_meta_dataset,
+                build_cross_fitted_meta_dataset,
                 inner_oos,
                 drift_pvalue=regime_drift_pvalue,
             )
@@ -586,6 +595,10 @@ async def run_lgbm_experiment(
                 meta_df,
                 candidate_features,
                 settings.META_LABELING_MIN_TRADES,
+            )
+            meta_metrics["cross_fitted_primary_oof"] = True
+            meta_metrics["primary_oof_folds"] = int(
+                inner_oos[PRIMARY_OOF_FOLD_COLUMN].nunique()
             )
             if meta_model is not None:
                 logger.info(f"[Meta-Labeling] Модель прошла собственный гейт: {meta_metrics}")

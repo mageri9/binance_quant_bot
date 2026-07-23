@@ -1,7 +1,17 @@
 import numpy as np
 import pandas as pd
 
-from src.models.meta import build_meta_dataset, train_meta_model, META_BASE_FEATURES
+import pytest
+
+from src.models.meta import (
+    META_BASE_FEATURES,
+    PRIMARY_OOF_FOLD_COLUMN,
+    PRIMARY_OOF_ROW_COLUMN,
+    PRIMARY_TRAIN_END_COLUMN,
+    build_cross_fitted_meta_dataset,
+    build_meta_dataset,
+    train_meta_model,
+)
 
 
 def test_build_meta_dataset_labels_success_and_failure():
@@ -24,6 +34,30 @@ def test_build_meta_dataset_labels_success_and_failure():
     assert meta_df.iloc[1]["success"] == 0
     for feat in META_BASE_FEATURES:
         assert feat in meta_df.columns
+
+
+def test_cross_fitted_meta_dataset_rejects_unprovenanced_primary_predictions():
+    df = pd.DataFrame({
+        "close": [100.0], "high": [100.0], "low": [100.0],
+        "adx": [25.0], "atr_pct": [0.01], "volume_ratio": [1.0],
+        "volatility": [0.02], "predicted_signal": [1],
+    })
+
+    with pytest.raises(ValueError, match="cross-fitted provenance"):
+        build_cross_fitted_meta_dataset(df)
+
+
+def test_cross_fitted_meta_dataset_rejects_in_sample_primary_prediction():
+    df = pd.DataFrame({
+        "close": [100.0, 100.0], "high": [100.0, 105.0], "low": [100.0, 100.0],
+        "adx": [25.0, 25.0], "atr_pct": [0.01, 0.01], "volume_ratio": [1.0, 1.0],
+        "volatility": [0.02, 0.02], "predicted_signal": [1, 0],
+        PRIMARY_OOF_FOLD_COLUMN: [0, 0], PRIMARY_TRAIN_END_COLUMN: [0, 0],
+        PRIMARY_OOF_ROW_COLUMN: [0, 1],
+    })
+
+    with pytest.raises(ValueError, match="non-cross-fitted"):
+        build_cross_fitted_meta_dataset(df)
 
 
 def test_train_meta_model_returns_none_below_min_trades():
