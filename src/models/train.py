@@ -17,6 +17,7 @@ from src.core.config import get_settings
 from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 from datetime import datetime, timezone
 from src.strategy.signals import simulate_strategy
+from src.strategy.edge import apply_edge_threshold, sweep_edge_thresholds
 from src.execution.kernel import ExecutionKernel, costs_from_settings
 
 from src.utils.artifact_paths import get_oos_path
@@ -496,6 +497,37 @@ async def run_lgbm_experiment(
     calibration_oos = _prediction_frame(df_calibration, "calibration")
     economic_test_oos = _prediction_frame(df_economic_test, "economic_test")
 
+    edge_threshold = settings.PREDICTION_CONFIDENCE_THRESHOLD
+    edge_sweep = []
+    if settings.EDGE_THRESHOLD_SWEEP_ENABLED:
+        edge_threshold, edge_sweep = await asyncio.to_thread(
+            sweep_edge_thresholds,
+            calibration_oos,
+            settings.EDGE_THRESHOLD_GRID,
+            settings.EDGE_MIN_COVERAGE,
+            settings.CALIBRATION_MIN_TRADES,
+            {
+                "horizon": settings.LABEL_HORIZON,
+                "sl_pct": settings.PAPER_SL_PCT,
+                "tp_pct": settings.PAPER_TP_PCT,
+                "execution_kernel": ExecutionKernel(costs_from_settings(settings)),
+            },
+        )
+        logger.info(
+            f"[Edge sweep] selected confidence threshold={edge_threshold:.2f} "
+            f"from {len(edge_sweep)} calibration candidates"
+        )
+
+    calibration_oos = apply_edge_threshold(calibration_oos, edge_threshold)
+    economic_test_oos = apply_edge_threshold(economic_test_oos, edge_threshold)
+    economic_backtest_metrics = simulate_strategy(
+        economic_test_oos,
+        horizon=settings.LABEL_HORIZON,
+        sl_pct=settings.PAPER_SL_PCT,
+        tp_pct=settings.PAPER_TP_PCT,
+        execution_kernel=ExecutionKernel(costs_from_settings(settings)),
+    )
+
     final_model = LGBMClassifier(**model_kwargs)
 
     df_final_train = pd.concat([df_inner_train, df_calibration], ignore_index=True)
@@ -569,6 +601,7 @@ async def run_lgbm_experiment(
         "economic_test_f1": float(holdout_f1) if holdout_f1 is not None else None,
         "total_folds": fold_count,
         "total_test_samples": len(all_y_true),
+        "economic_backtest": economic_backtest_metrics,
     }
 
     parameters = {
@@ -630,6 +663,9 @@ async def run_lgbm_experiment(
             "sharpe_ratio": None,
             "calibrated_at": None,
         },
+        "edge_threshold": edge_threshold,
+        "edge_threshold_sweep": edge_sweep,
+        "backtest_metrics": economic_backtest_metrics,
         "evaluation_protocol": {
             "name": "nested_wfo",
             "optuna_data": "inner_train_only",

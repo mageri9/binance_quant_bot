@@ -19,18 +19,20 @@ class Predictor:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Файл модели по пути {model_path} не найден.")
 
+        with open(model_path, "rb") as f:
+            saved_data = pickle.load(f)
+
         if confidence_threshold is None:
             from src.core.config import get_settings
-            confidence_threshold = get_settings().PREDICTION_CONFIDENCE_THRESHOLD
+            confidence_threshold = saved_data.get(
+                "edge_threshold", get_settings().PREDICTION_CONFIDENCE_THRESHOLD,
+            )
         self.confidence_threshold = confidence_threshold
 
         if meta_threshold is None:
             from src.core.config import get_settings
             meta_threshold = get_settings().META_LABELING_THRESHOLD
         self.meta_threshold = meta_threshold
-
-        with open(model_path, "rb") as f:
-            saved_data = pickle.load(f)
 
         self.model = saved_data["model"]
         self.scaler = saved_data.get("scaler", None)

@@ -168,6 +168,17 @@ async def get_best_calibration(
     if "open_time" in df_valid.columns:
         df_valid = df_valid.sort_values("open_time").reset_index(drop=True)
 
+    edge_threshold = saved_data.get(
+        "edge_threshold", settings.PREDICTION_CONFIDENCE_THRESHOLD,
+    )
+    if "predicted_confidence" in df_valid.columns:
+        from src.strategy.edge import apply_edge_threshold
+
+        df_valid = apply_edge_threshold(df_valid, edge_threshold)
+        logger.info(
+            f"[Calibration] Edge threshold={edge_threshold:.2f} applied before risk calibration ({symbol})."
+        )
+
     if meta_model is not None:
         from src.models.meta import apply_meta_gate
 

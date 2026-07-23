@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # Model
     MODEL_PATH: str = "models/saved_models/lgbm_BTCUSDT_1h.pkl"
     PREDICTION_CONFIDENCE_THRESHOLD: float = 0.55
+    EDGE_THRESHOLD_SWEEP_ENABLED: bool = True
+    EDGE_THRESHOLD_GRID: list[float] = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+    EDGE_MIN_COVERAGE: float = 0.20
     OPTUNA_OBJECTIVE_METRIC: str = "sharpe"  # "f1" | "sharpe" | "expectancy"
 
     # Redis

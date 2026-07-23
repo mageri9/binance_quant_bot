@@ -183,6 +183,17 @@ def test_predictor_without_meta_model_unaffected(tmp_path):
     predictor = Predictor(model_path, confidence_threshold=0.5)
     assert predictor.predict(_make_test_candles()) == 1
 
+
+def test_predictor_uses_calibrated_artifact_edge_threshold(tmp_path):
+    artifact = _build_artifact(None, None)
+    artifact["edge_threshold"] = 0.95
+    model_path = str(tmp_path / "fake_edge_threshold.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    predictor = Predictor(model_path)
+    assert predictor.predict(_make_test_candles()) == 0
+
 class _FakeMetaModelWithDrift:
     classes_ = [0, 1]
     def predict_proba(self, X):
