@@ -68,8 +68,8 @@ class Experiment(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     model_name: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     dataset_version: Mapped[str] = mapped_column(String(20), nullable=False)
-    parameters: Mapped[str] = mapped_column(String(500), nullable=False)  # JSON-строка с параметрами
-    metrics: Mapped[str] = mapped_column(String(500), nullable=False)     # JSON-строка с метриками точности
+    parameters: Mapped[str] = mapped_column(Text, nullable=False)  # JSON string with training parameters.
+    metrics: Mapped[str] = mapped_column(Text, nullable=False)     # JSON string with evaluation metrics.
     git_sha: Mapped[str] = mapped_column(String(40), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
