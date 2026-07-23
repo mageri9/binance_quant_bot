@@ -15,6 +15,7 @@ class DataCollector:
         settings = get_settings()
         exchange_config = {
             "enableRateLimit": True,
+            "options": {"defaultType": "future"},
         }
 
         # Применяем прокси для загрузки свечей

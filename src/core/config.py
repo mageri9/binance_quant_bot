@@ -60,15 +60,22 @@ class Settings(BaseSettings):
     PAPER_RISK_PCT: float = 0.10
     PAPER_MIN_ALLOCATION: float = 1.0
 
+    # Single Binance Futures execution schedule for backtests and paper fills.
+    EXECUTION_COMMISSION: float = 0.0004
+    EXECUTION_SLIPPAGE: float = 0.0002
+    EXECUTION_BID_ASK_SPREAD: float = 0.0002
+    EXECUTION_FUNDING_PER_TRADE: float = 0.0001
+
     # Optuna Sizing parameters
     OPTUNA_TUNING_ENABLED: bool = True
     OPTUNA_TRIALS: int = 15
     OPTUNA_SEED: int = 42
     OPTUNA_STORAGE_URL: str = ""
     OPTUNA_MIN_TRADES: int = 20
-    OPTUNA_COMMISSION: float = 0.0004
-    OPTUNA_SLIPPAGE: float = 0.0002
-    OPTUNA_FUNDING_PER_TRADE: float = 0.0001
+    # Deprecated aliases retained so existing deployments keep their calibrated costs.
+    OPTUNA_COMMISSION: float | None = None
+    OPTUNA_SLIPPAGE: float | None = None
+    OPTUNA_FUNDING_PER_TRADE: float | None = None
     # Сколько последних (самых свежих) фолдов Walk-Forward использовать
     # при тюнинге. None = все фолды (старое поведение, дорого).
     # Ограничение снижает cost тюнинга и одновременно фокусирует подбор

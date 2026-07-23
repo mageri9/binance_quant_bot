@@ -112,6 +112,9 @@ def simulate_strategy(
     сделка использует фолбэк на sl_pct/tp_pct для этой конкретной сделки.
     """
     prices = df["close"].values
+    # A closed-candle signal can only be acted on at the next candle's open.
+    # Old artifacts without OHLC opens remain readable, but production data has it.
+    opens = df["open"].values if "open" in df.columns else prices
     highs = df["high"].values
     lows = df["low"].values
     signals = df[predicted_col].values
@@ -123,7 +126,12 @@ def simulate_strategy(
 
     # Preserve transaction_cost for callers while sharing fill math with paper.
     kernel = execution_kernel or ExecutionKernel(
-        ExecutionCosts(commission_rate=0.0, slippage_rate=transaction_cost, funding_rate_per_trade=0.0)
+        ExecutionCosts(
+            commission_rate=0.0,
+            slippage_rate=transaction_cost,
+            bid_ask_spread_rate=0.0,
+            funding_rate_per_trade=0.0,
+        )
     )
     trades = []
     trade_log = []
@@ -133,6 +141,7 @@ def simulate_strategy(
     entry_idx = 0
     sl_price = 0.0
     tp_price = 0.0
+    exit_at_next_open = False
 
     def _close_trade(exit_idx, exit_reference_price):
         entry_fill = kernel.market_fill(
@@ -160,18 +169,25 @@ def simulate_strategy(
             )
 
     for i in range(n):
+        if position_type is not None and exit_at_next_open:
+            _close_trade(i, opens[i])
+            position_type = None
+            exit_at_next_open = False
+            continue
+
         if position_type is None:
-            if i < n - 1:
-                atr_at_entry = atr_values[i] if use_atr_barrier else None
+            if i > 0:
+                signal_idx = i - 1
+                atr_at_entry = atr_values[signal_idx] if use_atr_barrier else None
                 atr_ok = (
                     atr_at_entry is not None
                     and not np.isnan(atr_at_entry)
                     and atr_at_entry > 0
                 )
 
-                if signals[i] == 1:
+                if signals[signal_idx] == 1:
                     position_type = "LONG"
-                    entry_price = prices[i]
+                    entry_price = opens[i]
                     entry_idx = i
                     if atr_ok:
                         sl_price = entry_price - sl_atr_mult * atr_at_entry
@@ -188,9 +204,9 @@ def simulate_strategy(
                             else float("inf")
                         )
 
-                elif signals[i] == -1:
+                elif signals[signal_idx] == -1:
                     position_type = "SHORT"
-                    entry_price = prices[i]
+                    entry_price = opens[i]
                     entry_idx = i
                     if atr_ok:
                         sl_price = entry_price + sl_atr_mult * atr_at_entry
@@ -206,34 +222,31 @@ def simulate_strategy(
                             if tp_pct is not None
                             else float("-inf")
                         )
-        else:
-            if position_type == "LONG":
-                if lows[i] <= sl_price:
-                    _close_trade(i, sl_price)
-                    position_type = None
-                    continue
-                if highs[i] >= tp_price:
-                    _close_trade(i, tp_price)
-                    position_type = None
-                    continue
-                if i - entry_idx >= horizon:
-                    _close_trade(i, prices[i])
-                    position_type = None
-                    continue
+        if position_type == "LONG":
+            if lows[i] <= sl_price:
+                _close_trade(i, sl_price)
+                position_type = None
+                continue
+            if highs[i] >= tp_price:
+                _close_trade(i, tp_price)
+                position_type = None
+                continue
+            if i - entry_idx >= horizon:
+                exit_at_next_open = True
+                continue
 
-            elif position_type == "SHORT":
-                if highs[i] >= sl_price:
-                    _close_trade(i, sl_price)
-                    position_type = None
-                    continue
-                if lows[i] <= tp_price:
-                    _close_trade(i, tp_price)
-                    position_type = None
-                    continue
-                if i - entry_idx >= horizon:
-                    _close_trade(i, prices[i])
-                    position_type = None
-                    continue
+        elif position_type == "SHORT":
+            if highs[i] >= sl_price:
+                _close_trade(i, sl_price)
+                position_type = None
+                continue
+            if lows[i] <= tp_price:
+                _close_trade(i, tp_price)
+                position_type = None
+                continue
+            if i - entry_idx >= horizon:
+                exit_at_next_open = True
+                continue
 
     metrics = calculate_strategy_metrics(trades)
     if return_trade_log:

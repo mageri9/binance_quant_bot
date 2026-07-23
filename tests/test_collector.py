@@ -24,6 +24,7 @@ async def test_fetch_and_save_klines(temp_db_session):
         mock_binance_class.return_value = mock_exchange
 
         collector = DataCollector(temp_db_session)
+        assert mock_binance_class.call_args.args[0]["options"]["defaultType"] == "future"
 
         count = await collector.fetch_and_save_klines(
             symbol="BTC/USDT",

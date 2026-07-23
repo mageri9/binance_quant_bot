@@ -12,11 +12,13 @@ from decimal import Decimal
 class ExecutionCosts:
     commission_rate: Decimal = Decimal("0.0004")
     slippage_rate: Decimal = Decimal("0.0002")
+    bid_ask_spread_rate: Decimal = Decimal("0.0002")
     funding_rate_per_trade: Decimal = Decimal("0.0001")
 
     def __post_init__(self):
         object.__setattr__(self, "commission_rate", _decimal(self.commission_rate))
         object.__setattr__(self, "slippage_rate", _decimal(self.slippage_rate))
+        object.__setattr__(self, "bid_ask_spread_rate", _decimal(self.bid_ask_spread_rate))
         object.__setattr__(self, "funding_rate_per_trade", _decimal(self.funding_rate_per_trade))
 
 
@@ -30,7 +32,7 @@ class SimulatedFill:
 
 
 class ExecutionKernel:
-    """Applies adverse market-order slippage and per-fill commission."""
+    """Applies bid/ask, adverse market-order slippage, and per-fill commission."""
 
     def __init__(self, costs: ExecutionCosts | None = None):
         self.costs = costs or ExecutionCosts()
@@ -43,7 +45,9 @@ class ExecutionKernel:
             raise ValueError(f"Unsupported order side: {side}")
         reference = _decimal(reference_price)
         quantity = _decimal(amount)
-        multiplier = Decimal("1") + self.costs.slippage_rate if side == "buy" else Decimal("1") - self.costs.slippage_rate
+        half_spread = self.costs.bid_ask_spread_rate / Decimal("2")
+        adverse_move = half_spread + self.costs.slippage_rate
+        multiplier = Decimal("1") + adverse_move if side == "buy" else Decimal("1") - adverse_move
         price = reference * multiplier
         commission = price * quantity * self.costs.commission_rate
         return SimulatedFill(side, reference, price, quantity, commission)
@@ -63,17 +67,31 @@ class ExecutionKernel:
 
 
 def costs_from_settings(settings) -> ExecutionCosts:
-    """Keeps legacy OPTUNA settings as the single configured cost schedule."""
+    """Build the single Futures cost schedule used by backtest and paper trading."""
     return ExecutionCosts(
-        commission_rate=_configured_decimal(settings, "OPTUNA_COMMISSION", "0.0004"),
-        slippage_rate=_configured_decimal(settings, "OPTUNA_SLIPPAGE", "0.0002"),
-        funding_rate_per_trade=_configured_decimal(settings, "OPTUNA_FUNDING_PER_TRADE", "0.0001"),
+        commission_rate=_configured_decimal_with_legacy(
+            settings, "EXECUTION_COMMISSION", "OPTUNA_COMMISSION", "0.0004"
+        ),
+        slippage_rate=_configured_decimal_with_legacy(
+            settings, "EXECUTION_SLIPPAGE", "OPTUNA_SLIPPAGE", "0.0002"
+        ),
+        bid_ask_spread_rate=_configured_decimal(settings, "EXECUTION_BID_ASK_SPREAD", "0.0002"),
+        funding_rate_per_trade=_configured_decimal_with_legacy(
+            settings, "EXECUTION_FUNDING_PER_TRADE", "OPTUNA_FUNDING_PER_TRADE", "0.0001"
+        ),
     )
 
 
 def _configured_decimal(settings, name: str, default: str) -> Decimal:
     value = getattr(settings, name, default)
     return _decimal(value) if isinstance(value, (int, float, Decimal, str)) else Decimal(default)
+
+
+def _configured_decimal_with_legacy(settings, name: str, legacy_name: str, default: str) -> Decimal:
+    fields_set = getattr(settings, "model_fields_set", set())
+    if name not in fields_set and legacy_name in fields_set:
+        return _configured_decimal(settings, legacy_name, default)
+    return _configured_decimal(settings, name, default)
 
 
 def _decimal(value: Decimal | float | str) -> Decimal:

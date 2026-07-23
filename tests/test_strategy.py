@@ -8,7 +8,8 @@ from src.execution.kernel import ExecutionCosts, ExecutionKernel
 
 def _slippage_only_return(entry_price: float, exit_price: float) -> float:
     kernel = ExecutionKernel(ExecutionCosts(
-        commission_rate=0.0, slippage_rate=0.001, funding_rate_per_trade=0.0,
+        commission_rate=0.0, slippage_rate=0.001,
+        bid_ask_spread_rate=0.0, funding_rate_per_trade=0.0,
     ))
     return float(kernel.realized_return(
         entry=kernel.market_fill(side="buy", reference_price=entry_price, amount=1),
@@ -63,12 +64,12 @@ def test_simulate_strategy_time_exit():
     # Должна совершиться ровно 1 сделка
     assert metrics["total_trades"] == 1
 
-    # Вход по close[2] = 102. Выход по close[5] (через 3 свечи) = 105.
-    # Доходность: (105 - 102) / 102 = 2.94117% (0.0294117)
+    # Сигнал close[2] исполняется по open[3] = 103; time-exit после close[6]
+    # исполняется по open[7] = 107.
     # Комиссия: 2 * 0.1% = 0.2% (0.002)
     # Итог: ~0.0274117
     # Shared execution applies adverse fill prices, not a flat return haircut.
-    assert pytest.approx(metrics["total_return"], abs=1e-5) == _slippage_only_return(102, 105)
+    assert pytest.approx(metrics["total_return"], abs=1e-5) == _slippage_only_return(103, 107)
     assert metrics["win_rate"] == 1.0
     assert metrics["expectancy"] > 0
 
@@ -116,6 +117,24 @@ def test_simulate_strategy_no_signals():
     metrics = simulate_strategy(df)
     assert metrics["total_trades"] == 0
     assert metrics["total_return"] == 0.0
+
+
+def test_simulate_strategy_executes_closed_candle_signal_at_next_open():
+    df = pd.DataFrame({
+        "open": [100.0, 105.0, 105.0],
+        "close": [100.0, 105.0, 105.0],
+        "high": [100.0, 105.0, 105.0],
+        "low": [100.0, 100.0, 105.0],
+        "predicted_signal": [1, 0, 0],
+    })
+
+    _, trades = simulate_strategy(
+        df, horizon=5, sl_pct=0.01, tp_pct=None, transaction_cost=0.0,
+        return_trade_log=True,
+    )
+
+    assert trades.iloc[0]["entry_idx"] == 1
+    assert trades.iloc[0]["return"] == pytest.approx(-0.01)
 
 
 def test_simulate_strategy_short_tp_hit():
@@ -190,9 +209,9 @@ def test_simulate_strategy_trade_log_matches_metrics():
 
     assert len(trades_df) == metrics["total_trades"]
     assert set(trades_df.columns) == {"entry_idx", "exit_idx", "side", "return"}
-    assert trades_df.iloc[0]["entry_idx"] == 0
+    assert trades_df.iloc[0]["entry_idx"] == 1
     assert trades_df.iloc[0]["return"] > 0  # TP hit
-    assert trades_df.iloc[1]["entry_idx"] == 4
+    assert trades_df.iloc[1]["entry_idx"] == 5
     assert trades_df.iloc[1]["return"] < 0  # SL hit
 
 
