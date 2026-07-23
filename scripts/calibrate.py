@@ -179,9 +179,20 @@ async def get_best_calibration(
         )
         logger.info(f"[Calibration] Meta-gate применён к сигналам перед калибровкой ({symbol}).")
 
-    calib_split_idx = int(len(df_valid) * 0.7)
-    df_calib = df_valid.iloc[:calib_split_idx].reset_index(drop=True)
-    df_eval = df_valid.iloc[calib_split_idx:].reset_index(drop=True)
+    if "wfo_split" in df_valid.columns and {"calibration", "economic_test"}.issubset(
+        set(df_valid["wfo_split"])
+    ):
+        # The final segment is only evaluated after the risk parameters are set.
+        df_calib = df_valid.loc[df_valid["wfo_split"] == "calibration"].reset_index(drop=True)
+        df_eval = df_valid.loc[df_valid["wfo_split"] == "economic_test"].reset_index(drop=True)
+    else:
+        # Artifacts created before nested WFO retain the previous 70/30 behavior.
+        calib_split_idx = int(len(df_valid) * 0.7)
+        df_calib = df_valid.iloc[:calib_split_idx].reset_index(drop=True)
+        df_eval = df_valid.iloc[calib_split_idx:].reset_index(drop=True)
+
+    if df_calib.empty or df_eval.empty:
+        raise ValueError("Calibration and economic evaluation partitions must both be non-empty.")
 
     logger.info(
         f"[Calibration] Разделение OOS: calibration={len(df_calib)} строк, "

@@ -4,7 +4,24 @@ import numpy as np
 from sqlalchemy import select
 
 from src.db.models import Experiment
-from src.models.train import tune_lgbm_hyperparameters
+from src.models.train import split_nested_wfo_data, tune_lgbm_hyperparameters
+
+
+def test_nested_wfo_partitions_are_chronological_and_purged():
+    df = pd.DataFrame({"open_time": np.arange(500)})
+
+    inner, calibration, economic_test = split_nested_wfo_data(
+        df,
+        train_size=100,
+        test_size=20,
+        purge_rows=5,
+        calibration_fraction=0.20,
+        economic_test_fraction=0.20,
+    )
+
+    assert inner["open_time"].max() < calibration["open_time"].min()
+    assert calibration["open_time"].max() < economic_test["open_time"].min()
+    assert len(inner) + len(calibration) + len(economic_test) + 5 == len(df)
 
 
 @pytest.mark.asyncio

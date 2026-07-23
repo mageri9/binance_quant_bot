@@ -210,6 +210,46 @@ async def test_get_best_calibration_prefers_sibling_oos_parquet(tmp_path):
     assert sl is not None
     assert tp is not None
 
+
+@pytest.mark.asyncio
+async def test_nested_wfo_calibration_never_searches_economic_test(tmp_path):
+    model_path = str(tmp_path / "lgbm_BTCUSDT_1h.pkl")
+    oos_path = get_oos_path(model_path)
+    df_oos = pd.DataFrame({
+        "open_time": np.arange(12),
+        "close": [100.0] * 12,
+        "high": [101.0] * 12,
+        "low": [99.0] * 12,
+        "predicted_signal": [1] * 12,
+        "wfo_split": ["calibration"] * 6 + ["economic_test"] * 6,
+    })
+    df_oos.to_parquet(oos_path, index=False)
+    with open(model_path, "wb") as f:
+        pickle.dump({"model": "dummy", "features": [], "scaler": None}, f)
+
+    settings = MagicMock()
+    settings.get_model_path.return_value = model_path
+    settings.CALIBRATION_MIN_TRADES = 1
+    grid_result = [{
+        "sl_pct": 0.02, "tp_pct": 0.04, "horizon": 3,
+        "total_trades": 2, "sharpe_ratio": 1.0, "expectancy": 0.01,
+    }]
+    economic_metrics = {
+        "total_trades": 2, "sharpe_ratio": 0.5, "expectancy": 0.01,
+        "total_return": 0.02, "win_rate": 0.5, "profit_factor": 1.2,
+        "sortino_ratio": 0.4, "max_drawdown": 0.1,
+    }
+
+    with (
+        patch("scripts.calibrate.get_settings", return_value=settings),
+        patch("scripts.calibrate.perform_grid_search", return_value=grid_result) as grid_search,
+        patch("scripts.calibrate.simulate_strategy", return_value=economic_metrics),
+    ):
+        await get_best_calibration("BTC/USDT", "1h", custom_model_path=model_path)
+
+    searched = grid_search.call_args.args[0]
+    assert set(searched["wfo_split"]) == {"calibration"}
+
 def test_perform_grid_search_atr_mode():
     df_valid = pd.DataFrame({
         "close": [100.0, 100.0, 102.5, 102.5, 100.0] * 5,

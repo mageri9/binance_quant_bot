@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     # Ограничение снижает cost тюнинга и одновременно фокусирует подбор
     # параметров на актуальном рыночном режиме, а не на истории полугодовой давности.
     OPTUNA_MAX_FOLDS: int | None = 8
+    # Nested WFO reserves these newest chronological segments. Optuna can only
+    # access the older inner-train segment; risk calibration cannot access test.
+    WFO_CALIBRATION_FRACTION: float = 0.20
+    WFO_ECONOMIC_TEST_FRACTION: float = 0.20
 
     # Model Rollback SRE parameters
     ROLLBACK_CHECK_WINDOW: int = 10

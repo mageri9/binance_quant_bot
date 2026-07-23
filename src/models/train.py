@@ -25,6 +25,45 @@ from src.utils.artifact_paths import get_oos_path
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 SIGNAL_MAP_TRIPLE = {0: -1.0, 1: 0.0, 2: 1.0}
+WFO_SPLIT_COLUMN = "wfo_split"
+
+
+def split_nested_wfo_data(
+    df: pd.DataFrame,
+    train_size: int,
+    test_size: int,
+    purge_rows: int,
+    calibration_fraction: float,
+    economic_test_fraction: float,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Create chronological inner-train, calibration, and untouched test sets.
+
+    Hyperparameter selection may only inspect ``inner_train``.  The calibration
+    segment selects trading-risk parameters, while the final segment remains
+    unavailable until those choices have been made.
+    """
+    min_inner_rows = train_size + test_size + purge_rows
+    if len(df) < min_inner_rows + 2:
+        raise ValueError("Not enough rows for nested WFO train/calibration/test split.")
+
+    available_holdout = len(df) - min_inner_rows
+    requested_economic_test = max(test_size, int(len(df) * economic_test_fraction))
+    economic_test_size = min(requested_economic_test, available_holdout - 1)
+    requested_calibration = max(test_size, int((len(df) - economic_test_size) * calibration_fraction))
+    calibration_size = min(requested_calibration, available_holdout - economic_test_size)
+
+    if calibration_size < 1 or economic_test_size < 1:
+        raise ValueError("Nested WFO requires non-empty calibration and economic test sets.")
+
+    inner_end = len(df) - calibration_size - economic_test_size
+    calibration_end = len(df) - economic_test_size
+    inner_train = purge_train_tail(df.iloc[:inner_end].copy(), purge_rows)
+    calibration = df.iloc[inner_end:calibration_end].copy()
+    economic_test = df.iloc[calibration_end:].copy()
+
+    if len(inner_train) < train_size + test_size:
+        raise ValueError("Nested WFO inner-train is too short after purging labels.")
+    return inner_train.reset_index(drop=True), calibration.reset_index(drop=True), economic_test.reset_index(drop=True)
 
 async def tune_lgbm_hyperparameters(
     session: AsyncSession,
@@ -297,6 +336,22 @@ async def run_lgbm_experiment(
     )
 
     # 1.5. Шаг автоматической калибровки параметров через Optuna (если включено в конфиге)
+    df_inner_train, df_calibration, df_economic_test = split_nested_wfo_data(
+        df_clean,
+        train_size=train_size,
+        test_size=test_size,
+        purge_rows=purge_rows,
+        calibration_fraction=settings.WFO_CALIBRATION_FRACTION,
+        economic_test_fraction=settings.WFO_ECONOMIC_TEST_FRACTION,
+    )
+    # Keep legacy local names below while enforcing the nested chronological split.
+    df_train_val = df_inner_train
+    df_holdout = df_economic_test
+    logger.info(
+        f"[MLOps Train] Nested WFO rows: inner_train={len(df_inner_train)}, "
+        f"calibration={len(df_calibration)}, economic_test={len(df_economic_test)}, purge={purge_rows}"
+    )
+
     best_params = {}
     if settings.OPTUNA_TUNING_ENABLED:
         logger.info(
@@ -416,10 +471,36 @@ async def run_lgbm_experiment(
     logger.info(
         "[MLOps Train] Запуск финального дообучения модели на 100% исторических данных..."
     )
+    # Produce downstream predictions from an inner-train-only candidate. The
+    # economic segment is never used while selecting risk parameters.
+    partition_candidate = LGBMClassifier(**model_kwargs)
+    y_inner = df_inner_train[target_col]
+    if is_multiclass:
+        y_inner = y_inner.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
+    else:
+        y_inner = y_inner.astype(int)
+    await asyncio.to_thread(partition_candidate.fit, df_inner_train[feature_cols], y_inner)
+
+    def _prediction_frame(source_df: pd.DataFrame, split_name: str) -> pd.DataFrame:
+        result = source_df.copy()
+        predicted = partition_candidate.predict(result[feature_cols])
+        probabilities = partition_candidate.predict_proba(result[feature_cols])
+        if is_multiclass:
+            result["predicted_signal"] = pd.Series(predicted, index=result.index).map(SIGNAL_MAP_TRIPLE)
+        else:
+            result["predicted_signal"] = predicted
+        result["predicted_confidence"] = probabilities.max(axis=1)
+        result[WFO_SPLIT_COLUMN] = split_name
+        return result
+
+    calibration_oos = _prediction_frame(df_calibration, "calibration")
+    economic_test_oos = _prediction_frame(df_economic_test, "economic_test")
+
     final_model = LGBMClassifier(**model_kwargs)
 
-    X_all = df_clean[feature_cols]
-    y_all = df_clean[target_col]
+    df_final_train = pd.concat([df_inner_train, df_calibration], ignore_index=True)
+    X_all = df_final_train[feature_cols]
+    y_all = df_final_train[target_col]
     if is_multiclass:
         y_all_mapped = y_all.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
     else:
@@ -428,7 +509,9 @@ async def run_lgbm_experiment(
     await asyncio.to_thread(final_model.fit, X_all, y_all_mapped)
 
     # Объединяем OOS фолды
-    df_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
+    inner_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
+    inner_oos[WFO_SPLIT_COLUMN] = "inner_wfo"
+    df_oos = pd.concat([inner_oos, calibration_oos, economic_test_oos]).sort_values("open_time").reset_index(drop=True)
 
     meta_model = None
     meta_feature_cols = None
@@ -443,7 +526,7 @@ async def run_lgbm_experiment(
 
             meta_df = await asyncio.to_thread(
                 build_meta_dataset,
-                df_oos,
+                inner_oos,
                 drift_pvalue=regime_drift_pvalue,
             )
             candidate_features = list(META_BASE_FEATURES)
@@ -483,6 +566,7 @@ async def run_lgbm_experiment(
             f1_score(all_y_true, all_y_pred, average=avg_method, zero_division=0)
         ),
         "holdout_f1": float(holdout_f1) if holdout_f1 is not None else None,
+        "economic_test_f1": float(holdout_f1) if holdout_f1 is not None else None,
         "total_folds": fold_count,
         "total_test_samples": len(all_y_true),
     }
@@ -500,6 +584,7 @@ async def run_lgbm_experiment(
         else max_depth,
         "train_size": train_size,
         "test_size": test_size,
+        "wfo_protocol": "nested_inner_optuna_calibration_economic_test",
         "features_used": feature_cols,
     }
     if best_params.get("num_leaves"):
@@ -544,6 +629,12 @@ async def run_lgbm_experiment(
             "horizon": settings.LABEL_HORIZON,
             "sharpe_ratio": None,
             "calibrated_at": None,
+        },
+        "evaluation_protocol": {
+            "name": "nested_wfo",
+            "optuna_data": "inner_train_only",
+            "calibration_data": "calibration_only",
+            "economic_metrics_data": "economic_test_only",
         },
         "meta_model": meta_model,
         "meta_features": meta_feature_cols,
