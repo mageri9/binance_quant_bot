@@ -78,6 +78,9 @@ class RiskEngine:
                 return RiskDecision.OPEN, active_pos["amount"], "Ордер закрытия позиции одобрен."
 
         # 4. Проверка максимального размера сделки (использует PAPER_RISK_PCT)
+        if is_already_open:
+            return RiskDecision.DENY, 0.0, "Adding to an open position is disabled."
+
         requested_value = requested_amount * current_price
         max_allowed_value = balance_free * self.max_allocation_pct
 

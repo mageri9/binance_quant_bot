@@ -112,3 +112,24 @@ async def test_risk_engine_reduces_allocation():
     assert decision == RiskDecision.REDUCE_SIZE
     assert amount == 1.0
     assert "Объем ордера снижен" in msg
+
+
+@pytest.mark.asyncio
+async def test_risk_engine_denies_same_side_add_to_open_position():
+    engine = RiskEngine()
+
+    decision, amount, msg = await engine.validate_signal(
+        symbol="BTC/USDT",
+        side="buy",
+        requested_amount=1.0,
+        current_price=100.0,
+        balance_free=1000.0,
+        balance_total=1000.0,
+        open_positions=[{"symbol": "BTC/USDT", "side": "LONG", "amount": 2.0}],
+        closed_trades_last_24h=[],
+        consecutive_losses=0,
+    )
+
+    assert decision == RiskDecision.DENY
+    assert amount == 0.0
+    assert "Adding to an open position" in msg

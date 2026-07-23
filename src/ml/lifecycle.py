@@ -76,8 +76,11 @@ async def resolve_predictions(
     session: AsyncSession, *, symbol: str, timeframe: str,
     candle_times_and_closes: list[tuple[int, float]], threshold: float = 0.0,
 ) -> int:
-    closes = dict(candle_times_and_closes)
-    ordered = [time for time, _ in candle_times_and_closes]
+    # Exchange/reconnect snapshots are not guaranteed to arrive in candle
+    # order. Horizons must always be evaluated against chronological candles.
+    candles_by_time = {int(candle_time): close for candle_time, close in candle_times_and_closes}
+    ordered = sorted(candles_by_time)
+    closes = candles_by_time
     position = {time: index for index, time in enumerate(ordered)}
     pending = list((await session.execute(select(PredictionLog).where(
         PredictionLog.symbol == symbol, PredictionLog.timeframe == timeframe,

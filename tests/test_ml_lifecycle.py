@@ -50,3 +50,26 @@ async def test_no_new_candle_never_retrains_on_schedule(temp_db_session):
     )
     assert not decision.should_train
     assert "scheduled_control" in decision.triggers
+
+
+@pytest.mark.asyncio
+async def test_resolver_uses_candle_time_not_snapshot_arrival_order(temp_db_session):
+    prediction = PredictionLog(
+        symbol="BTC/USDT", timeframe="1h", model_id="m1", candle_time=100,
+        horizon=2, price=100.0, prediction=1,
+        prob_short=0.1, prob_hold=0.2, prob_long=0.7,
+    )
+    temp_db_session.add(prediction)
+    await temp_db_session.commit()
+
+    resolved = await resolve_predictions(
+        temp_db_session,
+        symbol="BTC/USDT",
+        timeframe="1h",
+        candle_times_and_closes=[(300, 103.0), (100, 100.0), (200, 101.0)],
+        threshold=0.01,
+    )
+
+    assert resolved == 1
+    assert prediction.outcome_price == 103.0
+    assert prediction.true_label == 1
