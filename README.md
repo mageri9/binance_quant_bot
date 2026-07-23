@@ -111,6 +111,14 @@ python scripts/migrate_sqlite_to_postgres.py --help
 pytest
 ```
 
+Сравнить side-specific classification с net-return и quantile regression на одинаковых walk-forward OOS-фолдах:
+
+```bash
+python -m scripts.compare_side_models datasets/BTCUSDT_1h_vYOUR_VERSION.parquet datasets/BTCUSDT_1h_vYOUR_VERSION.json --output side_comparison.json
+```
+
+В отчёте `trade_change_pct` и `profit_factor_delta` для регрессий даны относительно side-specific classifier. Квантиль `0.25` — консервативная оценка conditional edge; гипотеза проходит при сокращении сделок минимум на 20% и PF выше на 0.1–0.3 на достаточном OOS-объёме.
+
 ## Конфигурация
 
 Полный список переменных находится в `.env.example`. Наиболее важные:
