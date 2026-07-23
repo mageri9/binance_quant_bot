@@ -20,10 +20,11 @@ def test_perform_grid_search_success():
     # Имитируем рост, чтобы сработал Take-Profit на значении 105
     df_valid = pd.DataFrame(
         {
+            "open": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
             "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
-            "high": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+            "high": [100.5, 101.5, 105.5, 103.5, 104.5, 105.5],
             "low": [99.5, 100.5, 101.5, 102.5, 103.5, 104.5],
-            "predicted_signal": [0, 0, 1, 0, 0, 0],
+            "predicted_signal": [0, 1, 0, 0, 0, 0],
         }
     )
 
@@ -180,10 +181,11 @@ async def test_get_best_calibration_prefers_sibling_oos_parquet(tmp_path):
     # Строим OOS-датафрейм с гарантированным TP-сценарием, как в
     # test_perform_grid_search_success
     df_oos = pd.DataFrame({
+        "open": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
         "close": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
-        "high": [100.5, 101.5, 102.5, 103.5, 104.5, 105.5],
+        "high": [100.5, 101.5, 105.5, 103.5, 104.5, 105.5],
         "low": [99.5, 100.5, 101.5, 102.5, 103.5, 104.5],
-        "predicted_signal": [0, 0, 1, 0, 0, 0],
+        "predicted_signal": [0, 1, 0, 0, 0, 0],
     })
     df_oos.to_parquet(oos_path, index=False)
 
