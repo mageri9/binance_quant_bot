@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 
-from src.features.engineering import add_features
+from src.features.engineering import OHLCV_FEATURES, add_features
 
 
 def test_add_features_success():
@@ -50,6 +50,9 @@ def test_add_features_success():
     for col in expected_cols:
         assert col in df_features.columns
 
+    for col in OHLCV_FEATURES:
+        assert col in df_features.columns
+
     # Из-за оконных функций первые строки будут содержать NaN.
     # Проверяем, что к 30-й строке все новые значения успешно рассчитались.
     row_30 = df_features.iloc[30]
@@ -88,6 +91,26 @@ def test_add_features_success():
     assert df_features["bb_middle_pct"].dropna().abs().max() < 1.0
     assert df_features["atr_pct"].dropna().abs().max() < 1.0
     assert df_features["macd_pct"].dropna().abs().max() < 1.0
+
+    assert df_features["close_location"].dropna().between(0, 1).all()
+    assert (df_features["hl_range_pct"].dropna() >= 0).all()
+    assert (df_features[["rv_10", "rv_20"]].dropna() >= 0).all().all()
+
+
+def test_ohlcv_features_do_not_use_future_candles():
+    close = np.linspace(100, 220, 80)
+    df = pd.DataFrame({
+        "open": close - 1, "high": close + 2, "low": close - 2,
+        "close": close, "volume": np.linspace(1000, 2000, 80),
+    })
+    original = add_features(df)
+    changed = df.copy()
+    changed.loc[60:, ["open", "high", "low", "close", "volume"]] *= 5
+    recomputed = add_features(changed)
+
+    pd.testing.assert_frame_equal(
+        original.loc[:59, OHLCV_FEATURES], recomputed.loc[:59, OHLCV_FEATURES],
+    )
 
 
 def test_drift_detection_success():

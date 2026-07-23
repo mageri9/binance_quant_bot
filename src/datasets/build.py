@@ -10,7 +10,7 @@ from loguru import logger
 
 from src.crud.kline import KlineRepository
 from src.utils.memory import downcast_dtypes
-from src.features.engineering import add_features
+from src.features.engineering import DEFAULT_FEATURE_SCHEMA, add_features
 from src.labels.generator import generate_binary_labels, generate_triple_labels
 
 
@@ -77,10 +77,7 @@ async def build_and_save_dataset(
 
     is_atr_mode = tp_atr_mult is not None and sl_atr_mult is not None
 
-    feature_schema = [
-        "rsi", "macd_pct", "macd_signal_pct", "macd_hist_pct", "volatility",
-        "volume_ratio", "bb_upper_pct", "bb_middle_pct", "bb_lower_pct", "atr_pct", "adx"
-    ]
+    feature_schema = DEFAULT_FEATURE_SCHEMA
     label_config = {
         "horizon": horizon, "threshold": threshold,
         "tp_atr_mult": tp_atr_mult, "sl_atr_mult": sl_atr_mult,

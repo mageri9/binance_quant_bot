@@ -4,6 +4,23 @@ import numpy as np
 from src.utils.memory import downcast_dtypes
 
 
+# Families are kept explicit so offline ablations can compare them against the
+# established technical-indicator baseline without changing their definitions.
+TECHNICAL_FEATURES = [
+    "rsi", "macd_pct", "macd_signal_pct", "macd_hist_pct", "volatility",
+    "volume_ratio", "bb_upper_pct", "bb_middle_pct", "bb_lower_pct", "atr_pct", "adx",
+]
+OHLCV_FEATURE_GROUPS = {
+    "lagged_returns": ["return_1", "return_3", "return_6"],
+    "range_location": ["hl_range_pct", "close_location"],
+    "realized_volatility": ["rv_10", "rv_20"],
+    "volume_surprise": ["volume_surprise_20"],
+    "trend_slopes": ["trend_slope_10", "trend_slope_20"],
+}
+OHLCV_FEATURES = [feature for group in OHLCV_FEATURE_GROUPS.values() for feature in group]
+DEFAULT_FEATURE_SCHEMA = TECHNICAL_FEATURES + OHLCV_FEATURES
+
+
 def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """
     Рассчитывает индекс относительной силы (RSI) сглаживанием по методу Уайлдера.
@@ -134,6 +151,17 @@ def calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return adx
 
 
+def calculate_trend_slope(close: pd.Series, period: int) -> pd.Series:
+    """Return the rolling least-squares slope of log-price per candle."""
+    log_close = np.log(close.where(close > 0))
+    x = np.arange(period, dtype=float)
+    sum_x = x.sum()
+    denominator = period * np.square(x).sum() - sum_x ** 2
+    sum_y = log_close.rolling(period).sum()
+    sum_xy = log_close.rolling(period).apply(lambda values: np.dot(x, values), raw=True)
+    return (period * sum_xy - sum_x * sum_y) / denominator
+
+
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Принимает DataFrame со свечами (open, high, low, close, volume)
@@ -176,5 +204,28 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df_out["macd_pct"] = macd_line / df_out["close"]
     df_out["macd_signal_pct"] = signal_line / df_out["close"]
     df_out["macd_hist_pct"] = macd_hist / df_out["close"]
+
+    # OHLCV-only candidates for the P2 ablation.  Every value at t uses the
+    # completed candle t and earlier observations, never a future candle.
+    returns = df_out["close"].pct_change()
+    df_out["return_1"] = returns
+    df_out["return_3"] = df_out["close"].pct_change(3)
+    df_out["return_6"] = df_out["close"].pct_change(6)
+    df_out["hl_range_pct"] = (df_out["high"] - df_out["low"]) / df_out["close"]
+    candle_range = df_out["high"] - df_out["low"]
+    df_out["close_location"] = np.where(
+        candle_range > 0,
+        (df_out["close"] - df_out["low"]) / candle_range,
+        0.5,
+    )
+    df_out["rv_10"] = np.sqrt(returns.pow(2).rolling(10).sum())
+    df_out["rv_20"] = np.sqrt(returns.pow(2).rolling(20).sum())
+
+    log_volume = np.log1p(df_out["volume"].clip(lower=0))
+    volume_mean = log_volume.rolling(20).mean().shift(1)
+    volume_std = log_volume.rolling(20).std().shift(1)
+    df_out["volume_surprise_20"] = (log_volume - volume_mean) / (volume_std + 1e-8)
+    df_out["trend_slope_10"] = calculate_trend_slope(df_out["close"], 10)
+    df_out["trend_slope_20"] = calculate_trend_slope(df_out["close"], 20)
 
     return downcast_dtypes(df_out)
