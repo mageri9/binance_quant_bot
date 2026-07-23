@@ -208,11 +208,44 @@ def test_simulate_strategy_trade_log_matches_metrics():
     metrics, trades_df = simulate_strategy(df, horizon=5, return_trade_log=True)
 
     assert len(trades_df) == metrics["total_trades"]
-    assert set(trades_df.columns) == {"entry_idx", "exit_idx", "side", "return"}
+    assert set(trades_df.columns) == {
+        "entry_idx", "exit_idx", "side", "return", "position_size"
+    }
     assert trades_df.iloc[0]["entry_idx"] == 1
     assert trades_df.iloc[0]["return"] > 0  # TP hit
     assert trades_df.iloc[1]["entry_idx"] == 5
     assert trades_df.iloc[1]["return"] < 0  # SL hit
+
+
+def test_simulate_strategy_sizes_by_stop_risk_and_volatility():
+    df = pd.DataFrame({
+        "open": [100.0, 100.0, 100.0],
+        "close": [100.0, 100.0, 98.0],
+        "high": [100.0, 100.0, 100.0],
+        "low": [100.0, 98.0, 98.0],
+        "volatility": [0.01, 0.04, 0.04],
+        "predicted_signal": [1, 0, 0],
+    })
+    metrics, trades = simulate_strategy(
+        df, horizon=5, sl_pct=0.02, tp_pct=None, transaction_cost=0.0,
+        stop_risk_pct=0.01, target_volatility=0.02, max_position_pct=1.0,
+        return_trade_log=True,
+    )
+    assert trades.iloc[0]["position_size"] == pytest.approx(1.0)
+    assert metrics["expectancy"] == pytest.approx(-0.02)
+
+
+def test_simulate_strategy_caps_stop_risk_sizing():
+    df = pd.DataFrame({
+        "open": [100.0, 100.0, 99.0], "close": [100.0, 100.0, 99.0],
+        "high": [100.0, 100.0, 100.0], "low": [100.0, 99.0, 99.0],
+        "predicted_signal": [1, 0, 0],
+    })
+    _, trades = simulate_strategy(
+        df, horizon=5, sl_pct=0.01, tp_pct=None, transaction_cost=0.0,
+        stop_risk_pct=0.02, max_position_pct=0.75, return_trade_log=True,
+    )
+    assert trades.iloc[0]["position_size"] == pytest.approx(0.75)
 
 
 def test_simulate_strategy_default_no_trade_log():

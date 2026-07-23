@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     PAPER_RISK_PCT: float = 0.10
     PAPER_MIN_ALLOCATION: float = 1.0
 
+    # Backtest-only risk experiment; empty values keep fixed 100% sizing.
+    BACKTEST_STOP_RISK_PCT: float | None = 0.01
+    BACKTEST_TARGET_VOLATILITY: float | None = 0.01
+    BACKTEST_MAX_POSITION_PCT: float = 1.0
+
     # Single Binance Futures execution schedule for backtests and paper fills.
     EXECUTION_COMMISSION: float = 0.0004
     EXECUTION_SLIPPAGE: float = 0.0002

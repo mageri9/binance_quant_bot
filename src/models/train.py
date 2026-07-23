@@ -116,6 +116,9 @@ async def tune_lgbm_hyperparameters(
             sim_df,
             predicted_col="predicted_signal",
             execution_kernel=ExecutionKernel(costs_from_settings(settings)),
+            stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
+            target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
+            max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
         )
         if sim_metrics["total_trades"] < settings.OPTUNA_MIN_TRADES:
             return -1e6
@@ -511,6 +514,9 @@ async def run_lgbm_experiment(
                 "sl_pct": settings.PAPER_SL_PCT,
                 "tp_pct": settings.PAPER_TP_PCT,
                 "execution_kernel": ExecutionKernel(costs_from_settings(settings)),
+                "stop_risk_pct": settings.BACKTEST_STOP_RISK_PCT,
+                "target_volatility": settings.BACKTEST_TARGET_VOLATILITY,
+                "max_position_pct": settings.BACKTEST_MAX_POSITION_PCT,
             },
         )
         logger.info(
@@ -526,6 +532,9 @@ async def run_lgbm_experiment(
         sl_pct=settings.PAPER_SL_PCT,
         tp_pct=settings.PAPER_TP_PCT,
         execution_kernel=ExecutionKernel(costs_from_settings(settings)),
+        stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
+        target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
+        max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
     )
 
     final_model = LGBMClassifier(**model_kwargs)

@@ -102,6 +102,10 @@ def simulate_strategy(
     tp_atr_mult: float | None = None,
     return_trade_log: bool = False,
     execution_kernel: ExecutionKernel | None = None,
+    stop_risk_pct: float | None = None,
+    target_volatility: float | None = None,
+    volatility_col: str = "volatility",
+    max_position_pct: float = 1.0,
 ) -> dict | tuple[dict, pd.DataFrame]:
     """
     ...(докстринг как был)...
@@ -111,6 +115,13 @@ def simulate_strategy(
     вместо фиксированных sl_pct/tp_pct. Если ATR в момент входа NaN или <= 0,
     сделка использует фолбэк на sl_pct/tp_pct для этой конкретной сделки.
     """
+    if stop_risk_pct is not None and stop_risk_pct <= 0:
+        raise ValueError("stop_risk_pct must be positive")
+    if target_volatility is not None and target_volatility <= 0:
+        raise ValueError("target_volatility must be positive")
+    if max_position_pct <= 0:
+        raise ValueError("max_position_pct must be positive")
+
     prices = df["close"].values
     # A closed-candle signal can only be acted on at the next candle's open.
     # Old artifacts without OHLC opens remain readable, but production data has it.
@@ -119,6 +130,7 @@ def simulate_strategy(
     lows = df["low"].values
     signals = df[predicted_col].values
     atr_values = df["atr"].values if "atr" in df.columns else None
+    volatility_values = df[volatility_col].values if volatility_col in df.columns else None
     use_atr_barrier = (
         sl_atr_mult is not None and tp_atr_mult is not None and atr_values is not None
     )
@@ -141,6 +153,7 @@ def simulate_strategy(
     entry_idx = 0
     sl_price = 0.0
     tp_price = 0.0
+    position_size = 1.0
     exit_at_next_open = False
 
     def _close_trade(exit_idx, exit_reference_price):
@@ -157,14 +170,16 @@ def simulate_strategy(
         trade_return = float(kernel.realized_return(
             entry=entry_fill, exit=exit_fill, is_short=position_type == "SHORT",
         ))
-        trades.append(trade_return)
+        sized_return = trade_return * position_size
+        trades.append(sized_return)
         if return_trade_log:
             trade_log.append(
                 {
                     "entry_idx": entry_idx,
                     "exit_idx": exit_idx,
                     "side": position_type,
-                    "return": trade_return,
+                    "return": sized_return,
+                    "position_size": position_size,
                 }
             )
 
@@ -172,6 +187,7 @@ def simulate_strategy(
         if position_type is not None and exit_at_next_open:
             _close_trade(i, opens[i])
             position_type = None
+            position_size = 1.0
             exit_at_next_open = False
             continue
 
@@ -204,6 +220,13 @@ def simulate_strategy(
                             else float("inf")
                         )
 
+                    position_size = _position_size(
+                        entry_price=entry_price, stop_price=sl_price,
+                        volatility=(volatility_values[signal_idx] if volatility_values is not None else None),
+                        stop_risk_pct=stop_risk_pct, target_volatility=target_volatility,
+                        max_position_pct=max_position_pct,
+                    )
+
                 elif signals[signal_idx] == -1:
                     position_type = "SHORT"
                     entry_price = opens[i]
@@ -222,6 +245,13 @@ def simulate_strategy(
                             if tp_pct is not None
                             else float("-inf")
                         )
+
+                    position_size = _position_size(
+                        entry_price=entry_price, stop_price=sl_price,
+                        volatility=(volatility_values[signal_idx] if volatility_values is not None else None),
+                        stop_risk_pct=stop_risk_pct, target_volatility=target_volatility,
+                        max_position_pct=max_position_pct,
+                    )
         if position_type == "LONG":
             if lows[i] <= sl_price:
                 _close_trade(i, sl_price)
@@ -250,6 +280,24 @@ def simulate_strategy(
 
     metrics = calculate_strategy_metrics(trades)
     if return_trade_log:
-        trades_df = pd.DataFrame(trade_log, columns=["entry_idx", "exit_idx", "side", "return"])
+        trades_df = pd.DataFrame(
+            trade_log,
+            columns=["entry_idx", "exit_idx", "side", "return", "position_size"],
+        )
         return metrics, trades_df
     return metrics
+
+
+def _position_size(
+    *, entry_price: float, stop_price: float, volatility: float | None,
+    stop_risk_pct: float | None, target_volatility: float | None,
+    max_position_pct: float,
+) -> float:
+    """Return the equity fraction allocated to one backtest trade."""
+    size = 1.0
+    stop_distance = abs(entry_price - stop_price) / entry_price if entry_price else 0.0
+    if stop_risk_pct is not None and np.isfinite(stop_distance) and stop_distance > 0:
+        size = stop_risk_pct / stop_distance
+    if target_volatility is not None and volatility is not None and np.isfinite(volatility) and volatility > 0:
+        size *= target_volatility / volatility
+    return float(min(size, max_position_pct))
