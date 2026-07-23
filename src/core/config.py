@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     EDGE_THRESHOLD_GRID: list[float] = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
     EDGE_MIN_COVERAGE: float = 0.20
     OPTUNA_OBJECTIVE_METRIC: str = "sharpe"  # "f1" | "sharpe" | "expectancy"
+    SOFT_REGIME_ENSEMBLE_ENABLED: bool = True
+    SOFT_REGIME_TEMPERATURE: float = 1.0
 
     # Redis
     REDIS_HOST: str = "localhost"

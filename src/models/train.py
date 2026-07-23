@@ -16,6 +16,7 @@ from src.models.meta import (
     PRIMARY_OOF_ROW_COLUMN,
     PRIMARY_TRAIN_END_COLUMN,
 )
+from src.models.regimes import fit_soft_regime_ensemble, soft_regime_weights
 from src.crud.experiment import ExperimentRepository
 from src.datasets.build import get_git_sha
 from src.core.config import get_settings
@@ -227,7 +228,8 @@ async def tune_lgbm_hyperparameters(
 
 def _run_walk_forward_folds(
     df_train_val, feature_cols, target_col, train_size, test_size,
-    label_horizon, model_kwargs, is_multiclass, avg_method,
+    label_horizon, model_kwargs, is_multiclass, avg_method, use_soft_regimes,
+    regime_temperature,
 ):
     splitter = TimeSeriesWalkForwardSplitter(
         train_size=train_size, test_size=test_size, label_horizon=label_horizon,
@@ -253,8 +255,13 @@ def _run_walk_forward_folds(
             y_train = y_train.astype(int)
             y_test = y_test.astype(int)
 
-        model = LGBMClassifier(**model_kwargs)
-        model.fit(X_train, y_train)
+        if use_soft_regimes:
+            model = fit_soft_regime_ensemble(
+                X_train, y_train, model_kwargs, regime_temperature,
+            )
+        else:
+            model = LGBMClassifier(**model_kwargs)
+            model.fit(X_train, y_train)
 
         y_pred = model.predict(X_test)
         y_proba = model.predict_proba(X_test)
@@ -273,6 +280,11 @@ def _run_walk_forward_folds(
         else:
             test_df_copy["predicted_signal"] = y_pred
         test_df_copy["predicted_confidence"] = confidence
+        if use_soft_regimes:
+            # Persist the OOF blend used for this row for regime diagnostics.
+            memberships = soft_regime_weights(X_test, regime_temperature)
+            for regime, values in memberships.items():
+                test_df_copy[f"regime_weight_{regime}"] = values.to_numpy()
         # Preserve proof that each primary prediction was generated out-of-fold.
         test_df_copy[PRIMARY_OOF_FOLD_COLUMN] = info["fold"]
         test_df_copy[PRIMARY_TRAIN_END_COLUMN] = info["train_end_idx"] - label_horizon - 1
@@ -403,6 +415,9 @@ async def run_lgbm_experiment(
     if settings.OPTUNA_TUNING_ENABLED and best_params:
         model_kwargs.update(best_params)
 
+    use_soft_regimes = bool(getattr(settings, "SOFT_REGIME_ENSEMBLE_ENABLED", True))
+    regime_temperature = float(getattr(settings, "SOFT_REGIME_TEMPERATURE", 1.0))
+
     (
         all_y_true,
         all_y_pred,
@@ -421,6 +436,8 @@ async def run_lgbm_experiment(
         model_kwargs,
         is_multiclass,
         avg_method,
+        use_soft_regimes,
+        regime_temperature,
     )
 
     if fold_count == 0 or best_model is None:
@@ -438,14 +455,20 @@ async def run_lgbm_experiment(
         logger.info(
             "[MLOps Train] Обучаю gate-кандидата на df_train_val (без holdout данных)..."
         )
-        gate_candidate = LGBMClassifier(**model_kwargs)
         X_train_val = df_train_val[feature_cols]
         y_train_val = df_train_val[target_col]
         if is_multiclass:
             y_train_val_mapped = y_train_val.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
         else:
             y_train_val_mapped = y_train_val.astype(int)
-        await asyncio.to_thread(gate_candidate.fit, X_train_val, y_train_val_mapped)
+        if use_soft_regimes:
+            gate_candidate = await asyncio.to_thread(
+                fit_soft_regime_ensemble, X_train_val, y_train_val_mapped,
+                model_kwargs, regime_temperature,
+            )
+        else:
+            gate_candidate = LGBMClassifier(**model_kwargs)
+            await asyncio.to_thread(gate_candidate.fit, X_train_val, y_train_val_mapped)
 
         X_holdout = df_holdout[feature_cols]
         y_holdout = df_holdout[target_col]
@@ -486,13 +509,21 @@ async def run_lgbm_experiment(
     )
     # Produce downstream predictions from an inner-train-only candidate. The
     # economic segment is never used while selecting risk parameters.
-    partition_candidate = LGBMClassifier(**model_kwargs)
     y_inner = df_inner_train[target_col]
     if is_multiclass:
         y_inner = y_inner.map({-1.0: 0, 0.0: 1, 1.0: 2}).astype(int)
     else:
         y_inner = y_inner.astype(int)
-    await asyncio.to_thread(partition_candidate.fit, df_inner_train[feature_cols], y_inner)
+    if use_soft_regimes:
+        partition_candidate = await asyncio.to_thread(
+            fit_soft_regime_ensemble, df_inner_train[feature_cols], y_inner,
+            model_kwargs, regime_temperature,
+        )
+    else:
+        partition_candidate = LGBMClassifier(**model_kwargs)
+        await asyncio.to_thread(
+            partition_candidate.fit, df_inner_train[feature_cols], y_inner,
+        )
 
     def _prediction_frame(source_df: pd.DataFrame, split_name: str) -> pd.DataFrame:
         result = source_df.copy()
@@ -503,6 +534,10 @@ async def run_lgbm_experiment(
         else:
             result["predicted_signal"] = predicted
         result["predicted_confidence"] = probabilities.max(axis=1)
+        if use_soft_regimes:
+            memberships = soft_regime_weights(result[feature_cols], regime_temperature)
+            for regime, values in memberships.items():
+                result[f"regime_weight_{regime}"] = values.to_numpy()
         result[WFO_SPLIT_COLUMN] = split_name
         return result
 
@@ -546,8 +581,6 @@ async def run_lgbm_experiment(
         max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
     )
 
-    final_model = LGBMClassifier(**model_kwargs)
-
     df_final_train = pd.concat([df_inner_train, df_calibration], ignore_index=True)
     X_all = df_final_train[feature_cols]
     y_all = df_final_train[target_col]
@@ -556,7 +589,14 @@ async def run_lgbm_experiment(
     else:
         y_all_mapped = y_all.astype(int)
 
-    await asyncio.to_thread(final_model.fit, X_all, y_all_mapped)
+    if use_soft_regimes:
+        final_model = await asyncio.to_thread(
+            fit_soft_regime_ensemble, X_all, y_all_mapped, model_kwargs,
+            regime_temperature,
+        )
+    else:
+        final_model = LGBMClassifier(**model_kwargs)
+        await asyncio.to_thread(final_model.fit, X_all, y_all_mapped)
 
     # Объединяем OOS фолды
     inner_oos = pd.concat(oos_dfs).sort_values("open_time").reset_index(drop=True)
@@ -640,6 +680,8 @@ async def run_lgbm_experiment(
         "train_size": train_size,
         "test_size": test_size,
         "wfo_protocol": "nested_inner_optuna_calibration_economic_test",
+        "soft_regime_ensemble": use_soft_regimes,
+        "soft_regime_temperature": regime_temperature if use_soft_regimes else None,
         "features_used": feature_cols,
     }
     if best_params.get("num_leaves"):
@@ -677,6 +719,11 @@ async def run_lgbm_experiment(
         "features": feature_cols,
         "features_hash": features_hash,
         "model": final_model,
+        "soft_regime_ensemble": {
+            "enabled": use_soft_regimes,
+            "regimes": ["bear", "range", "bull"] if use_soft_regimes else [],
+            "temperature": regime_temperature if use_soft_regimes else None,
+        },
         "scaler": None,
         "calibration": {
             "sl_pct": settings.PAPER_SL_PCT,
