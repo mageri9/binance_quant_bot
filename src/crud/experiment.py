@@ -1,4 +1,5 @@
 import json
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.models import Experiment
 
@@ -29,3 +30,14 @@ class ExperimentRepository:
         await self.session.commit()
         await self.session.refresh(experiment)
         return experiment
+
+    async def list_experiments(self, model_name: str | None = None, limit: int = 100) -> list[Experiment]:
+        stmt = select(Experiment).order_by(Experiment.created_at.desc()).limit(limit)
+        if model_name is not None:
+            stmt = stmt.where(Experiment.model_name == model_name)
+        result = await self.session.execute(stmt)
+        return list(result.scalars())
+
+    async def get_metrics(self, experiment_id: int) -> dict | None:
+        experiment = await self.session.get(Experiment, experiment_id)
+        return json.loads(experiment.metrics) if experiment else None

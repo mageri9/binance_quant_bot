@@ -37,6 +37,9 @@ async def tune_lgbm_hyperparameters(
     label_horizon: int = 0,
     max_folds: int | None = None,
     objective_metric: str = "f1",
+    symbol: str = "unknown",
+    timeframe: str = "unknown",
+    schema_hash: str = "unknown",
 ) -> dict:
     """
     Проводит автоматический подбор параметров LightGBM с помощью Optuna.
@@ -67,8 +70,14 @@ async def tune_lgbm_hyperparameters(
         sim_df = test_df.copy()
         sim_df["predicted_signal"] = predicted_signal
 
-        sim_metrics = simulate_strategy(sim_df, predicted_col="predicted_signal")
-        return sim_metrics["sharpe_ratio"] if objective_metric == "sharpe" else sim_metrics["expectancy"]
+        settings = get_settings()
+        total_cost = settings.OPTUNA_COMMISSION + settings.OPTUNA_SLIPPAGE + settings.OPTUNA_FUNDING_PER_TRADE
+        sim_metrics = simulate_strategy(
+            sim_df, predicted_col="predicted_signal", transaction_cost=total_cost,
+        )
+        if sim_metrics["total_trades"] < settings.OPTUNA_MIN_TRADES:
+            return -1e6
+        return sim_metrics["sharpe_ci_low"] if objective_metric == "sharpe" else sim_metrics["expectancy"]
 
     def objective(trial):
         params = {
@@ -118,7 +127,17 @@ async def tune_lgbm_hyperparameters(
 
         return float(np.mean(fold_scores))
 
-    study = optuna.create_study(direction="maximize")
+    settings = get_settings()
+    storage_url = settings.OPTUNA_STORAGE_URL or None
+    study_name = "lgbm__" + "__".join(
+        value.replace("/", "_").replace(":", "_")
+        for value in (symbol, timeframe, target_col, schema_hash)
+    )
+    study = optuna.create_study(
+        direction="maximize", study_name=study_name, storage=storage_url,
+        load_if_exists=True,
+        sampler=optuna.samplers.TPESampler(seed=settings.OPTUNA_SEED),
+    )
     await asyncio.to_thread(study.optimize, objective, n_trials=n_trials)
 
     best_params = study.best_params
@@ -137,6 +156,8 @@ async def tune_lgbm_hyperparameters(
         "n_trials": n_trials,
         "features_used": feature_cols,
         "objective_metric": objective_metric,
+        "study_name": study_name,
+        "storage_persistent": storage_url is not None,
     }
     tuning_metrics = {
         f"best_cv_{objective_metric}_score": best_value,
@@ -291,6 +312,9 @@ async def run_lgbm_experiment(
             label_horizon=purge_rows,
             max_folds=settings.OPTUNA_MAX_FOLDS,
             objective_metric=getattr(settings, "OPTUNA_OBJECTIVE_METRIC", "f1"),
+            symbol=metadata["symbol"],
+            timeframe=metadata["timeframe"],
+            schema_hash=metadata.get("feature_schema_hash", "legacy"),
         )
         logger.info(f"[+] Лучшие параметры подобраны: {best_params}")
 

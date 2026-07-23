@@ -4,6 +4,8 @@ services:
     container_name: binance_quant_bot
     restart: unless-stopped
     env_file: .env
+    environment:
+      OPTUNA_STORAGE_URL: ${OPTUNA_STORAGE_URL}
     volumes:
       - ./src/db/db.db:/app/src/db/db.db
       - ./logs:/app/logs

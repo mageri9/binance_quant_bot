@@ -369,8 +369,20 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                     )
 
                     predictor = Predictor(model_path)
-                    signal = predictor.predict(df)
+                    signal, probabilities = predictor.predict_detailed(df)
                     latest_close = df["close"].iloc[-1]
+
+                    if probabilities is not None:
+                        from src.crud.paper import TradeRepository
+                        prediction = await TradeRepository(session).log_prediction(
+                            symbol=symbol, timeframe=timeframe,
+                            candle_time=int(df["open_time"].iloc[-1]),
+                            horizon=int(predictor.calibration.get("horizon", settings.LABEL_HORIZON)),
+                            model_id=predictor.model_id, price=float(latest_close),
+                            prediction=int(signal or 0), **probabilities,
+                        )
+                    else:
+                        prediction = None
 
                     # 6. Запускаем торговый движок (создан выше, в шаге 2.5)
                     log_msg = await trading_engine.process_signal(
@@ -378,6 +390,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                         signal,
                         latest_close,
                         model_id=predictor.model_id,
+                        prediction_id=prediction.id if prediction else None,
                         idempotency_key=(
                             f"{predictor.model_id}:{symbol}:{timeframe}:"
                             f"{int(df['open_time'].iloc[-1])}:{signal}"
@@ -547,6 +560,33 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             )
             return
 
+        latest_resolved_candle = getattr(klines[-(settings.LABEL_HORIZON + 1)], "open_time", None)
+        if isinstance(latest_resolved_candle, int):
+            from src.ml.lifecycle import decide_retraining, resolve_predictions
+
+            await resolve_predictions(
+                session, symbol=symbol, timeframe=timeframe,
+                candle_times_and_closes=[(k.open_time, float(k.close)) for k in klines],
+                threshold=settings.LABEL_THRESHOLD,
+            )
+            min_labels = getattr(settings, "RETRAIN_MIN_NEW_LABELS", 200)
+            max_age = getattr(settings, "RETRAIN_CONTROL_MAX_AGE_HOURS", 168)
+            decision = await decide_retraining(
+                session, symbol=symbol, timeframe=timeframe, target=settings.TARGET_COL,
+                latest_resolved_candle=latest_resolved_candle,
+                min_new_labels=min_labels if isinstance(min_labels, int) else 200,
+                max_age_hours=max_age if isinstance(max_age, int) else 168,
+            )
+            if not decision.should_train:
+                logger.debug(
+                    f"[Retrain - {symbol}] skipped: {decision.new_labels} new resolved labels"
+                )
+                return
+            retrain_trigger = ",".join(decision.triggers)
+        else:
+            # Compatibility for imported legacy/test candle objects.
+            retrain_trigger = "scheduled_control"
+
         # Дешёвая проверка (чтение из БД) сделана вне семафора — держать
         # блокировку ради неё незачем. Всё, что тяжело по памяти, — под ней.
         async with _TRAIN_SEMAPHORE:
@@ -567,6 +607,14 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 else None,
             )
             json_path = parquet_path.replace(".parquet", ".json")
+            if os.path.isfile(json_path):
+                with open(json_path, "r", encoding="utf-8") as metadata_file:
+                    dataset_metadata = __import__("json").load(metadata_file)
+            else:
+                dataset_metadata = {
+                    "version": version, "dataset_fingerprint": version,
+                    "features": [],
+                }
 
             baseline_result = await run_baseline_experiment(
                 session,
@@ -828,12 +876,17 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
                 # --- END ECONOMIC QUALITY GATE ---
 
-                accept_header = f"✅ {symbol} v{version} → <b>ПРИНЯТА В ПРОД</b>\n\n"
+                legacy_promote = getattr(settings, "MODEL_AUTO_PROMOTE_LEGACY", False)
+                accept_header = (
+                    f"✅ {symbol} v{version} → <b>ПРИНЯТА В ПРОД</b>\n\n"
+                    if legacy_promote
+                    else f"🧪 {symbol} v{version} → <b>CHALLENGER / SHADOW</b>\n\n"
+                )
                 msg = accept_header + msg + cal_report
                 if drift_warning:
                     msg += f"\n{drift_warning}"
 
-                if os.path.exists(model_path):
+                if legacy_promote and os.path.exists(model_path):
                     clean_symbol = symbol.replace("/", "").replace(":", "")
                     clean_tf = timeframe.replace("/", "")
                     backup_filename = (
@@ -854,13 +907,14 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             f"Не удалось скопировать бэкап для {symbol}: {copy_err}"
                         )
 
-                _atomic_copy(lgbm_result["model_path"], model_path)
-                logger.info(
-                    f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}"
-                )
+                if legacy_promote:
+                    _atomic_copy(lgbm_result["model_path"], model_path)
+                    logger.info(
+                        f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}"
+                    )
 
                 staging_oos_path = get_oos_path(lgbm_result["model_path"])
-                if os.path.exists(staging_oos_path):
+                if legacy_promote and os.path.exists(staging_oos_path):
                     production_oos_path = get_oos_path(model_path)
                     try:
                         _atomic_copy(staging_oos_path, production_oos_path)
@@ -868,6 +922,30 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         logger.error(
                             f"Не удалось скопировать OOS-parquet для {symbol}: {oos_copy_err}"
                         )
+
+                if isinstance(latest_resolved_candle, int):
+                    from src.crud.model_registry import ModelRegistryRepository
+                    from src.ml.lifecycle import record_training
+
+                    registry = ModelRegistryRepository(session)
+                    await registry.register(
+                        model_id=lgbm_result.get("model_id", f"{symbol}:{timeframe}:{dataset_metadata['version']}"),
+                        symbol=symbol, timeframe=timeframe, target=settings.TARGET_COL,
+                        status="challenger", artifact_uri=lgbm_result["model_path"],
+                        parameters=lgbm_result.get("parameters"),
+                        feature_schema=dataset_metadata["features"],
+                        dataset_fingerprint=dataset_metadata["dataset_fingerprint"],
+                        offline_metrics=lgbm_result.get("metrics"),
+                        trading_metrics=new_backtest_metrics,
+                        trained_at=datetime.now(timezone.utc),
+                        reason=f"offline gates passed; shadow evaluation required ({retrain_trigger})",
+                    )
+                    await record_training(
+                        session, symbol=symbol, timeframe=timeframe, target=settings.TARGET_COL,
+                        last_trained_candle=latest_resolved_candle,
+                        dataset_fingerprint=dataset_metadata["dataset_fingerprint"],
+                        trigger=retrain_trigger,
+                    )
 
             for admin_id in settings.ADMIN_IDS:
                 try:
@@ -886,7 +964,7 @@ async def retrain_loop(bot: Bot, symbol: str, timeframe: str):
     while True:
         try:
             await _run_retrain_cycle(bot, symbol, timeframe)
-            await asyncio.sleep(settings.RETRAIN_INTERVAL_SECONDS)
+            await asyncio.sleep(settings.RETRAIN_POLL_SECONDS)
 
         except Exception as e:
             logger.error(f"Ошибка в цикле автообучения для {symbol}: {e}")

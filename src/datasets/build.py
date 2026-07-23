@@ -5,6 +5,7 @@ from datetime import datetime
 import pandas as pd
 from sqlalchemy.ext.asyncio import AsyncSession
 import subprocess
+import hashlib
 from loguru import logger
 
 from src.crud.kline import KlineRepository
@@ -55,12 +56,6 @@ async def build_and_save_dataset(
     ]
     df = pd.DataFrame(data).sort_values("open_time").reset_index(drop=True)
 
-    clean_symbol = symbol.replace("/", "").replace(":", "")
-    os.makedirs(output_dir, exist_ok=True)
-
-    parquet_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.parquet")
-    json_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.json")
-
     def process_data_sync() -> pd.DataFrame:
         df_feats = add_features(df)
         df_feats["target_binary"] = generate_binary_labels(
@@ -71,7 +66,6 @@ async def build_and_save_dataset(
             tp_atr_mult=tp_atr_mult, sl_atr_mult=sl_atr_mult,
         )
         df_feats = downcast_dtypes(df_feats)
-        df_feats.to_parquet(parquet_path, index=False)
         return df_feats
 
     df_features = await asyncio.to_thread(process_data_sync)
@@ -83,14 +77,38 @@ async def build_and_save_dataset(
 
     is_atr_mode = tp_atr_mult is not None and sl_atr_mult is not None
 
+    feature_schema = [
+        "rsi", "macd_pct", "macd_signal_pct", "macd_hist_pct", "volatility",
+        "volume_ratio", "bb_upper_pct", "bb_middle_pct", "bb_lower_pct", "atr_pct", "adx"
+    ]
+    label_config = {
+        "horizon": horizon, "threshold": threshold,
+        "tp_atr_mult": tp_atr_mult, "sl_atr_mult": sl_atr_mult,
+    }
+    candle_bytes = pd.util.hash_pandas_object(
+        df[["open_time", "open", "high", "low", "close", "volume"]], index=False
+    ).values.tobytes()
+    identity = json.dumps({
+        "symbol": symbol, "timeframe": timeframe,
+        "range": [first_time_ms, last_time_ms],
+        "feature_schema": feature_schema, "label_config": label_config,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    dataset_fingerprint = hashlib.sha256(candle_bytes + identity).hexdigest()
+    version = dataset_fingerprint[:16]
+    clean_symbol = symbol.replace("/", "").replace(":", "")
+    os.makedirs(output_dir, exist_ok=True)
+    parquet_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.parquet")
+    json_path = os.path.join(output_dir, f"{clean_symbol}_{timeframe}_v{version}.json")
+    await asyncio.to_thread(df_features.to_parquet, parquet_path, index=False)
+
     metadata = {
         "symbol": symbol,
         "timeframe": timeframe,
         "version": version,
-        "features": [
-            "rsi", "macd_pct", "macd_signal_pct", "macd_hist_pct", "volatility",
-            "volume_ratio", "bb_upper_pct", "bb_middle_pct", "bb_lower_pct", "atr_pct", "adx"
-        ],
+        "dataset_fingerprint": dataset_fingerprint,
+        "feature_schema_hash": hashlib.sha256(json.dumps(feature_schema).encode()).hexdigest(),
+        "label_config_hash": hashlib.sha256(json.dumps(label_config, sort_keys=True).encode()).hexdigest(),
+        "features": feature_schema,
         "targets": {
             "target_binary": {
                 "type": "binary", "horizon": horizon, "threshold": 0.0,

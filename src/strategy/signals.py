@@ -12,6 +12,8 @@ def calculate_strategy_metrics(trades: list[float]) -> dict:
             "win_rate": 0.0,
             "profit_factor": 0.0,
             "sharpe_ratio": 0.0,
+            "sharpe_ci_low": 0.0,
+            "sharpe_ci_high": 0.0,
             "sortino_ratio": 0.0,
             "max_drawdown": 0.0,
             "expectancy": 0.0,
@@ -41,6 +43,14 @@ def calculate_strategy_metrics(trades: list[float]) -> dict:
     mean_return = float(np.mean(trades_arr))
     std_return = float(np.std(trades_arr))
     sharpe_ratio = mean_return / std_return if std_return > 0 else 0.0
+    # Approximate 95% CI for non-annualized Sharpe; conservative lower bound is
+    # used during tuning so a few lucky trades cannot dominate selection.
+    if total_trades > 1:
+        sharpe_se = float(np.sqrt((1.0 + 0.5 * sharpe_ratio**2) / total_trades))
+        sharpe_ci_low = sharpe_ratio - 1.96 * sharpe_se
+        sharpe_ci_high = sharpe_ratio + 1.96 * sharpe_se
+    else:
+        sharpe_ci_low = sharpe_ci_high = 0.0
 
     # 4. Коэффициент Сортино (риск только на убыточных сделках)
     downside_returns = trades_arr[trades_arr < 0]
@@ -70,6 +80,8 @@ def calculate_strategy_metrics(trades: list[float]) -> dict:
         "win_rate": win_rate,
         "profit_factor": profit_factor,
         "sharpe_ratio": sharpe_ratio,
+        "sharpe_ci_low": sharpe_ci_low,
+        "sharpe_ci_high": sharpe_ci_high,
         "sortino_ratio": sortino_ratio,
         "max_drawdown": max_drawdown,
         "expectancy": expectancy,

@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     JSON,
+    Float,
     Numeric,
     String,
     Text,
@@ -340,11 +341,37 @@ class ModelDeployment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     model_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown", index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), nullable=False, default="unknown")
+    target: Mapped[str] = mapped_column(String(50), nullable=False, default="unknown")
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     artifact_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
-    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    parameters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    feature_schema: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    dataset_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    offline_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    live_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    trading_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    trained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promoted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    shadow_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TrainingState(Base):
+    __tablename__ = "training_states"
+    __table_args__ = (UniqueConstraint("symbol", "timeframe", "target", name="uq_training_scope"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), nullable=False)
+    target: Mapped[str] = mapped_column(String(50), nullable=False)
+    last_trained_candle: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_dataset_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_trained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_trigger: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class PredictionLog(Base):
@@ -361,6 +388,13 @@ class PredictionLog(Base):
     prob_short: Mapped[float] = mapped_column(nullable=False)
     prob_hold: Mapped[float] = mapped_column(nullable=False)
     prob_long: Mapped[float] = mapped_column(nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(10), nullable=False, default="unknown")
+    candle_time: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    horizon: Mapped[int] = mapped_column(nullable=False, default=5)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    outcome_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    true_label: Mapped[int | None] = mapped_column(nullable=True)
+    realized_return: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     def __repr__(self) -> str:
         return f"<PredictionLog symbol={self.symbol} pred={self.prediction} model={self.model_id}>"

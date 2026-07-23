@@ -37,7 +37,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "DEBUG"
 
     # Retraining
-    RETRAIN_INTERVAL_SECONDS: int = 21600  # 4 раза в сутки
+    RETRAIN_INTERVAL_SECONDS: int = 21600  # Backward-compatible control interval.
+    RETRAIN_POLL_SECONDS: int = 900
+    RETRAIN_MIN_NEW_LABELS: int = 200
+    RETRAIN_CONTROL_MAX_AGE_HOURS: int = 168
+    LIVE_METRIC_MIN_TRADES: int = 30
+    LIVE_METRIC_MIN_WIN_RATE: float = 0.40
+    MODEL_AUTO_PROMOTE_LEGACY: bool = False
     RECONCILIATION_INTERVAL_SECONDS: int = 30
     MIN_KLINES_FOR_TRAIN: int = 8000
     TRAIN_SIZE: int = 3500
@@ -57,6 +63,12 @@ class Settings(BaseSettings):
     # Optuna Sizing parameters
     OPTUNA_TUNING_ENABLED: bool = True
     OPTUNA_TRIALS: int = 15
+    OPTUNA_SEED: int = 42
+    OPTUNA_STORAGE_URL: str = ""
+    OPTUNA_MIN_TRADES: int = 20
+    OPTUNA_COMMISSION: float = 0.0004
+    OPTUNA_SLIPPAGE: float = 0.0002
+    OPTUNA_FUNDING_PER_TRADE: float = 0.0001
     # Сколько последних (самых свежих) фолдов Walk-Forward использовать
     # при тюнинге. None = все фолды (старое поведение, дорого).
     # Ограничение снижает cost тюнинга и одновременно фокусирует подбор

@@ -75,7 +75,8 @@ async def test_build_and_save_dataset_success(temp_db_session):
 
         assert meta["symbol"] == "BTC/USDT"
         assert meta["timeframe"] == "1h"
-        assert meta["version"] == "1.0"
+        assert meta["version"] == meta["dataset_fingerprint"][:16]
+        assert len(meta["dataset_fingerprint"]) == 64
         assert "target_binary" in meta["targets"]
         assert meta["total_rows"] == 35
         assert "git_sha" in meta

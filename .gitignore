@@ -35,3 +35,4 @@ logs/
 models/staging/
 
 datasets/
+.pytest_tmp*/
