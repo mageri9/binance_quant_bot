@@ -17,6 +17,7 @@ from src.core.config import get_settings
 from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 from datetime import datetime, timezone
 from src.strategy.signals import simulate_strategy
+from src.execution.kernel import ExecutionKernel, costs_from_settings
 
 from src.utils.artifact_paths import get_oos_path
 
@@ -71,9 +72,10 @@ async def tune_lgbm_hyperparameters(
         sim_df["predicted_signal"] = predicted_signal
 
         settings = get_settings()
-        total_cost = settings.OPTUNA_COMMISSION + settings.OPTUNA_SLIPPAGE + settings.OPTUNA_FUNDING_PER_TRADE
         sim_metrics = simulate_strategy(
-            sim_df, predicted_col="predicted_signal", transaction_cost=total_cost,
+            sim_df,
+            predicted_col="predicted_signal",
+            execution_kernel=ExecutionKernel(costs_from_settings(settings)),
         )
         if sim_metrics["total_trades"] < settings.OPTUNA_MIN_TRADES:
             return -1e6

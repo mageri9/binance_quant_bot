@@ -3,6 +3,18 @@ import pandas as pd
 import numpy as np
 
 from src.strategy.signals import simulate_strategy
+from src.execution.kernel import ExecutionCosts, ExecutionKernel
+
+
+def _slippage_only_return(entry_price: float, exit_price: float) -> float:
+    kernel = ExecutionKernel(ExecutionCosts(
+        commission_rate=0.0, slippage_rate=0.001, funding_rate_per_trade=0.0,
+    ))
+    return float(kernel.realized_return(
+        entry=kernel.market_fill(side="buy", reference_price=entry_price, amount=1),
+        exit=kernel.market_fill(side="sell", reference_price=exit_price, amount=1),
+        is_short=False,
+    ))
 
 
 def test_simulate_strategy_time_exit():
@@ -55,9 +67,8 @@ def test_simulate_strategy_time_exit():
     # Доходность: (105 - 102) / 102 = 2.94117% (0.0294117)
     # Комиссия: 2 * 0.1% = 0.2% (0.002)
     # Итог: ~0.0274117
-    expected_return = (105 - 102) / 102 - (2 * 0.001)
-
-    assert pytest.approx(metrics["total_return"], abs=1e-5) == expected_return
+    # Shared execution applies adverse fill prices, not a flat return haircut.
+    assert pytest.approx(metrics["total_return"], abs=1e-5) == _slippage_only_return(102, 105)
     assert metrics["win_rate"] == 1.0
     assert metrics["expectancy"] > 0
 
@@ -148,9 +159,8 @@ def test_simulate_strategy_atr_barrier_long_tp_hit():
         sl_atr_mult=1.0, tp_atr_mult=2.0,
     )
     # entry=100, tp=100+2*1=102 -> high=102.5 на баре i=2 пробивает TP
-    expected_return = (102.0 - 100.0) / 100.0 - (2 * 0.001)
     assert metrics["total_trades"] == 1
-    assert abs(metrics["expectancy"] - expected_return) < 1e-9
+    assert metrics["expectancy"] == pytest.approx(_slippage_only_return(100, 102))
 
 
 def test_simulate_strategy_atr_barrier_falls_back_when_atr_missing():
@@ -166,9 +176,8 @@ def test_simulate_strategy_atr_barrier_falls_back_when_atr_missing():
         sl_atr_mult=1.0, tp_atr_mult=2.0,
     )
     # ATR NaN на входе -> фолбэк на фикс. tp_pct=0.04 -> tp=104 -> high=105 пробивает
-    expected_return = (104.0 - 100.0) / 100.0 - (2 * 0.001)
     assert metrics["total_trades"] == 1
-    assert abs(metrics["expectancy"] - expected_return) < 1e-9
+    assert metrics["expectancy"] == pytest.approx(_slippage_only_return(100, 104))
 
 def test_simulate_strategy_trade_log_matches_metrics():
     df = pd.DataFrame({

@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 
+from src.execution.kernel import ExecutionCosts, ExecutionKernel
+
 
 def calculate_strategy_metrics(trades: list[float]) -> dict:
     """
@@ -99,6 +101,7 @@ def simulate_strategy(
     sl_atr_mult: float | None = None,
     tp_atr_mult: float | None = None,
     return_trade_log: bool = False,
+    execution_kernel: ExecutionKernel | None = None,
 ) -> dict | tuple[dict, pd.DataFrame]:
     """
     ...(докстринг как был)...
@@ -118,6 +121,10 @@ def simulate_strategy(
     )
     n = len(df)
 
+    # Preserve transaction_cost for callers while sharing fill math with paper.
+    kernel = execution_kernel or ExecutionKernel(
+        ExecutionCosts(commission_rate=0.0, slippage_rate=transaction_cost, funding_rate_per_trade=0.0)
+    )
     trades = []
     trade_log = []
 
@@ -127,7 +134,20 @@ def simulate_strategy(
     sl_price = 0.0
     tp_price = 0.0
 
-    def _close_trade(exit_idx, trade_return):
+    def _close_trade(exit_idx, exit_reference_price):
+        entry_fill = kernel.market_fill(
+            side="sell" if position_type == "SHORT" else "buy",
+            reference_price=entry_price,
+            amount=1,
+        )
+        exit_fill = kernel.market_fill(
+            side="buy" if position_type == "SHORT" else "sell",
+            reference_price=exit_reference_price,
+            amount=1,
+        )
+        trade_return = float(kernel.realized_return(
+            entry=entry_fill, exit=exit_fill, is_short=position_type == "SHORT",
+        ))
         trades.append(trade_return)
         if return_trade_log:
             trade_log.append(
@@ -189,47 +209,29 @@ def simulate_strategy(
         else:
             if position_type == "LONG":
                 if lows[i] <= sl_price:
-                    trade_return = (sl_price - entry_price) / entry_price - (
-                        2 * transaction_cost
-                    )
-                    _close_trade(i, trade_return)
+                    _close_trade(i, sl_price)
                     position_type = None
                     continue
                 if highs[i] >= tp_price:
-                    trade_return = (tp_price - entry_price) / entry_price - (
-                        2 * transaction_cost
-                    )
-                    _close_trade(i, trade_return)
+                    _close_trade(i, tp_price)
                     position_type = None
                     continue
                 if i - entry_idx >= horizon:
-                    trade_return = (prices[i] - entry_price) / entry_price - (
-                        2 * transaction_cost
-                    )
-                    _close_trade(i, trade_return)
+                    _close_trade(i, prices[i])
                     position_type = None
                     continue
 
             elif position_type == "SHORT":
                 if highs[i] >= sl_price:
-                    trade_return = (entry_price - sl_price) / entry_price - (
-                        2 * transaction_cost
-                    )
-                    _close_trade(i, trade_return)
+                    _close_trade(i, sl_price)
                     position_type = None
                     continue
                 if lows[i] <= tp_price:
-                    trade_return = (entry_price - tp_price) / entry_price - (
-                        2 * transaction_cost
-                    )
-                    _close_trade(i, trade_return)
+                    _close_trade(i, tp_price)
                     position_type = None
                     continue
                 if i - entry_idx >= horizon:
-                    trade_return = (entry_price - prices[i]) / entry_price - (
-                        2 * transaction_cost
-                    )
-                    _close_trade(i, trade_return)
+                    _close_trade(i, prices[i])
                     position_type = None
                     continue
 

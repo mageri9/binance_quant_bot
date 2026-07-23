@@ -12,6 +12,7 @@ from src.risk.engine import RiskDecision, RiskEngine
 from src.risk.kill_switch import KillSwitchManager, KillSwitchState
 from src.telegram.formatter import TradingNotification
 from src.events import EventStore
+from src.execution.kernel import ExecutionKernel, SimulatedFill, costs_from_settings
 
 
 class TradingEngine:
@@ -554,28 +555,38 @@ class TradingEngine:
         price = Decimal(str(price))
         sl_price = Decimal(str(sl_price))
         tp_price = Decimal(str(tp_price))
+        kernel = ExecutionKernel(costs_from_settings(self.settings))
         active = await self.repo.get_active_trade(symbol, "paper")
         if is_close_order and active is not None:
-            pnl = (
-                (active.entry_price - price) * amount
-                if active.is_short
-                else (price - active.entry_price) * amount
+            entry_side = "sell" if active.is_short else "buy"
+            entry_fill = SimulatedFill(
+                side=entry_side,
+                reference_price=active.entry_price,
+                price=active.entry_price,
+                amount=active.amount,
+                commission=active.entry_price * active.amount * kernel.costs.commission_rate,
             )
-            await self.repo.close_trade(active, price, pnl)
+            exit_fill = kernel.market_fill(side=side, reference_price=price, amount=active.amount)
+            pnl = kernel.realized_pnl(
+                entry=entry_fill, exit=exit_fill, is_short=active.is_short,
+            )
+            await self.repo.close_trade(active, exit_fill.price, pnl)
             event = _format_position_closed(
                 symbol=symbol,
                 side=side,
-                price=price,
-                amount=amount,
+                price=exit_fill.price,
+                amount=active.amount,
                 pnl=pnl,
                 order_id="paper",
+                commissions=entry_fill.commission + exit_fill.commission,
             )
             await self._publish_notification(event, str(uuid.uuid4()))
             return event
 
+        entry_fill = kernel.market_fill(side=side, reference_price=price, amount=amount)
         trade = await self.repo.create_trade(
             symbol=symbol,
-            entry_price=price,
+            entry_price=entry_fill.price,
             amount=amount,
             sl_price=sl_price,
             tp_price=tp_price,
@@ -588,7 +599,7 @@ class TradingEngine:
         event = _format_position_opened(
             symbol=symbol,
             side=side,
-            price=price,
+            price=entry_fill.price,
             amount=amount,
             protection="SL ✅ · TP ✅ (симуляция)",
             order_id=f"paper-{trade.id}",
