@@ -587,6 +587,28 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             # Compatibility for imported legacy/test candle objects.
             retrain_trigger = "scheduled_control"
 
+        async def mark_retrain_attempt(*, outcome: str) -> None:
+            """Advance the cursor after a completed evaluation, even if rejected."""
+            if not isinstance(latest_resolved_candle, int):
+                return
+            try:
+                from src.ml.lifecycle import record_training
+
+                await record_training(
+                    session,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    target=settings.TARGET_COL,
+                    last_trained_candle=latest_resolved_candle,
+                    dataset_fingerprint=dataset_metadata["dataset_fingerprint"],
+                    trigger=f"{retrain_trigger}:{outcome}",
+                )
+            except Exception:
+                # Do not hide the rejection alert if the lifecycle cursor cannot be saved.
+                logger.exception(
+                    f"[Retrain - {symbol}] Failed to persist {outcome} evaluation cursor"
+                )
+
         # Дешёвая проверка (чтение из БД) сделана вне семафора — держать
         # блокировку ради неё незачем. Всё, что тяжело по памяти, — под ней.
         async with _TRAIN_SEMAPHORE:
@@ -702,6 +724,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             await bot.send_message(chat_id=admin_id, text=reject_msg)
                         except Exception as e:
                             logger.error(f"Не удалось отправить алерт админу: {e}")
+                    await mark_retrain_attempt(outcome="f1_quality_rejected")
                     return
                 else:
                     raise gate_err
@@ -726,6 +749,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     f"Причина: F1 не превысил baseline."
                 )
                 logger.warning(msg)
+                await mark_retrain_attempt(outcome="f1_rejected")
             else:
                 os_dir = os.path.dirname(model_path)
                 if os_dir:
@@ -872,6 +896,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             await bot.send_message(chat_id=admin_id, text=reject_msg)
                         except Exception as e:
                             logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+                    await mark_retrain_attempt(outcome="economic_rejected")
                     return
 
                 # --- END ECONOMIC QUALITY GATE ---

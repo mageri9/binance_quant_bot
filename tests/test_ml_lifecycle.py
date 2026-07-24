@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.db.models import PredictionLog, TrainingState
-from src.ml.lifecycle import decide_retraining, resolve_predictions
+from src.ml.lifecycle import decide_retraining, record_training, resolve_predictions
 
 
 @pytest.mark.asyncio
@@ -50,6 +50,30 @@ async def test_no_new_candle_never_retrains_on_schedule(temp_db_session):
     )
     assert not decision.should_train
     assert "scheduled_control" in decision.triggers
+
+
+@pytest.mark.asyncio
+async def test_rejected_evaluation_advances_retrain_cursor(temp_db_session):
+    """A rejected candidate must not retrain the identical labelled window."""
+    temp_db_session.add(TrainingState(
+        symbol="BTC/USDT", timeframe="1h", target="target_triple",
+        last_trained_candle=100,
+        last_trained_at=datetime.now(timezone.utc) - timedelta(days=30),
+    ))
+    await temp_db_session.commit()
+
+    await record_training(
+        temp_db_session, symbol="BTC/USDT", timeframe="1h", target="target_triple",
+        last_trained_candle=300, dataset_fingerprint="rejected-candidate",
+        trigger="new_labels:economic_rejected",
+    )
+
+    decision = await decide_retraining(
+        temp_db_session, symbol="BTC/USDT", timeframe="1h", target="target_triple",
+        latest_resolved_candle=300, min_new_labels=1, max_age_hours=168,
+    )
+
+    assert not decision.should_train
 
 
 @pytest.mark.asyncio
