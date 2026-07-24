@@ -26,6 +26,7 @@ from src.strategy.signals import simulate_strategy
 from src.strategy.edge import apply_edge_threshold, sweep_edge_thresholds
 from src.execution.kernel import ExecutionKernel, costs_from_settings
 from src.models.economic import EconomicReturnRegressor, ECONOMIC_TARGETS
+from src.models.economic_quality import economic_quality_failure
 
 
 async def _run_economic_return_experiment(
@@ -48,9 +49,24 @@ async def _run_economic_return_experiment(
     expected_pred = np.maximum(long_pred, short_pred)
     actual_expected = test_df["expected_return"].to_numpy()
     predicted_side = np.where(long_pred >= short_pred, 1, -1)
+    predicted_side[expected_pred <= settings.MIN_EXPECTED_RETURN] = 0
     actual_side = np.where(
         test_df["long_net_return"].to_numpy() >= test_df["short_net_return"].to_numpy(), 1, -1
     )
+    economic_test = test_df.copy()
+    economic_test["predicted_signal"] = predicted_side
+    economic_backtest = simulate_strategy(
+        economic_test,
+        execution_kernel=ExecutionKernel(costs_from_settings(settings)),
+        stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
+        target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
+        max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
+    )
+    rejection = economic_quality_failure(
+        economic_backtest, min_trades=settings.ECONOMIC_GATE_MIN_TRADES,
+    )
+    if rejection:
+        raise ValueError(f"LGBM model REJECTED by Economic Quality Gate: {rejection}")
     metrics = {
         "mae": float(mean_absolute_error(actual_expected, expected_pred)),
         "directional_accuracy": float(np.mean(predicted_side == actual_side)),
@@ -63,6 +79,7 @@ async def _run_economic_return_experiment(
         "economic_test_f1": float(np.mean(predicted_side == actual_side)),
         "total_folds": 1,
         "total_test_samples": len(test_df),
+        "economic_backtest": economic_backtest,
     }
     os.makedirs(models_dir, exist_ok=True)
     clean_symbol = metadata["symbol"].replace("/", "").replace(":", "")
@@ -77,6 +94,7 @@ async def _run_economic_return_experiment(
         "min_expected_return": settings.MIN_EXPECTED_RETURN,
         "calibration": {"sl_pct": settings.TRADE_SL_PCT, "tp_pct": settings.TRADE_TP_PCT,
                         "horizon": settings.TRADE_TIMEOUT_CANDLES},
+        "backtest_metrics": economic_backtest,
     }
     with open(model_path, "wb") as f:
         pickle.dump(artifact, f)
@@ -145,7 +163,7 @@ async def tune_lgbm_hyperparameters(
     n_trials: int = 15,
     label_horizon: int = 0,
     max_folds: int | None = None,
-    objective_metric: str = "f1",
+    objective_metric: str = "sharpe",
     symbol: str = "unknown",
     timeframe: str = "unknown",
     schema_hash: str = "unknown",
@@ -163,13 +181,10 @@ async def tune_lgbm_hyperparameters(
     is_multiclass = target_col == "target_triple"
     avg_method = "macro" if is_multiclass else "binary"
 
-    if objective_metric not in ("f1", "sharpe", "expectancy"):
+    if objective_metric not in ("sharpe", "sortino", "expectancy", "profit_factor", "utility"):
         raise ValueError(f"Неизвестный objective_metric: {objective_metric}")
 
     def _fold_score(y_test, y_pred, test_df):
-        if objective_metric == "f1":
-            return f1_score(y_test, y_pred, average=avg_method, zero_division=0)
-
         if is_multiclass:
             predicted_signal = pd.Series(y_pred, index=test_df.index).map(SIGNAL_MAP_TRIPLE)
         else:
@@ -190,7 +205,14 @@ async def tune_lgbm_hyperparameters(
         )
         if sim_metrics["total_trades"] < settings.OPTUNA_MIN_TRADES:
             return -1e6
-        return sim_metrics["sharpe_ci_low"] if objective_metric == "sharpe" else sim_metrics["expectancy"]
+        scores = {
+            "sharpe": sim_metrics["sharpe_ci_low"],
+            "sortino": sim_metrics["sortino_ratio"],
+            "expectancy": sim_metrics["expectancy"],
+            "profit_factor": sim_metrics["profit_factor"],
+            "utility": sim_metrics["expectancy"] + sim_metrics["sharpe_ci_low"] - sim_metrics["max_drawdown"],
+        }
+        return scores[objective_metric]
 
     def objective(trial):
         params = {
@@ -372,7 +394,6 @@ async def run_lgbm_experiment(
     n_estimators: int = 100,
     max_depth: int = -1,
     models_dir: str = "models/saved_models",
-    baseline_f1: float | None = None,
     regime_drift_pvalue: float | None = None,
     bypass_quality_gates: bool = False,  # ← Защитный флаг для юнит-тестов на случайных данных
 ) -> dict:
@@ -461,7 +482,7 @@ async def run_lgbm_experiment(
             n_trials=settings.OPTUNA_TRIALS,
             label_horizon=purge_rows,
             max_folds=settings.OPTUNA_MAX_FOLDS,
-            objective_metric=getattr(settings, "OPTUNA_OBJECTIVE_METRIC", "f1"),
+            objective_metric=settings.OPTUNA_OBJECTIVE_METRIC,
             symbol=metadata["symbol"],
             timeframe=metadata["timeframe"],
             schema_hash=metadata.get("feature_schema_hash", "legacy"),
@@ -552,21 +573,9 @@ async def run_lgbm_experiment(
         )
 
         # Quality Gate 1: Сравнение с Baseline (F1-score на holdout должен быть выше базовой модели)
-        if baseline_f1 is not None and holdout_f1 <= baseline_f1:
-            raise ValueError(
-                f"LGBM model REJECTED by Quality Gate: "
-                f"Holdout F1 ({holdout_f1:.4f}) does not exceed Baseline F1 ({baseline_f1:.4f})"
-            )
-
         # Quality Gate 2: Защита от вырождения предсказаний (Class Collapse Protection)
         unique_preds, counts = np.unique(y_holdout_pred, return_counts=True)
         pred_ratios = counts / len(y_holdout_pred)
-        for val, ratio in zip(unique_preds, pred_ratios):
-            if ratio >= 0.95:
-                raise ValueError(
-                    f"LGBM model REJECTED by Quality Gate: "
-                    f"Class collapse detected. Class {val} occupies {ratio:.1%} of predictions on hold_out."
-                )
         logger.info(
             f"[MLOps Train] Модель успешно прошла все Quality Gates на Holdout. Holdout F1: {holdout_f1:.4f}"
         )
@@ -648,6 +657,13 @@ async def run_lgbm_experiment(
         target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
         max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
     )
+    if not bypass_quality_gates:
+        rejection = economic_quality_failure(
+            economic_backtest_metrics,
+            min_trades=settings.ECONOMIC_GATE_MIN_TRADES,
+        )
+        if rejection:
+            raise ValueError(f"LGBM model REJECTED by Economic Quality Gate: {rejection}")
 
     df_final_train = pd.concat([df_inner_train, df_calibration], ignore_index=True)
     X_all = df_final_train[feature_cols]

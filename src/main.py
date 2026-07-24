@@ -547,8 +547,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
     from src.core.db import AsyncSessionFactory
     from src.crud.kline import KlineRepository
     from src.datasets.build import build_and_save_dataset
-    from src.models.baseline import run_baseline_experiment, compute_baseline_holdout_f1
     from src.models.train import run_lgbm_experiment
+    from src.models.economic_quality import economic_quality_failure
 
     settings = get_settings()
     model_path = settings.get_model_path(symbol, timeframe)
@@ -643,32 +643,6 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     "features": [],
                 }
 
-            baseline_result = await run_baseline_experiment(
-                session,
-                parquet_path,
-                json_path,
-                train_size=settings.TRAIN_SIZE,
-                test_size=settings.TEST_SIZE,
-            )
-            # baseline_f1 (усредненный по всей истории Walk-Forward) используется
-            # ниже только для сравнения new_f1 vs baseline_f1 в отчете о продвижении
-            # в прод — там обе метрики одной природы (усреднение по фолдам).
-            baseline_f1 = baseline_result["metrics"]["f1"]
-
-            # Для внутреннего Quality Gate в run_lgbm_experiment нужен baseline,
-            # честно сравнимый с holdout_f1 LGBM — то есть посчитанный на ТОМ ЖЕ
-            # train_val/holdout split, а не усредненный по всей истории.
-            baseline_holdout_result = await compute_baseline_holdout_f1(
-                session,
-                parquet_path,
-                json_path,
-                train_size=settings.TRAIN_SIZE,
-                test_size=settings.TEST_SIZE,
-            )
-            gate_baseline_f1 = baseline_holdout_result["f1"]
-            if gate_baseline_f1 is None:
-                gate_baseline_f1 = baseline_f1
-
             regime_drift_pvalue = None
             if os.path.exists(model_path):
                 try:
@@ -712,16 +686,14 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     train_size=settings.TRAIN_SIZE,
                     test_size=settings.TEST_SIZE,
                     models_dir="models/staging",
-                    baseline_f1=gate_baseline_f1,
                     regime_drift_pvalue=regime_drift_pvalue,
                 )
-                new_f1 = lgbm_result["metrics"]["f1"]
             except ValueError as gate_err:
                 err_msg = str(gate_err)
                 if "REJECTED" in err_msg:
                     logger.warning(f"[Retrain - {symbol}] {err_msg}")
                     reject_msg = (
-                        f"⚠️ {symbol} v{version} → <b>ОТКЛОНЕНА</b> (F1 Quality Gate)\n\n"
+                        f"⚠️ {symbol} v{version} → <b>ОТКЛОНЕНА</b> (Economic Quality Gate)\n\n"
                         f"🤖 <code>{err_msg}</code>"
                     )
                     for admin_id in settings.ADMIN_IDS:
@@ -729,33 +701,20 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             await bot.send_message(chat_id=admin_id, text=reject_msg)
                         except Exception as e:
                             logger.error(f"Не удалось отправить алерт админу: {e}")
-                    await mark_retrain_attempt(outcome="f1_quality_rejected")
+                    await mark_retrain_attempt(outcome="economic_quality_rejected")
                     return
                 else:
                     raise gate_err
 
-            decision_f1 = lgbm_result["metrics"].get("holdout_f1")
-            if decision_f1 is None:
-                decision_f1 = new_f1
-
-            # Формируем компактную строчку по классификации ML
-            f1_delta = decision_f1 - gate_baseline_f1
-            f1_delta_sign = "+" if f1_delta >= 0 else ""
+            economic_metrics = lgbm_result["metrics"].get("economic_backtest", {})
             ml_metrics_block = (
-                f"F1 {decision_f1:.3f} (+{f1_delta:.3f} vs BL {gate_baseline_f1:.3f})\n"
-                f"Acc {lgbm_result['metrics']['accuracy']:.3f}\n"
-                f"CV {new_f1:.3f}"
+                f"Expectancy {economic_metrics.get('expectancy', 0.0):.3%}\n"
+                f"Sharpe {economic_metrics.get('sharpe_ci_low', economic_metrics.get('sharpe_ratio', 0.0)):.3f}\n"
+                f"Profit factor {economic_metrics.get('profit_factor', 0.0):.3f}"
             )
 
-            if decision_f1 <= gate_baseline_f1:
-                msg = (
-                    f"⚠️ {symbol} v{version} → <b>ОТКЛОНЕНА</b> (F1 Gate)\n\n"
-                    f"{ml_metrics_block}\n"
-                    f"Причина: F1 не превысил baseline."
-                )
-                logger.warning(msg)
-                await mark_retrain_attempt(outcome="f1_rejected")
-            else:
+            # Financial checks, calibration, and promotion share this path.
+            if economic_metrics is not None:
                 os_dir = os.path.dirname(model_path)
                 if os_dir:
                     os.makedirs(os_dir, exist_ok=True)
@@ -848,12 +807,10 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     msg += f"\n⚠️ Автокалибровка завершилась с ошибкой: {type(cal_err).__name__}: {cal_err}"
 
                     # --- ECONOMIC QUALITY GATE ---
-                economic_gate_passed = True
-                economic_gate_msg = ""
-
                 new_backtest_metrics = (
                     artifact.get("backtest_metrics") if artifact is not None else None
                 )
+                prod_backtest_metrics = None
 
                 if artifact is None:
                     logger.warning(
@@ -861,7 +818,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         f"прибыльности недоступны, гейт пропущен."
                     )
 
-                if os.path.exists(model_path) and new_backtest_metrics is not None:
+                if os.path.exists(model_path):
                     try:
                         with open(model_path, "rb") as f:
                             current_prod_artifact = pickle.load(f)
@@ -887,6 +844,15 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             economic_gate_msg = f"honest Sharpe (<code>{new_sharpe:.3f}</code>) не превышает текущий прод Sharpe (<code>{prod_sharpe:.3f}</code>)"
 
                 # Сборка финального отчета
+                min_gate_trades = getattr(settings, "ECONOMIC_GATE_MIN_TRADES", 10)
+                if not isinstance(min_gate_trades, int):
+                    min_gate_trades = 10
+                economic_gate_msg = economic_quality_failure(
+                    new_backtest_metrics,
+                    min_trades=min_gate_trades,
+                    champion_metrics=prod_backtest_metrics,
+                )
+                economic_gate_passed = economic_gate_msg is None
                 if not economic_gate_passed:
                     logger.warning(economic_gate_msg)
 

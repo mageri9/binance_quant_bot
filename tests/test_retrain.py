@@ -9,7 +9,7 @@ from src.main import _run_retrain_cycle
 
 
 @pytest.mark.asyncio
-async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session):
+async def test_retrain_cycle_uses_economic_metrics_not_baseline_f1(temp_db_session, tmp_path):
     """
     Регрессионный тест на баг: baseline_f1 использовался в вызове
     run_lgbm_experiment раньше своего присваивания -> UnboundLocalError
@@ -35,9 +35,13 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
     new_f1_value = 0.55  # новая модель лучше baseline -> ветка продвижения в прод
 
     mock_baseline_result = {"metrics": {"f1": baseline_f1_value, "accuracy": 0.6}}
+    staging_model_path = str(tmp_path / "staging" / "lgbm_BTCUSDT_1h.pkl")
+    os.makedirs(os.path.dirname(staging_model_path), exist_ok=True)
+    with open(staging_model_path, "wb") as f:
+        pickle.dump({"model": "dummy"}, f)
     mock_lgbm_result = {
         "metrics": {"f1": new_f1_value, "accuracy": 0.65},
-        "model_path": "models/staging/lgbm_BTCUSDT_1h.pkl",
+        "model_path": staging_model_path,
     }
 
     bot_mock = AsyncMock()
@@ -103,9 +107,9 @@ async def test_retrain_cycle_computes_baseline_before_lgbm_call(temp_db_session)
         # run_lgbm_experiment должен быть вызван с честным (apples-to-apples)
         # baseline_f1 из compute_baseline_holdout_f1, а не с неопределённым значением
         assert mock_run_lgbm.called
-        assert mock_compute_holdout.called
         _, called_kwargs = mock_run_lgbm.call_args
-        assert called_kwargs["baseline_f1"] == pytest.approx(baseline_f1_value)
+        assert "baseline_f1" not in called_kwargs
+        assert not mock_compute_holdout.called
 
     # Уведомление админу должно уйти (новая модель лучше baseline)
     bot_mock.send_message.assert_called_once()

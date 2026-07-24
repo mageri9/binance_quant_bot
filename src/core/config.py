@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     EDGE_THRESHOLD_SWEEP_ENABLED: bool = True
     EDGE_THRESHOLD_GRID: list[float] = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
     EDGE_MIN_COVERAGE: float = 0.20
-    OPTUNA_OBJECTIVE_METRIC: str = "sharpe"  # "f1" | "sharpe" | "expectancy"
+    OPTUNA_OBJECTIVE_METRIC: Literal["sharpe", "sortino", "expectancy", "profit_factor", "utility"] = "sharpe"
     SOFT_REGIME_ENSEMBLE_ENABLED: bool = True
     SOFT_REGIME_TEMPERATURE: float = 1.0
 
@@ -117,6 +117,7 @@ class Settings(BaseSettings):
     ]
 
     CALIBRATION_MIN_TRADES: int = 10
+    ECONOMIC_GATE_MIN_TRADES: int = 10
 
     # Trading Mode
     TRADING_MODE: Literal["paper", "shadow", "testnet", "mainnet"]
