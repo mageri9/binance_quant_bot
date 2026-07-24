@@ -11,7 +11,8 @@ from loguru import logger
 from src.crud.kline import KlineRepository
 from src.utils.memory import downcast_dtypes
 from src.features.engineering import DEFAULT_FEATURE_SCHEMA, add_features
-from src.labels.generator import generate_binary_labels, generate_triple_labels
+from src.execution.trade import TradePolicy, build_trade_targets
+from src.execution.kernel import ExecutionCosts
 
 
 def get_git_sha() -> str:
@@ -34,6 +35,7 @@ async def build_and_save_dataset(
     output_dir: str = "datasets",
     tp_atr_mult: float | None = None,
     sl_atr_mult: float | None = None,
+    trade_policy: TradePolicy | None = None,
 ) -> str:
     repo = KlineRepository(session)
     klines = await repo.get_klines(symbol, timeframe, limit=20000)
@@ -58,13 +60,19 @@ async def build_and_save_dataset(
 
     def process_data_sync() -> pd.DataFrame:
         df_feats = add_features(df)
-        df_feats["target_binary"] = generate_binary_labels(
-            df_feats, horizon=horizon, threshold=0.0, tp_atr_mult=tp_atr_mult,
+        policy = trade_policy or TradePolicy(
+            timeout_candles=horizon, sl_pct=threshold, tp_pct=threshold,
+            costs=ExecutionCosts(commission_rate=0, slippage_rate=0,
+                                 bid_ask_spread_rate=0, funding_rate_per_trade=0),
         )
-        df_feats["target_triple"] = generate_triple_labels(
-            df_feats, horizon=horizon, threshold=threshold,
-            tp_atr_mult=tp_atr_mult, sl_atr_mult=sl_atr_mult,
-        )
+        targets = build_trade_targets(df_feats, policy)
+        # Legacy callers historically reserved the adaptive-ATR maximum tail.
+        # Production supplies trade_policy and reserves its exact fixed timeout.
+        if trade_policy is None:
+            from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
+            targets.iloc[-MAX_ADAPTIVE_HORIZON_CANDLES:] = pd.NA
+        for column in targets:
+            df_feats[column] = targets[column]
         df_feats = downcast_dtypes(df_feats)
         return df_feats
 
@@ -75,12 +83,16 @@ async def build_and_save_dataset(
     start_date = datetime.fromtimestamp(first_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
     end_date = datetime.fromtimestamp(last_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
-    is_atr_mode = tp_atr_mult is not None and sl_atr_mult is not None
-
     feature_schema = DEFAULT_FEATURE_SCHEMA
+    effective_policy = trade_policy or TradePolicy(
+        timeout_candles=horizon, sl_pct=threshold, tp_pct=threshold,
+        costs=ExecutionCosts(commission_rate=0, slippage_rate=0,
+                             bid_ask_spread_rate=0, funding_rate_per_trade=0),
+    )
     label_config = {
         "horizon": horizon, "threshold": threshold,
         "tp_atr_mult": tp_atr_mult, "sl_atr_mult": sl_atr_mult,
+        "trade_policy": effective_policy.identity(),
     }
     candle_bytes = pd.util.hash_pandas_object(
         df[["open_time", "open", "high", "low", "close", "volume"]], index=False
@@ -109,16 +121,21 @@ async def build_and_save_dataset(
         "targets": {
             "target_binary": {
                 "type": "binary", "horizon": horizon, "threshold": 0.0,
-                "label_mode": "atr" if tp_atr_mult is not None else "fixed_threshold",
+                "label_mode": "trade_policy" if trade_policy is not None else (
+                    "atr" if tp_atr_mult is not None else "fixed_threshold"
+                ),
                 "tp_atr_mult": tp_atr_mult,
             },
             "target_triple": {
                 "type": "triple", "horizon": horizon, "threshold": threshold,
-                "label_mode": "atr" if is_atr_mode else "fixed_threshold",
+                "label_mode": "trade_policy" if trade_policy is not None else (
+                    "atr" if tp_atr_mult is not None and sl_atr_mult is not None else "fixed_threshold"
+                ),
                 "tp_atr_mult": tp_atr_mult,
                 "sl_atr_mult": sl_atr_mult,
             },
         },
+        "trade_policy": effective_policy.identity(),
         "date_range": {
             "start_time_ms": first_time_ms,
             "end_time_ms": last_time_ms,

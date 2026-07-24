@@ -13,6 +13,7 @@ from src.risk.kill_switch import KillSwitchManager, KillSwitchState
 from src.telegram.formatter import TradingNotification
 from src.events import EventStore
 from src.execution.kernel import ExecutionKernel, SimulatedFill, costs_from_settings
+from src.execution.trade import trade_policy_from_settings
 
 
 class TradingEngine:
@@ -41,6 +42,8 @@ class TradingEngine:
         model_id: str | None = None,
         prediction_id: int | None = None,
         idempotency_key: str | None = None,
+        candle_time: int | None = None,
+        timeframe: str | None = None,
     ) -> str | None:
         if await self.kill_switch_manager.is_trading_blocked():
             logger.warning(f"[TradingEngine] Торговля по {symbol} заблокирована Kill Switch.")
@@ -79,12 +82,12 @@ class TradingEngine:
             return message
 
         is_close_order = _is_close_order(position, side)
-        sl_price, tp_price, close_side = _protection_prices(
-            side,
-            latest_close,
-            self.settings.PAPER_SL_PCT,
-            self.settings.PAPER_TP_PCT,
+        policy = trade_policy_from_settings(self.settings)
+        timeout_candle_time = _timeout_candle_time(candle_time, timeframe, policy.timeout_candles)
+        sl_price, tp_price = policy.protection_prices(
+            latest_close, "LONG" if side == "buy" else "SHORT"
         )
+        close_side = "sell" if side == "buy" else "buy"
 
         if mode == "shadow":
             return _format_shadow_decision(
@@ -100,6 +103,7 @@ class TradingEngine:
                 tp_price=tp_price,
                 is_close_order=is_close_order,
                 model_id=model_id,
+                timeout_candle_time=timeout_candle_time,
             )
 
         return await self._process_live_order(
@@ -115,6 +119,7 @@ class TradingEngine:
             model_id=model_id,
             prediction_id=prediction_id,
             idempotency_key=idempotency_key,
+            timeout_candle_time=timeout_candle_time,
         )
 
     async def _get_account_context(self, symbol: str, mode: str) -> tuple[dict, dict | None]:
@@ -142,6 +147,7 @@ class TradingEngine:
         model_id: str | None,
         prediction_id: int | None,
         idempotency_key: str | None,
+        timeout_candle_time: int | None,
     ) -> str:
         stable_key = idempotency_key or str(uuid.uuid4())
         client_order_id = _make_client_order_id(mode, stable_key)
@@ -292,6 +298,7 @@ class TradingEngine:
                 client_order_id=client_order_id,
                 entry_order_id=order.get("order_id"),
                 model_id=model_id,
+                timeout_candle_time=timeout_candle_time,
                 update_portfolio=False,
             )
             await self.execution_repo.link_trade(intent, trade.id)
@@ -550,6 +557,7 @@ class TradingEngine:
         tp_price: float,
         is_close_order: bool,
         model_id: str | None,
+        timeout_candle_time: int | None,
     ) -> str:
         amount = Decimal(str(amount))
         price = Decimal(str(price))
@@ -595,6 +603,7 @@ class TradingEngine:
             source="paper",
             environment="paper",
             model_id=model_id,
+            timeout_candle_time=timeout_candle_time,
         )
         event = _format_position_opened(
             symbol=symbol,
@@ -712,6 +721,20 @@ def _protection_prices(
     if side == "buy":
         return price * (1 - sl_pct), price * (1 + tp_pct), "sell"
     return price * (1 + sl_pct), price * (1 - tp_pct), "buy"
+
+
+def _timeout_candle_time(
+    candle_time: int | None, timeframe: str | None, timeout_candles: int
+) -> int | None:
+    """Timestamp of the timeout open for an order entered at the next open."""
+    if candle_time is None or timeframe is None:
+        return None
+    units = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}
+    try:
+        interval = int(timeframe[:-1]) * units[timeframe[-1].lower()]
+    except (ValueError, KeyError, IndexError):
+        raise ValueError(f"Unsupported timeframe for trade timeout: {timeframe}")
+    return candle_time + (timeout_candles + 1) * interval
 
 
 def _count_consecutive_losses(trades) -> int:

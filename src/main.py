@@ -24,6 +24,7 @@ from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 from src.utils.artifact_paths import get_oos_path
 from src.telegram.formatter import TradingNotification, format_trading_notification
+from src.execution.trade import trade_policy_from_settings
 
 import warnings
 # Подавляем ложные предупреждения scipy-оптимизатора при обучении LogisticRegression
@@ -118,8 +119,9 @@ def _format_calibration_risk(calibration: dict, settings) -> tuple[str, str]:
     if risk_mode == "atr" and "sl_atr_mult" in calibration and "tp_atr_mult" in calibration:
         return f"{calibration['sl_atr_mult']:.2f} × ATR", f"{calibration['tp_atr_mult']:.2f} × ATR"
 
-    sl_pct = calibration.get("sl_pct", settings.PAPER_SL_PCT)
-    tp_pct = calibration.get("tp_pct", settings.PAPER_TP_PCT)
+    policy = trade_policy_from_settings(settings)
+    sl_pct = calibration.get("sl_pct", float(policy.sl_pct))
+    tp_pct = calibration.get("tp_pct", float(policy.tp_pct))
     return f"{sl_pct:.1%}", f"{tp_pct:.1%}"
 
 
@@ -377,7 +379,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                         prediction = await TradeRepository(session).log_prediction(
                             symbol=symbol, timeframe=timeframe,
                             candle_time=int(df["open_time"].iloc[-1]),
-                            horizon=int(predictor.calibration.get("horizon", settings.LABEL_HORIZON)),
+                            horizon=settings.TRADE_TIMEOUT_CANDLES,
                             model_id=predictor.model_id, price=float(latest_close),
                             prediction=int(signal or 0), **probabilities,
                         )
@@ -391,6 +393,8 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                         latest_close,
                         model_id=predictor.model_id,
                         prediction_id=prediction.id if prediction else None,
+                        candle_time=int(df["open_time"].iloc[-1]),
+                        timeframe=timeframe,
                         idempotency_key=(
                             f"{predictor.model_id}:{symbol}:{timeframe}:"
                             f"{int(df['open_time'].iloc[-1])}:{signal}"
@@ -560,7 +564,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             )
             return
 
-        latest_resolved_candle = getattr(klines[-(settings.LABEL_HORIZON + 1)], "open_time", None)
+        latest_resolved_candle = getattr(klines[-(settings.TRADE_TIMEOUT_CANDLES + 2)], "open_time", None)
         if isinstance(latest_resolved_candle, int):
             from src.ml.lifecycle import decide_retraining, resolve_predictions
 
@@ -619,7 +623,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 symbol=symbol,
                 timeframe=timeframe,
                 version=version,
-                horizon=settings.LABEL_HORIZON,
+                horizon=settings.TRADE_TIMEOUT_CANDLES,
                 threshold=settings.LABEL_THRESHOLD,
                 tp_atr_mult=settings.LABEL_TP_ATR_MULT
                 if settings.ATR_RISK_MODEL_ENABLED
@@ -627,6 +631,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 sl_atr_mult=settings.LABEL_SL_ATR_MULT
                 if settings.ATR_RISK_MODEL_ENABLED
                 else None,
+                trade_policy=trade_policy_from_settings(settings),
             )
             json_path = parquet_path.replace(".parquet", ".json")
             if os.path.isfile(json_path):

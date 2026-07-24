@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     PAPER_SL_PCT: float = 0.02
     PAPER_TP_PCT: float = 0.04
 
+    # Canonical order contract. Target generation and execution both consume
+    # these fields through trade_policy_from_settings().
+    TRADE_TIMEOUT_CANDLES: int = 5
+    TRADE_SL_PCT: float = 0.02
+    TRADE_TP_PCT: float = 0.04
+
     # Paper Trading Position Sizing
     PAPER_RISK_PCT: float = 0.10
     PAPER_MIN_ALLOCATION: float = 1.0

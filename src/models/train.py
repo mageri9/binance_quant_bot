@@ -554,9 +554,9 @@ async def run_lgbm_experiment(
             settings.EDGE_MIN_COVERAGE,
             settings.CALIBRATION_MIN_TRADES,
             {
-                "horizon": settings.LABEL_HORIZON,
-                "sl_pct": settings.PAPER_SL_PCT,
-                "tp_pct": settings.PAPER_TP_PCT,
+                "horizon": settings.TRADE_TIMEOUT_CANDLES,
+                "sl_pct": settings.TRADE_SL_PCT,
+                "tp_pct": settings.TRADE_TP_PCT,
                 "execution_kernel": ExecutionKernel(costs_from_settings(settings)),
                 "stop_risk_pct": settings.BACKTEST_STOP_RISK_PCT,
                 "target_volatility": settings.BACKTEST_TARGET_VOLATILITY,
@@ -572,9 +572,9 @@ async def run_lgbm_experiment(
     economic_test_oos = apply_edge_threshold(economic_test_oos, edge_threshold)
     economic_backtest_metrics = simulate_strategy(
         economic_test_oos,
-        horizon=settings.LABEL_HORIZON,
-        sl_pct=settings.PAPER_SL_PCT,
-        tp_pct=settings.PAPER_TP_PCT,
+        horizon=settings.TRADE_TIMEOUT_CANDLES,
+        sl_pct=settings.TRADE_SL_PCT,
+        tp_pct=settings.TRADE_TP_PCT,
         execution_kernel=ExecutionKernel(costs_from_settings(settings)),
         stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
         target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
@@ -726,9 +726,9 @@ async def run_lgbm_experiment(
         },
         "scaler": None,
         "calibration": {
-            "sl_pct": settings.PAPER_SL_PCT,
-            "tp_pct": settings.PAPER_TP_PCT,
-            "horizon": settings.LABEL_HORIZON,
+            "sl_pct": settings.TRADE_SL_PCT,
+            "tp_pct": settings.TRADE_TP_PCT,
+            "horizon": settings.TRADE_TIMEOUT_CANDLES,
             "sharpe_ratio": None,
             "calibrated_at": None,
         },

@@ -68,10 +68,15 @@ async def test_paper_fill_publishes_structured_position_event(temp_db_session):
         settings=settings,
     )
 
-    event = await engine.process_signal("BTC/USDT", signal=1, latest_close=100.0)
+    event = await engine.process_signal(
+        "BTC/USDT", signal=1, latest_close=100.0,
+        candle_time=1_000_000, timeframe="1h",
+    )
 
     assert isinstance(event, TradingNotification)
     assert event.kind == "position_opened"
+    trade = await engine.repo.get_active_trade("BTC/USDT", "paper")
+    assert trade.timeout_candle_time == 1_000_000 + 6 * 3_600_000
     outbox = (await temp_db_session.execute(select(OutboxEvent))).scalars().all()
     assert any(row.event_type == "PositionOpened" for row in outbox)
 
