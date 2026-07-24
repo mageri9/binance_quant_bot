@@ -370,7 +370,7 @@ class TrainingState(Base):
     last_trained_candle: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_dataset_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_trained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_trigger: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_trigger: Mapped[str | None] = mapped_column(String(100), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 

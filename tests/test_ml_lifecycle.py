@@ -89,17 +89,21 @@ async def test_training_state_persists_full_sha256_fingerprint(temp_db_session):
         target="expected_return",
         last_trained_candle=1756108800000,
         dataset_fingerprint=fingerprint,
-        trigger="economic_quality_rejected",
+        trigger="scheduled_control:economic_quality_rejected",
     )
 
     state = await temp_db_session.get(TrainingState, 1)
     column_type = TrainingState.__table__.c.last_dataset_fingerprint.type
+    trigger_column_type = TrainingState.__table__.c.last_trigger.type
 
     assert state is not None
     assert state.last_dataset_fingerprint == fingerprint
     assert len(fingerprint) == 64
     assert isinstance(column_type, String)
     assert column_type.length == 64
+    assert state.last_trigger == "scheduled_control:economic_quality_rejected"
+    assert isinstance(trigger_column_type, String)
+    assert trigger_column_type.length == 100
 
 
 @pytest.mark.asyncio
