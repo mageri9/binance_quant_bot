@@ -89,8 +89,8 @@ class Predictor:
             expected_short = float(short_return[0])
             expected_return = max(expected_long, expected_short)
             minimum_ev = max(0.0, self.min_expected_return)
-            signal = 0 if expected_return <= minimum_ev else (
-                1 if expected_long >= expected_short else -1
+            signal = 1 if expected_long > expected_short and expected_long > minimum_ev else (
+                -1 if expected_short > expected_long and expected_short > minimum_ev else 0
             )
             return signal, {
                 "expected_long_return": expected_long,

@@ -34,9 +34,11 @@ async def test_run_lgbm_and_predict_success(temp_db_session):
         "volatility": np.random.uniform(0.01, 0.05, n_rows),
         "volume_ratio": np.random.uniform(0.5, 2.0, n_rows),
         # Метка направления цены
-        "target_binary": np.random.choice([0.0, 1.0], size=n_rows),
+        "long_net_return": np.random.uniform(-0.02, 0.03, n_rows),
+        "short_net_return": np.random.uniform(-0.02, 0.03, n_rows),
     }
     df = pd.DataFrame(dummy_data)
+    df["expected_return"] = df[["long_net_return", "short_net_return"]].max(axis=1)
 
     metadata = {
         "symbol": "BTC/USDT",
@@ -83,7 +85,9 @@ async def test_run_lgbm_and_predict_success(temp_db_session):
 
         df_oos_loaded = pd.read_parquet(oos_path)
         assert len(df_oos_loaded) > 0
-        assert "predicted_signal" in df_oos_loaded.columns
+        assert {"predicted_signal", "predicted_long_return", "predicted_short_return"}.issubset(
+            df_oos_loaded.columns
+        )
 
         assert "experiment_id" in result
         assert os.path.exists(result["model_path"])
@@ -93,7 +97,7 @@ async def test_run_lgbm_and_predict_success(temp_db_session):
         db_res = await temp_db_session.execute(stmt)
         record = db_res.scalar_one_or_none()
         assert record is not None
-        assert record.model_name == "LightGBM_Model"
+        assert record.model_name == "LightGBM_EconomicReturnRegressor"
 
         # 3. Тестируем Predictor на новых свечах
         predictor = Predictor(result["model_path"])
@@ -113,7 +117,7 @@ async def test_run_lgbm_and_predict_success(temp_db_session):
         prediction = predictor.predict(test_candles)
 
         # Предсказание должно быть 0 или 1 (так как это бинарный классификатор)
-        assert prediction in [0, 1]
+        assert prediction in [-1, 0, 1]
 
 class _FakePrimaryModel:
     classes_ = [0, 1]
@@ -179,6 +183,38 @@ def test_predictor_only_enters_when_post_cost_expected_return_is_positive(tmp_pa
     assert signal == 0
     assert details["expected_return"] == 0.0
     assert details["min_expected_return"] == 0.0
+
+
+def test_predictor_chooses_the_higher_side_specific_expected_return(tmp_path):
+    artifact = _build_artifact(None, None)
+    artifact.update({
+        "model_type": "economic_return_regression",
+        "model": _FakeEconomicModel(long_return=0.004, short_return=0.009),
+        "min_expected_return": 0.005,
+    })
+    model_path = str(tmp_path / "short_ev.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    signal, details = Predictor(model_path).predict_detailed(_make_test_candles())
+
+    assert signal == -1
+    assert details["expected_long_return"] == 0.004
+    assert details["expected_short_return"] == 0.009
+
+
+def test_predictor_holds_when_side_specific_expected_returns_are_equal(tmp_path):
+    artifact = _build_artifact(None, None)
+    artifact.update({
+        "model_type": "economic_return_regression",
+        "model": _FakeEconomicModel(long_return=0.01, short_return=0.01),
+        "min_expected_return": 0.005,
+    })
+    model_path = str(tmp_path / "tied_ev.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    assert Predictor(model_path).predict(_make_test_candles()) == 0
 
 
 def test_predictor_meta_model_gates_low_confidence_signal(tmp_path):

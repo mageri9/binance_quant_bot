@@ -26,60 +26,93 @@ from src.strategy.signals import simulate_strategy
 from src.execution.kernel import ExecutionKernel, costs_from_settings
 from src.models.economic import EconomicReturnRegressor, ECONOMIC_TARGETS
 from src.models.economic_quality import economic_quality_failure
+from src.strategy.edge import apply_edge_threshold, sweep_edge_thresholds
+from src.utils.artifact_paths import get_oos_path
 
 
 async def _run_economic_return_experiment(
     session, df_clean, metadata, feature_cols, models_dir, learning_rate,
-    n_estimators, max_depth, settings,
+    n_estimators, max_depth, settings, bypass_quality_gates,
 ) -> dict:
-    """Train two regressors so a signal is selected from expected PnL, not a class."""
+    """Train two regressors and select a side only from its expected net PnL."""
     if any(column not in df_clean for column in ECONOMIC_TARGETS):
         raise ValueError("Economic target requires long_net_return and short_net_return columns")
-    split = max(1, int(len(df_clean) * 0.8))
-    train_df, test_df = df_clean.iloc[:split], df_clean.iloc[split:]
-    if test_df.empty:
-        test_df = train_df
-    model = EconomicReturnRegressor(
+    if len(df_clean) < 3:
+        raise ValueError("Economic return training requires at least three resolved trades")
+
+    # Calibrate the EV threshold before evaluating on the final chronological split.
+    calibration_start = max(1, int(len(df_clean) * 0.6))
+    test_start = min(max(calibration_start + 1, int(len(df_clean) * 0.8)), len(df_clean) - 1)
+    train_df = df_clean.iloc[:calibration_start]
+    calibration_df = df_clean.iloc[calibration_start:test_start]
+    test_df = df_clean.iloc[test_start:]
+    model_kwargs = dict(
         learning_rate=learning_rate, n_estimators=n_estimators, max_depth=max_depth,
         random_state=42, verbosity=-1, n_jobs=1,
     )
-    await asyncio.to_thread(model.fit, train_df[feature_cols], train_df[list(ECONOMIC_TARGETS)])
-    long_pred, short_pred = model.predict_returns(test_df[feature_cols])
-    expected_pred = np.maximum(long_pred, short_pred)
-    actual_expected = test_df["expected_return"].to_numpy()
-    predicted_side = np.where(long_pred >= short_pred, 1, -1)
-    predicted_side[expected_pred <= max(0.0, settings.MIN_EXPECTED_RETURN)] = 0
+    selection_model = EconomicReturnRegressor(**model_kwargs)
+    await asyncio.to_thread(selection_model.fit, train_df[feature_cols], train_df[list(ECONOMIC_TARGETS)])
+
+    def prediction_frame(source_df: pd.DataFrame, split_name: str) -> pd.DataFrame:
+        result = source_df.copy()
+        long_pred, short_pred = selection_model.predict_returns(result[feature_cols])
+        result["predicted_long_return"] = long_pred
+        result["predicted_short_return"] = short_pred
+        result["predicted_expected_return"] = np.maximum(long_pred, short_pred)
+        result["predicted_signal"] = np.where(
+            long_pred > short_pred, 1, np.where(short_pred > long_pred, -1, 0)
+        )
+        result = apply_edge_threshold(result, 0.0)
+        result["oos_split"] = split_name
+        return result
+
+    calibration_oos = prediction_frame(calibration_df, "calibration")
+    test_oos = prediction_frame(test_df, "economic_test")
+    simulate_kwargs = {
+        "horizon": settings.TRADE_TIMEOUT_CANDLES,
+        "sl_pct": settings.TRADE_SL_PCT,
+        "tp_pct": settings.TRADE_TP_PCT,
+        "execution_kernel": ExecutionKernel(costs_from_settings(settings)),
+        "stop_risk_pct": settings.BACKTEST_STOP_RISK_PCT,
+        "target_volatility": settings.BACKTEST_TARGET_VOLATILITY,
+        "max_position_pct": settings.BACKTEST_MAX_POSITION_PCT,
+    }
+    minimum_ev = max(0.0, float(settings.MIN_EXPECTED_RETURN))
+    edge_sweep: list[dict] = []
+    if settings.EDGE_THRESHOLD_SWEEP_ENABLED and not calibration_oos.empty:
+        minimum_ev, edge_sweep = await asyncio.to_thread(
+            sweep_edge_thresholds, calibration_oos, settings.EDGE_THRESHOLD_GRID,
+            settings.EDGE_MIN_COVERAGE, settings.CALIBRATION_MIN_TRADES, simulate_kwargs,
+        )
+    test_oos = apply_edge_threshold(test_oos, minimum_ev)
+    economic_backtest = simulate_strategy(test_oos, **simulate_kwargs)
+    if not bypass_quality_gates:
+        rejection = economic_quality_failure(
+            economic_backtest, min_trades=settings.ECONOMIC_GATE_MIN_TRADES,
+        )
+        if rejection:
+            raise ValueError(f"LGBM model REJECTED by Economic Quality Gate: {rejection}")
     actual_side = np.where(
-        test_df["long_net_return"].to_numpy() >= test_df["short_net_return"].to_numpy(), 1, -1
+        test_oos["long_net_return"].to_numpy() >= test_oos["short_net_return"].to_numpy(), 1, -1
     )
-    economic_test = test_df.copy()
-    economic_test["predicted_signal"] = predicted_side
-    economic_backtest = simulate_strategy(
-        economic_test,
-        execution_kernel=ExecutionKernel(costs_from_settings(settings)),
-        stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
-        target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
-        max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
-    )
-    rejection = economic_quality_failure(
-        economic_backtest, min_trades=settings.ECONOMIC_GATE_MIN_TRADES,
-    )
-    if rejection:
-        raise ValueError(f"LGBM model REJECTED by Economic Quality Gate: {rejection}")
+    directional_accuracy = float(np.mean(test_oos["predicted_signal"].to_numpy() == actual_side))
     metrics = {
-        "mae": float(mean_absolute_error(actual_expected, expected_pred)),
-        "directional_accuracy": float(np.mean(predicted_side == actual_side)),
-        "accuracy": float(np.mean(predicted_side == actual_side)),
-        "precision": float(np.mean(predicted_side == actual_side)),
-        "recall": float(np.mean(predicted_side == actual_side)),
+        "mae": float(mean_absolute_error(test_oos["expected_return"], test_oos["predicted_expected_return"])),
+        "directional_accuracy": directional_accuracy,
+        "accuracy": directional_accuracy,
+        "precision": directional_accuracy,
+        "recall": directional_accuracy,
         # Retained as a compatibility metric for the promotion pipeline.
-        "f1": float(np.mean(predicted_side == actual_side)),
-        "holdout_f1": float(np.mean(predicted_side == actual_side)),
-        "economic_test_f1": float(np.mean(predicted_side == actual_side)),
+        "f1": directional_accuracy,
+        "holdout_f1": directional_accuracy,
+        "economic_test_f1": directional_accuracy,
         "total_folds": 1,
         "total_test_samples": len(test_df),
         "economic_backtest": economic_backtest,
     }
+    final_train_df = pd.concat([train_df, calibration_df], ignore_index=True)
+    model = EconomicReturnRegressor(**model_kwargs)
+    await asyncio.to_thread(model.fit, final_train_df[feature_cols], final_train_df[list(ECONOMIC_TARGETS)])
     os.makedirs(models_dir, exist_ok=True)
     clean_symbol = metadata["symbol"].replace("/", "").replace(":", "")
     clean_tf = metadata["timeframe"].replace("/", "")
@@ -90,22 +123,23 @@ async def _run_economic_return_experiment(
         "model": model,
         "target_col": "expected_return",
         "features": feature_cols,
-        "min_expected_return": settings.MIN_EXPECTED_RETURN,
+        "min_expected_return": minimum_ev,
+        "edge_threshold_sweep": edge_sweep,
         "calibration": {"sl_pct": settings.TRADE_SL_PCT, "tp_pct": settings.TRADE_TP_PCT,
                         "horizon": settings.TRADE_TIMEOUT_CANDLES},
         "backtest_metrics": economic_backtest,
     }
     with open(model_path, "wb") as f:
         pickle.dump(artifact, f)
+    await asyncio.to_thread(test_oos.to_parquet, get_oos_path(model_path), index=False)
     experiment = await ExperimentRepository(session).log_experiment(
         model_name="LightGBM_EconomicReturnRegressor", dataset_version=metadata["version"],
-        parameters={"model_type": "economic_return_regression", "features_used": feature_cols},
+        parameters={"model_type": "economic_return_regression", "features_used": feature_cols,
+                    "min_expected_return": minimum_ev},
         metrics=metrics, git_sha=get_git_sha(),
     )
     return {"experiment_id": experiment.id, "model_path": model_path,
             "parameters": {"model_type": "economic_return_regression"}, "metrics": metrics}
-
-from src.utils.artifact_paths import get_oos_path
 
 # Отключаем избыточный вывод логов Optuna в консоль
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -418,12 +452,12 @@ async def run_lgbm_experiment(
 
     feature_cols = metadata["features"]
 
-    df_clean = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
+    df_clean = df.dropna(subset=feature_cols + list(ECONOMIC_TARGETS)).reset_index(drop=True)
 
     if target_col == "expected_return":
         return await _run_economic_return_experiment(
             session, df_clean, metadata, feature_cols, models_dir, learning_rate,
-            n_estimators, max_depth, settings,
+            n_estimators, max_depth, settings, bypass_quality_gates,
         )
 
     if len(df_clean) < (train_size + test_size):

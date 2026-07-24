@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     # Deprecated: probabilities are diagnostics, never a trading edge.
     PREDICTION_CONFIDENCE_THRESHOLD: float = 0.55
     EDGE_THRESHOLD_SWEEP_ENABLED: bool = True
-    EDGE_THRESHOLD_GRID: list[float] = [0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+    # Minimum predicted post-cost return considered by the EV gate.
+    EDGE_THRESHOLD_GRID: list[float] = [0.0, 0.001, 0.0025, 0.005, 0.01]
     EDGE_MIN_COVERAGE: float = 0.20
     OPTUNA_OBJECTIVE_METRIC: Literal["sharpe", "sortino", "expectancy", "profit_factor", "utility"] = "sharpe"
     SOFT_REGIME_ENSEMBLE_ENABLED: bool = True
