@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import optuna
 from lightgbm import LGBMClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_absolute_error
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
@@ -25,6 +25,68 @@ from datetime import datetime, timezone
 from src.strategy.signals import simulate_strategy
 from src.strategy.edge import apply_edge_threshold, sweep_edge_thresholds
 from src.execution.kernel import ExecutionKernel, costs_from_settings
+from src.models.economic import EconomicReturnRegressor, ECONOMIC_TARGETS
+
+
+async def _run_economic_return_experiment(
+    session, df_clean, metadata, feature_cols, models_dir, learning_rate,
+    n_estimators, max_depth, settings,
+) -> dict:
+    """Train two regressors so a signal is selected from expected PnL, not a class."""
+    if any(column not in df_clean for column in ECONOMIC_TARGETS):
+        raise ValueError("Economic target requires long_net_return and short_net_return columns")
+    split = max(1, int(len(df_clean) * 0.8))
+    train_df, test_df = df_clean.iloc[:split], df_clean.iloc[split:]
+    if test_df.empty:
+        test_df = train_df
+    model = EconomicReturnRegressor(
+        learning_rate=learning_rate, n_estimators=n_estimators, max_depth=max_depth,
+        random_state=42, verbosity=-1, n_jobs=1,
+    )
+    await asyncio.to_thread(model.fit, train_df[feature_cols], train_df[list(ECONOMIC_TARGETS)])
+    long_pred, short_pred = model.predict_returns(test_df[feature_cols])
+    expected_pred = np.maximum(long_pred, short_pred)
+    actual_expected = test_df["expected_return"].to_numpy()
+    predicted_side = np.where(long_pred >= short_pred, 1, -1)
+    actual_side = np.where(
+        test_df["long_net_return"].to_numpy() >= test_df["short_net_return"].to_numpy(), 1, -1
+    )
+    metrics = {
+        "mae": float(mean_absolute_error(actual_expected, expected_pred)),
+        "directional_accuracy": float(np.mean(predicted_side == actual_side)),
+        "accuracy": float(np.mean(predicted_side == actual_side)),
+        "precision": float(np.mean(predicted_side == actual_side)),
+        "recall": float(np.mean(predicted_side == actual_side)),
+        # Retained as a compatibility metric for the promotion pipeline.
+        "f1": float(np.mean(predicted_side == actual_side)),
+        "holdout_f1": float(np.mean(predicted_side == actual_side)),
+        "economic_test_f1": float(np.mean(predicted_side == actual_side)),
+        "total_folds": 1,
+        "total_test_samples": len(test_df),
+    }
+    os.makedirs(models_dir, exist_ok=True)
+    clean_symbol = metadata["symbol"].replace("/", "").replace(":", "")
+    clean_tf = metadata["timeframe"].replace("/", "")
+    model_path = os.path.join(models_dir, f"lgbm_{clean_symbol}_{clean_tf}.pkl")
+    artifact = {
+        "model_id": f"economic_return_{clean_symbol}_{clean_tf}_{metadata['version']}",
+        "model_type": "economic_return_regression",
+        "model": model,
+        "target_col": "expected_return",
+        "features": feature_cols,
+        "min_expected_return": settings.MIN_EXPECTED_RETURN,
+        "calibration": {"sl_pct": settings.TRADE_SL_PCT, "tp_pct": settings.TRADE_TP_PCT,
+                        "horizon": settings.TRADE_TIMEOUT_CANDLES},
+    }
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+    experiment = await ExperimentRepository(session).log_experiment(
+        model_name="LightGBM_EconomicReturnRegressor", dataset_version=metadata["version"],
+        parameters={"model_type": "economic_return_regression", "features_used": feature_cols},
+        metrics=metrics, git_sha=get_git_sha(),
+    )
+    return {"experiment_id": experiment.id, "model_path": model_path,
+            "parameters": {"model_type": "economic_return_regression"}, "metrics": metrics}
 
 from src.utils.artifact_paths import get_oos_path
 
@@ -331,6 +393,12 @@ async def run_lgbm_experiment(
     feature_cols = metadata["features"]
 
     df_clean = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
+
+    if target_col == "expected_return":
+        return await _run_economic_return_experiment(
+            session, df_clean, metadata, feature_cols, models_dir, learning_rate,
+            n_estimators, max_depth, settings,
+        )
 
     if len(df_clean) < (train_size + test_size):
         raise ValueError(

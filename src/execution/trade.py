@@ -143,19 +143,34 @@ def evaluate_trade(df: pd.DataFrame, signal_idx: int, side: Side, policy: TradeP
 
 
 def build_trade_targets(df: pd.DataFrame, policy: TradePolicy) -> pd.DataFrame:
-    """Build auditable examples; target is the profitable side after all costs."""
+    """Build auditable, cost-inclusive economic targets for both trade sides."""
     rows = []
     for idx in range(len(df)):
         long = evaluate_trade(df, idx, "LONG", policy)
         short = evaluate_trade(df, idx, "SHORT", policy)
         if long is None or short is None:
-            rows.append({"target_binary": np.nan, "target_triple": np.nan})
+            rows.append({
+                "long_net_return": np.nan,
+                "short_net_return": np.nan,
+                "expected_return": np.nan,
+                "target_binary": np.nan,
+                "target_triple": np.nan,
+            })
             continue
         chosen = long if long.net_return >= short.net_return else short
         target = 1.0 if chosen.net_return > 0 and chosen.spec.side == "LONG" else (
             -1.0 if chosen.net_return > 0 else 0.0
         )
         record = chosen.as_record()
-        record.update({"target_binary": float(long.net_return > 0), "target_triple": target})
+        # The regression targets are the realized PnL of the exact orders the
+        # execution kernel would have submitted, including every configured cost.
+        record.update({
+            "long_net_return": long.net_return,
+            "short_net_return": short.net_return,
+            "expected_return": chosen.net_return,
+            # Kept only so older artifacts can still be trained and loaded.
+            "target_binary": float(long.net_return > 0),
+            "target_triple": target,
+        })
         rows.append(record)
     return pd.DataFrame(rows, index=df.index)

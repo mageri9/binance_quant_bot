@@ -91,6 +91,20 @@ async def run_baseline_experiment(
     # Удаляем строки с пропусками
     df_clean = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
 
+    if target_col == "expected_return":
+        # A no-trade baseline has zero expected return; promotion compares it
+        # with a model that must identify the more profitable executable side.
+        metrics = {
+            "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0,
+            "total_folds": 0, "total_test_samples": len(df_clean),
+        }
+        experiment = await ExperimentRepository(session).log_experiment(
+            model_name="NoTrade_EconomicReturn_Baseline", dataset_version=metadata["version"],
+            parameters={"model_type": "no_trade_economic_baseline", "features_used": feature_cols},
+            metrics=metrics, git_sha=get_git_sha(),
+        )
+        return {"experiment_id": experiment.id, "parameters": {}, "metrics": metrics}
+
     if len(df_clean) < (train_size + test_size):
         raise ValueError(
             "Недостаточно очищенных данных для проведения Walk-Forward оценки."
@@ -217,6 +231,9 @@ async def compute_baseline_holdout_f1(
 
     feature_cols = metadata["features"]
     df_clean = df.dropna(subset=feature_cols + [target_col]).reset_index(drop=True)
+
+    if target_col == "expected_return":
+        return {"f1": 0.0, "holdout_size": min(int(len(df_clean) * 0.2), len(df_clean))}
 
     if len(df_clean) < (train_size + test_size):
         raise ValueError("Недостаточно очищенных данных для расчета holdout-baseline.")

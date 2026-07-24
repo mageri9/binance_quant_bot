@@ -53,6 +53,11 @@ class Predictor:
         self.git_sha = saved_data.get("git_sha", "unknown")
         self.features_hash = saved_data.get("features_hash", "unknown")
         self.calibration = saved_data.get("calibration", {"sl_pct": 0.02, "tp_pct": 0.04})
+        self.model_type = saved_data.get("model_type", "classification")
+        from src.core.config import get_settings
+        self.min_expected_return = saved_data.get(
+            "min_expected_return", get_settings().MIN_EXPECTED_RETURN,
+        )
 
     def predict(self, df: pd.DataFrame) -> int | None:
         """
@@ -78,6 +83,21 @@ class Predictor:
 
         if self.scaler is not None:
             X = self.scaler.transform(X)
+
+        if self.model_type == "economic_return_regression":
+            long_return, short_return = self.model.predict_returns(X)
+            expected_long = float(long_return[0])
+            expected_short = float(short_return[0])
+            expected_return = max(expected_long, expected_short)
+            signal = 0 if expected_return <= self.min_expected_return else (
+                1 if expected_long >= expected_short else -1
+            )
+            return signal, {
+                "expected_long_return": expected_long,
+                "expected_short_return": expected_short,
+                "expected_return": expected_return,
+                "min_expected_return": self.min_expected_return,
+            }
 
         # Вычисляем сырые вероятности классов
         pred = self.model.predict(X)[0]

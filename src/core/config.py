@@ -55,7 +55,10 @@ class Settings(BaseSettings):
     TEST_SIZE: int = 300
     LABEL_HORIZON: int = 5
     LABEL_THRESHOLD: float = 0.01
-    TARGET_COL: str = "target_triple"
+    # The model estimates expected, post-cost return for each executable side;
+    # it does not learn a barrier-first LONG/SHORT/HOLD class.
+    TARGET_COL: str = "expected_return"
+    MIN_EXPECTED_RETURN: float = 0.0
 
     # Paper Trading Defaults
     PAPER_SL_PCT: float = 0.02

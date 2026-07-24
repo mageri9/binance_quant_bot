@@ -119,6 +119,12 @@ async def build_and_save_dataset(
         "label_config_hash": hashlib.sha256(json.dumps(label_config, sort_keys=True).encode()).hexdigest(),
         "features": feature_schema,
         "targets": {
+            "expected_return": {
+                "type": "economic_return_regression",
+                "definition": "max(long_net_return, short_net_return) after execution costs",
+                "side_targets": ["long_net_return", "short_net_return"],
+                "label_mode": "trade_policy",
+            },
             "target_binary": {
                 "type": "binary", "horizon": horizon, "threshold": 0.0,
                 "label_mode": "trade_policy" if trade_policy is not None else (

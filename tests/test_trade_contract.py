@@ -55,9 +55,13 @@ def test_targets_expose_complete_order_and_share_the_policy():
     required = {
         "entry_price", "entry_time", "side", "sl", "tp", "timeout",
         "commission", "slippage", "funding", "exit_price", "exit_reason", "net_return",
+        "long_net_return", "short_net_return", "expected_return",
     }
     assert required.issubset(targets.columns)
     assert targets.loc[0, "target_triple"] == 1
+    assert targets.loc[0, "expected_return"] == pytest.approx(
+        max(targets.loc[0, "long_net_return"], targets.loc[0, "short_net_return"])
+    )
 
     changed = build_trade_targets(df, _policy(tp_pct=Decimal("0.10")))
     assert changed.loc[0, "target_triple"] == 0
