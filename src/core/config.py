@@ -66,8 +66,8 @@ class Settings(BaseSettings):
     PAPER_SL_PCT: float = 0.02
     PAPER_TP_PCT: float = 0.04
 
-    # Canonical order contract. Target generation and execution both consume
-    # these fields through trade_policy_from_settings().
+    # Canonical order contract. Target generation, backtests, and execution
+    # consume these fields through trade_spec_from_settings().
     TRADE_TIMEOUT_CANDLES: int = 5
     TRADE_SL_PCT: float = 0.02
     TRADE_TP_PCT: float = 0.04

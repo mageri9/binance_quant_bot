@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 
 from src.execution.kernel import ExecutionCosts, ExecutionKernel
+from src.execution.trade import TradeSpec
 
 
 def calculate_strategy_metrics(trades: list[float]) -> dict:
@@ -94,6 +95,7 @@ def calculate_strategy_metrics(trades: list[float]) -> dict:
 def simulate_strategy(
     df: pd.DataFrame,
     predicted_col: str = "predicted_signal",
+    trade_spec: TradeSpec | None = None,
     horizon: int = 5,
     sl_pct: float | None = 0.02,
     tp_pct: float | None = 0.04,
@@ -115,6 +117,23 @@ def simulate_strategy(
     вместо фиксированных sl_pct/tp_pct. Если ATR в момент входа NaN или <= 0,
     сделка использует фолбэк на sl_pct/tp_pct для этой конкретной сделки.
     """
+    # Legacy scalar arguments remain readable for stored experiments, but every
+    # internal decision is made from one TradeSpec.
+    if trade_spec is None:
+        trade_spec = TradeSpec(
+            timeout=horizon,
+            sl_rule=0.02 if sl_pct is None else sl_pct,
+            tp_rule=0.04 if tp_pct is None else tp_pct,
+            costs=(execution_kernel.costs if execution_kernel else ExecutionCosts(
+                commission_rate=0.0, slippage_rate=transaction_cost,
+                bid_ask_spread_rate=0.0, funding_rate_per_trade=0.0,
+            )),
+        )
+    horizon = trade_spec.timeout
+    sl_pct = float(trade_spec.sl_rule)
+    tp_pct = float(trade_spec.tp_rule)
+    execution_kernel = execution_kernel or ExecutionKernel(trade_spec.costs)
+
     if stop_risk_pct is not None and stop_risk_pct <= 0:
         raise ValueError("stop_risk_pct must be positive")
     if target_volatility is not None and target_volatility <= 0:
@@ -137,14 +156,7 @@ def simulate_strategy(
     n = len(df)
 
     # Preserve transaction_cost for callers while sharing fill math with paper.
-    kernel = execution_kernel or ExecutionKernel(
-        ExecutionCosts(
-            commission_rate=0.0,
-            slippage_rate=transaction_cost,
-            bid_ask_spread_rate=0.0,
-            funding_rate_per_trade=0.0,
-        )
-    )
+    kernel = execution_kernel
     trades = []
     trade_log = []
 

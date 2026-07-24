@@ -24,7 +24,7 @@ from src.middlewares.rate_limit import RateLimitMiddleware
 from src.middlewares.redis import RedisMiddleware
 from src.utils.artifact_paths import get_oos_path
 from src.telegram.formatter import TradingNotification, format_trading_notification
-from src.execution.trade import trade_policy_from_settings
+from src.execution.trade import trade_spec_from_settings
 
 import warnings
 # Подавляем ложные предупреждения scipy-оптимизатора при обучении LogisticRegression
@@ -119,9 +119,9 @@ def _format_calibration_risk(calibration: dict, settings) -> tuple[str, str]:
     if risk_mode == "atr" and "sl_atr_mult" in calibration and "tp_atr_mult" in calibration:
         return f"{calibration['sl_atr_mult']:.2f} × ATR", f"{calibration['tp_atr_mult']:.2f} × ATR"
 
-    policy = trade_policy_from_settings(settings)
-    sl_pct = calibration.get("sl_pct", float(policy.sl_pct))
-    tp_pct = calibration.get("tp_pct", float(policy.tp_pct))
+    trade_spec = trade_spec_from_settings(settings)
+    sl_pct = calibration.get("sl_pct", float(trade_spec.sl_rule))
+    tp_pct = calibration.get("tp_pct", float(trade_spec.tp_rule))
     return f"{sl_pct:.1%}", f"{tp_pct:.1%}"
 
 
@@ -631,7 +631,7 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 sl_atr_mult=settings.LABEL_SL_ATR_MULT
                 if settings.ATR_RISK_MODEL_ENABLED
                 else None,
-                trade_policy=trade_policy_from_settings(settings),
+                trade_spec=trade_spec_from_settings(settings),
             )
             json_path = parquet_path.replace(".parquet", ".json")
             if os.path.isfile(json_path):

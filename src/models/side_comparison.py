@@ -9,6 +9,7 @@ import pandas as pd
 from lightgbm import LGBMClassifier, LGBMRegressor
 
 from src.execution.kernel import ExecutionKernel
+from src.execution.trade import TradeSpec, evaluate_trade
 from src.models.backtest import TimeSeriesWalkForwardSplitter
 from src.strategy.signals import simulate_strategy
 
@@ -21,6 +22,7 @@ class SideComparisonConfig:
     classifier_threshold: float = 0.55
     quantile: float = 0.25
     label_horizon: int = 15
+    trade_spec: TradeSpec | None = None
 
 
 def build_side_net_returns(
@@ -28,6 +30,7 @@ def build_side_net_returns(
     *,
     horizon: int,
     execution_kernel: ExecutionKernel,
+    trade_spec: TradeSpec | None = None,
 ) -> pd.DataFrame:
     """Label each candle with the net long and short return over a fixed horizon.
 
@@ -42,21 +45,36 @@ def build_side_net_returns(
         raise ValueError(f"Missing columns for net-return labels: {sorted(missing)}")
 
     result = pd.DataFrame(index=df.index, columns=["long_net_return", "short_net_return"], dtype=float)
-    opens = df["open"].to_numpy(dtype=float)
-    # t + 1 is entry.  Strategy closes at the next open after horizon bars.
-    for signal_idx in range(len(df) - horizon - 2):
-        entry = opens[signal_idx + 1]
-        exit_price = opens[signal_idx + horizon + 2]
-        long_entry = execution_kernel.market_fill(side="buy", reference_price=entry, amount=1)
-        long_exit = execution_kernel.market_fill(side="sell", reference_price=exit_price, amount=1)
-        short_entry = execution_kernel.market_fill(side="sell", reference_price=entry, amount=1)
-        short_exit = execution_kernel.market_fill(side="buy", reference_price=exit_price, amount=1)
-        result.iloc[signal_idx, 0] = float(execution_kernel.realized_return(
-            entry=long_entry, exit=long_exit, is_short=False,
-        ))
-        result.iloc[signal_idx, 1] = float(execution_kernel.realized_return(
-            entry=short_entry, exit=short_exit, is_short=True,
-        ))
+    # Legacy arguments are adapted at this edge; target economics themselves
+    # are resolved exclusively by the same TradeSpec evaluator as training.
+    if trade_spec is None and not {"high", "low"}.issubset(df.columns):
+        # Historical comparison datasets contain opens only.  Keep that adapter
+        # outside the canonical path while making the missing intrabar range
+        # deterministic (no barrier can be hit).
+        opens = df["open"].to_numpy(dtype=float)
+        for signal_idx in range(len(df) - horizon - 2):
+            entry = opens[signal_idx + 1]
+            exit_price = opens[signal_idx + horizon + 2]
+            long_entry = execution_kernel.market_fill(side="buy", reference_price=entry, amount=1)
+            long_exit = execution_kernel.market_fill(side="sell", reference_price=exit_price, amount=1)
+            short_entry = execution_kernel.market_fill(side="sell", reference_price=entry, amount=1)
+            short_exit = execution_kernel.market_fill(side="buy", reference_price=exit_price, amount=1)
+            result.iloc[signal_idx, 0] = float(execution_kernel.realized_return(
+                entry=long_entry, exit=long_exit, is_short=False,
+            ))
+            result.iloc[signal_idx, 1] = float(execution_kernel.realized_return(
+                entry=short_entry, exit=short_exit, is_short=True,
+            ))
+        return result
+    else:
+        spec = trade_spec or TradeSpec(timeout=horizon, costs=execution_kernel.costs)
+    for signal_idx in range(len(df)):
+        long = evaluate_trade(df, signal_idx, "LONG", spec)
+        short = evaluate_trade(df, signal_idx, "SHORT", spec)
+        if long is not None:
+            result.iloc[signal_idx, 0] = long.net_return
+        if short is not None:
+            result.iloc[signal_idx, 1] = short.net_return
     return result
 
 
@@ -79,13 +97,13 @@ def _signals_from_returns(long_values: np.ndarray, short_values: np.ndarray) -> 
     return np.where(best <= 0.0, 0, np.where(long_values >= short_values, 1, -1))
 
 
-def _model_metrics(test_df: pd.DataFrame, signals: np.ndarray, execution_kernel: ExecutionKernel) -> dict:
+def _model_metrics(test_df: pd.DataFrame, signals: np.ndarray, trade_spec: TradeSpec) -> dict:
     simulation = test_df.copy()
     simulation["predicted_signal"] = signals
     return simulate_strategy(
         simulation,
         predicted_col="predicted_signal",
-        execution_kernel=execution_kernel,
+        trade_spec=trade_spec,
     )
 
 
@@ -100,7 +118,12 @@ def run_side_model_comparison(
     All policies see the same folds and select at most one side per candle.  The
     returned deltas are relative to the side-specific classification policy.
     """
-    labels = build_side_net_returns(df, horizon=config.horizon, execution_kernel=execution_kernel)
+    trade_spec = config.trade_spec or TradeSpec(
+        timeout=config.horizon, costs=execution_kernel.costs,
+    )
+    labels = build_side_net_returns(
+        df, horizon=config.horizon, execution_kernel=execution_kernel, trade_spec=trade_spec,
+    )
     prepared = pd.concat([df.reset_index(drop=True), labels.reset_index(drop=True)], axis=1)
     prepared = prepared.dropna(subset=feature_cols + ["long_net_return", "short_net_return"]).reset_index(drop=True)
     splitter = TimeSeriesWalkForwardSplitter(
@@ -130,7 +153,7 @@ def run_side_model_comparison(
             "quantile_regression": _signals_from_returns(long_quantile.predict(X_test), short_quantile.predict(X_test)),
         }
         for policy, policy_signals in signals.items():
-            per_policy[policy].append(_model_metrics(test_df, policy_signals, execution_kernel))
+            per_policy[policy].append(_model_metrics(test_df, policy_signals, trade_spec))
         fold_count += 1
 
     if fold_count == 0:

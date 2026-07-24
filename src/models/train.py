@@ -23,7 +23,7 @@ from src.core.config import get_settings
 from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 from datetime import datetime, timezone
 from src.strategy.signals import simulate_strategy
-from src.execution.kernel import ExecutionKernel, costs_from_settings
+from src.execution.trade import trade_spec_from_settings
 from src.models.economic import EconomicReturnRegressor, ECONOMIC_TARGETS
 from src.models.economic_quality import economic_quality_failure
 from src.strategy.edge import apply_edge_threshold, sweep_edge_thresholds
@@ -69,10 +69,7 @@ async def _run_economic_return_experiment(
     calibration_oos = prediction_frame(calibration_df, "calibration")
     test_oos = prediction_frame(test_df, "economic_test")
     simulate_kwargs = {
-        "horizon": settings.TRADE_TIMEOUT_CANDLES,
-        "sl_pct": settings.TRADE_SL_PCT,
-        "tp_pct": settings.TRADE_TP_PCT,
-        "execution_kernel": ExecutionKernel(costs_from_settings(settings)),
+        "trade_spec": trade_spec_from_settings(settings),
         "stop_risk_pct": settings.BACKTEST_STOP_RISK_PCT,
         "target_volatility": settings.BACKTEST_TARGET_VOLATILITY,
         "max_position_pct": settings.BACKTEST_MAX_POSITION_PCT,
@@ -231,7 +228,7 @@ async def tune_lgbm_hyperparameters(
         sim_metrics = simulate_strategy(
             sim_df,
             predicted_col="predicted_signal",
-            execution_kernel=ExecutionKernel(costs_from_settings(settings)),
+            trade_spec=trade_spec_from_settings(settings),
             stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
             target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
             max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
@@ -670,10 +667,7 @@ async def run_lgbm_experiment(
             settings.EDGE_MIN_COVERAGE,
             settings.CALIBRATION_MIN_TRADES,
             {
-                "horizon": settings.TRADE_TIMEOUT_CANDLES,
-                "sl_pct": settings.TRADE_SL_PCT,
-                "tp_pct": settings.TRADE_TP_PCT,
-                "execution_kernel": ExecutionKernel(costs_from_settings(settings)),
+                "trade_spec": trade_spec_from_settings(settings),
                 "stop_risk_pct": settings.BACKTEST_STOP_RISK_PCT,
                 "target_volatility": settings.BACKTEST_TARGET_VOLATILITY,
                 "max_position_pct": settings.BACKTEST_MAX_POSITION_PCT,
@@ -688,10 +682,7 @@ async def run_lgbm_experiment(
     economic_test_oos = apply_edge_threshold(economic_test_oos, edge_threshold)
     economic_backtest_metrics = simulate_strategy(
         economic_test_oos,
-        horizon=settings.TRADE_TIMEOUT_CANDLES,
-        sl_pct=settings.TRADE_SL_PCT,
-        tp_pct=settings.TRADE_TP_PCT,
-        execution_kernel=ExecutionKernel(costs_from_settings(settings)),
+        trade_spec=trade_spec_from_settings(settings),
         stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
         target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
         max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,

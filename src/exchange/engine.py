@@ -13,7 +13,7 @@ from src.risk.kill_switch import KillSwitchManager, KillSwitchState
 from src.telegram.formatter import TradingNotification
 from src.events import EventStore
 from src.execution.kernel import ExecutionKernel, SimulatedFill, costs_from_settings
-from src.execution.trade import trade_policy_from_settings
+from src.execution.trade import trade_spec_from_settings
 
 
 class TradingEngine:
@@ -82,9 +82,9 @@ class TradingEngine:
             return message
 
         is_close_order = _is_close_order(position, side)
-        policy = trade_policy_from_settings(self.settings)
-        timeout_candle_time = _timeout_candle_time(candle_time, timeframe, policy.timeout_candles)
-        sl_price, tp_price = policy.protection_prices(
+        trade_spec = trade_spec_from_settings(self.settings)
+        timeout_candle_time = _timeout_candle_time(candle_time, timeframe, trade_spec.timeout)
+        sl_price, tp_price = trade_spec.protection_prices(
             latest_close, "LONG" if side == "buy" else "SHORT"
         )
         close_side = "sell" if side == "buy" else "buy"

@@ -11,7 +11,7 @@ from loguru import logger
 from src.crud.kline import KlineRepository
 from src.utils.memory import downcast_dtypes
 from src.features.engineering import DEFAULT_FEATURE_SCHEMA, add_features
-from src.execution.trade import TradePolicy, build_trade_targets
+from src.execution.trade import TradeSpec, build_trade_targets
 from src.execution.kernel import ExecutionCosts
 
 
@@ -35,7 +35,7 @@ async def build_and_save_dataset(
     output_dir: str = "datasets",
     tp_atr_mult: float | None = None,
     sl_atr_mult: float | None = None,
-    trade_policy: TradePolicy | None = None,
+    trade_spec: TradeSpec | None = None,
 ) -> str:
     repo = KlineRepository(session)
     klines = await repo.get_klines(symbol, timeframe, limit=20000)
@@ -60,15 +60,15 @@ async def build_and_save_dataset(
 
     def process_data_sync() -> pd.DataFrame:
         df_feats = add_features(df)
-        policy = trade_policy or TradePolicy(
-            timeout_candles=horizon, sl_pct=threshold, tp_pct=threshold,
+        spec = trade_spec or TradeSpec(
+            timeout=horizon, sl_rule=threshold, tp_rule=threshold,
             costs=ExecutionCosts(commission_rate=0, slippage_rate=0,
                                  bid_ask_spread_rate=0, funding_rate_per_trade=0),
         )
-        targets = build_trade_targets(df_feats, policy)
+        targets = build_trade_targets(df_feats, spec)
         # Legacy callers historically reserved the adaptive-ATR maximum tail.
-        # Production supplies trade_policy and reserves its exact fixed timeout.
-        if trade_policy is None:
+        # Production supplies trade_spec and reserves its exact fixed timeout.
+        if trade_spec is None:
             from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
             targets.iloc[-MAX_ADAPTIVE_HORIZON_CANDLES:] = pd.NA
         for column in targets:
@@ -84,15 +84,15 @@ async def build_and_save_dataset(
     end_date = datetime.fromtimestamp(last_time_ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
     feature_schema = DEFAULT_FEATURE_SCHEMA
-    effective_policy = trade_policy or TradePolicy(
-        timeout_candles=horizon, sl_pct=threshold, tp_pct=threshold,
+    effective_spec = trade_spec or TradeSpec(
+        timeout=horizon, sl_rule=threshold, tp_rule=threshold,
         costs=ExecutionCosts(commission_rate=0, slippage_rate=0,
                              bid_ask_spread_rate=0, funding_rate_per_trade=0),
     )
     label_config = {
         "horizon": horizon, "threshold": threshold,
         "tp_atr_mult": tp_atr_mult, "sl_atr_mult": sl_atr_mult,
-        "trade_policy": effective_policy.identity(),
+        "trade_spec": effective_spec.identity(),
     }
     candle_bytes = pd.util.hash_pandas_object(
         df[["open_time", "open", "high", "low", "close", "volume"]], index=False
@@ -123,25 +123,25 @@ async def build_and_save_dataset(
                 "type": "economic_return_regression",
                 "definition": "max(long_net_return, short_net_return) after execution costs",
                 "side_targets": ["long_net_return", "short_net_return"],
-                "label_mode": "trade_policy",
+                "label_mode": "trade_spec",
             },
             "target_binary": {
                 "type": "binary", "horizon": horizon, "threshold": 0.0,
-                "label_mode": "trade_policy" if trade_policy is not None else (
+                "label_mode": "trade_spec" if trade_spec is not None else (
                     "atr" if tp_atr_mult is not None else "fixed_threshold"
                 ),
                 "tp_atr_mult": tp_atr_mult,
             },
             "target_triple": {
                 "type": "triple", "horizon": horizon, "threshold": threshold,
-                "label_mode": "trade_policy" if trade_policy is not None else (
+                "label_mode": "trade_spec" if trade_spec is not None else (
                     "atr" if tp_atr_mult is not None and sl_atr_mult is not None else "fixed_threshold"
                 ),
                 "tp_atr_mult": tp_atr_mult,
                 "sl_atr_mult": sl_atr_mult,
             },
         },
-        "trade_policy": effective_policy.identity(),
+        "trade_spec": effective_spec.identity(),
         "date_range": {
             "start_time_ms": first_time_ms,
             "end_time_ms": last_time_ms,
