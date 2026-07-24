@@ -142,27 +142,38 @@ def generate_triple_labels(
         p_close = close[t]
 
         if use_atr_barrier and not np.isnan(curr_atr) and curr_atr > 0:
-            tp_barrier = p_close + tp_atr_mult * curr_atr
-            sl_barrier = p_close - sl_atr_mult * curr_atr
+            tp_distance = tp_atr_mult * curr_atr
+            sl_distance = sl_atr_mult * curr_atr
+            long_tp = p_close + tp_distance
+            long_sl = p_close - sl_distance
+            short_tp = p_close - tp_distance
+            short_sl = p_close + sl_distance
         else:
-            tp_barrier = p_close * (1.0 + threshold)
-            sl_barrier = p_close * (1.0 - threshold)
+            long_tp = p_close * (1.0 + threshold)
+            long_sl = p_close * (1.0 - threshold)
+            short_tp = p_close * (1.0 - threshold)
+            short_sl = p_close * (1.0 + threshold)
 
-        tp_idx = -1
-        sl_idx = -1
-
+        long_outcome = None
+        short_outcome = None
         for k in range(t + 1, t + hz + 1):
-            if tp_idx == -1 and high[k] >= tp_barrier:
-                tp_idx = k
-            if sl_idx == -1 and low[k] <= sl_barrier:
-                sl_idx = k
+            # Resolve each direction as an actual trade.  A SHORT signal must
+            # come from its own TP, not from the LONG trade's stop-loss.
+            if long_outcome is None:
+                if low[k] <= long_sl:
+                    long_outcome = False
+                elif high[k] >= long_tp:
+                    long_outcome = True
+            if short_outcome is None:
+                if high[k] >= short_sl:
+                    short_outcome = False
+                elif low[k] <= short_tp:
+                    short_outcome = True
 
-        if tp_idx != -1 and (sl_idx == -1 or tp_idx < sl_idx):
-            labels[t] = 1.0
-        elif sl_idx != -1 and (tp_idx == -1 or sl_idx < tp_idx):
-            labels[t] = -1.0
-        else:
-            labels[t] = 0.0
+            if long_outcome is not None and short_outcome is not None:
+                break
+
+        labels[t] = 1.0 if long_outcome is True else -1.0 if short_outcome is True else 0.0
 
     # Хвост всегда остается неразмеченным
     labels[safe_end:] = np.nan

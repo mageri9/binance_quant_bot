@@ -305,3 +305,27 @@ def test_triple_labels_atr_barrier_requires_both_mults():
     labels = generate_triple_labels(df, horizon=5, threshold=0.01, tp_atr_mult=0.2)
     # sl_atr_mult не задан -> use_atr_barrier=False -> фикс.-threshold ветка -> HOLD
     assert labels.iloc[0] == 0.0
+
+
+def test_triple_labels_short_uses_its_own_mirrored_atr_barriers():
+    """SHORT TP is -tp_atr_mult*ATR and SL is +sl_atr_mult*ATR."""
+    n = 30
+    base = {
+        "close": [100.0] * n,
+        "high": [100.5] * n,
+        "low": [99.5] * n,
+        "atr": [1.0] * n,
+    }
+
+    # A -1 ATR move is the LONG stop, but not the SHORT take-profit (-1.5 ATR).
+    near_short_tp = pd.DataFrame(base | {"low": [99.5, 98.8] + [99.5] * (n - 2)})
+    labels = generate_triple_labels(
+        near_short_tp, horizon=5, tp_atr_mult=1.5, sl_atr_mult=1.0
+    )
+    assert labels.iloc[0] == 0.0
+
+    short_tp = pd.DataFrame(base | {"low": [99.5, 98.5] + [99.5] * (n - 2)})
+    labels = generate_triple_labels(
+        short_tp, horizon=5, tp_atr_mult=1.5, sl_atr_mult=1.0
+    )
+    assert labels.iloc[0] == -1.0

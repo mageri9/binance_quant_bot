@@ -61,3 +61,35 @@ def test_targets_expose_complete_order_and_share_the_policy():
 
     changed = build_trade_targets(df, _policy(tp_pct=Decimal("0.10")))
     assert changed.loc[0, "target_triple"] == 0
+
+
+def test_short_payoff_mirrors_long_after_inverting_price_return():
+    policy = TradePolicy(
+        timeout_candles=2,
+        sl_pct=Decimal("0.01"),
+        tp_pct=Decimal("0.015"),
+        costs=ExecutionCosts(
+            commission_rate=0, slippage_rate=0,
+            bid_ask_spread_rate=0, funding_rate_per_trade=0,
+        ),
+    )
+    long_df = pd.DataFrame({
+        "open": [100.0, 100.0, 100.0, 100.0],
+        "high": [100.0, 101.5, 100.0, 100.0],
+        "low": [100.0, 99.5, 100.0, 100.0],
+        "close": [100.0] * 4,
+    })
+    short_df = long_df.copy()
+    short_df["high"] = 200.0 - long_df["low"]
+    short_df["low"] = 200.0 - long_df["high"]
+
+    long = evaluate_trade(long_df, 0, "LONG", policy)
+    short = evaluate_trade(short_df, 0, "SHORT", policy)
+
+    assert long is not None and short is not None
+    assert long.exit_reason == short.exit_reason == "take_profit"
+    assert long.spec.tp == pytest.approx(101.5)
+    assert short.spec.tp == pytest.approx(98.5)
+    assert long.spec.sl == pytest.approx(99.0)
+    assert short.spec.sl == pytest.approx(101.0)
+    assert short.net_return == pytest.approx(long.net_return)
