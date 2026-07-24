@@ -584,7 +584,13 @@ class BinanceExchange(BaseExchange):
     async def get_recent_fills(self, symbol: str, since: int | None = None) -> list[dict]:
         """REST control snapshot used only for reconciliation, not live state."""
         await self._ensure_markets()
-        trades = await self.exchange.fetch_my_trades(symbol, since=since, limit=1000)
+        try:
+            trades = await self.exchange.fetch_my_trades(symbol, since=since, limit=1000)
+        except Exception:
+            logger.exception(
+                "[BinanceExchange] Failed to fetch userTrades for {}", symbol
+            )
+            raise
         fills = []
         for trade in trades:
             fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
