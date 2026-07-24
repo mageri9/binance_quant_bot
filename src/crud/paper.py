@@ -259,6 +259,8 @@ class TradeRepository:
         timeframe: str = "unknown",
         candle_time: int | None = None,
         horizon: int = 5,
+        reason: str | None = None,
+        details: dict | None = None,
     ) -> PredictionLog:
         """
         Записывает прогноз модели и вероятности классов в базу данных для MLOps-мониторинга.
@@ -274,6 +276,8 @@ class TradeRepository:
             timeframe=timeframe,
             candle_time=candle_time,
             horizon=horizon,
+            reason=reason,
+            details=details,
         )
         self.session.add(log_entry)
         await self.session.commit()

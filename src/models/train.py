@@ -28,6 +28,7 @@ from src.models.economic import EconomicReturnRegressor, ECONOMIC_TARGETS
 from src.models.economic_quality import economic_quality_failure
 from src.strategy.edge import apply_edge_threshold, sweep_edge_thresholds
 from src.utils.artifact_paths import get_oos_path
+from src.models.artifacts import MODEL_ARTIFACT_SCHEMA_VERSION, feature_hash
 
 
 async def _run_economic_return_experiment(
@@ -116,10 +117,13 @@ async def _run_economic_return_experiment(
     model_path = os.path.join(models_dir, f"lgbm_{clean_symbol}_{clean_tf}.pkl")
     artifact = {
         "model_id": f"economic_return_{clean_symbol}_{clean_tf}_{metadata['version']}",
+        "dataset_version": metadata["version"],
+        "schema_version": MODEL_ARTIFACT_SCHEMA_VERSION,
         "model_type": "economic_return_regression",
         "model": model,
         "target_col": "expected_return",
         "features": feature_cols,
+        "features_hash": feature_hash(feature_cols),
         "min_expected_return": minimum_ev,
         "edge_threshold_sweep": edge_sweep,
         "calibration": {"sl_pct": settings.TRADE_SL_PCT, "tp_pct": settings.TRADE_TP_PCT,
@@ -782,7 +786,8 @@ async def run_lgbm_experiment(
     }
 
     parameters = {
-        "model_type": "LightGBM",
+        "model_type": "economic_return_regression",
+        "base_model_type": "LightGBM",
         "learning_rate": best_params.get("learning_rate", learning_rate)
         if best_params
         else learning_rate,
@@ -818,10 +823,7 @@ async def run_lgbm_experiment(
     model_filename = f"lgbm_{clean_symbol}_{clean_tf}.pkl"
     model_path = os.path.join(models_dir, model_filename)
 
-    import hashlib
-
-    features_str = ",".join(sorted(feature_cols))
-    features_hash = hashlib.sha256(features_str.encode("utf-8")).hexdigest()[:12]
+    features_hash = feature_hash(feature_cols)
 
     artifact = {
         "model_id": f"lgbm_{clean_symbol}_{clean_tf}_{metadata['version']}",
@@ -829,10 +831,12 @@ async def run_lgbm_experiment(
         "symbol": metadata["symbol"],
         "timeframe": metadata["timeframe"],
         "dataset_version": metadata["version"],
+        "schema_version": MODEL_ARTIFACT_SCHEMA_VERSION,
         "git_sha": get_git_sha(),
         "target_col": target_col,
         "features": feature_cols,
         "features_hash": features_hash,
+        "model_type": "economic_return_regression",
         "model": final_model,
         "soft_regime_ensemble": {
             "enabled": use_soft_regimes,

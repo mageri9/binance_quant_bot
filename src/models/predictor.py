@@ -2,6 +2,7 @@ import os
 import pickle
 import pandas as pd
 from src.features.engineering import add_features
+from src.models.artifacts import ArtifactMetadata, validate_artifact
 
 
 class Predictor:
@@ -15,12 +16,16 @@ class Predictor:
         model_path: str,
         confidence_threshold: float | None = None,
         meta_threshold: float | None = None,
+        artifact: dict | None = None,
     ):
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Файл модели по пути {model_path} не найден.")
 
-        with open(model_path, "rb") as f:
-            saved_data = pickle.load(f)
+        if artifact is None:
+            with open(model_path, "rb") as f:
+                artifact = pickle.load(f)
+        saved_data = artifact
+        self.metadata: ArtifactMetadata = validate_artifact(saved_data)
 
         if confidence_threshold is None:
             # Retained only for backwards-compatible construction. Probability
@@ -39,20 +44,16 @@ class Predictor:
         self.meta_features = saved_data.get("meta_features")
         self.regime_drift_pvalue_at_train = saved_data.get("regime_drift_pvalue_at_train")
 
-        self.features = saved_data.get("features")
-        if self.features is None:
-            self.features = ["rsi", "macd", "macd_signal", "macd_hist", "volatility", "volume_ratio"]
+        self.features = self.metadata.features
 
-        self.target_col = saved_data.get("target_col")
-        if self.target_col is None:
-            self.target_col = "target_binary"
+        self.target_col = saved_data.get("target_col", "expected_return")
 
-        self.model_id = saved_data.get("model_id", "legacy_model")
-        self.dataset_version = saved_data.get("dataset_version", "unknown")
+        self.model_id = self.metadata.model_id
+        self.dataset_version = self.metadata.dataset_version
         self.git_sha = saved_data.get("git_sha", "unknown")
-        self.features_hash = saved_data.get("features_hash", "unknown")
+        self.features_hash = self.metadata.features_hash
         self.calibration = saved_data.get("calibration", {"sl_pct": 0.02, "tp_pct": 0.04})
-        self.model_type = saved_data.get("model_type", "classification")
+        self.model_type = self.metadata.model_type
         from src.core.config import get_settings
         self.min_expected_return = saved_data.get(
             "min_expected_return", get_settings().MIN_EXPECTED_RETURN,

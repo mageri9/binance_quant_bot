@@ -295,6 +295,7 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
     """
     from src.data.collector import DataCollector
     from src.models.predictor import Predictor
+    from src.models.resolver import ModelResolver, ModelResolutionError
     from src.crud.kline import KlineRepository
 
     # Новые импорты SRE контура
@@ -302,7 +303,6 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
     from src.risk.kill_switch import KillSwitchManager
 
     settings = get_settings()
-    model_path = settings.get_model_path(symbol, timeframe)
     logger.info(f"Фоновая служба торговли для {symbol} ({timeframe}) запущена.")
 
     while True:
@@ -310,6 +310,19 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
             await asyncio.sleep(3600)
 
             async with AsyncSessionFactory() as session:
+                try:
+                    resolved_model = await ModelResolver(session).resolve(symbol, timeframe, settings.TARGET_COL)
+                except ModelResolutionError as exc:
+                    logger.critical(f"[ModelResolver] trading loop stopped for {symbol} {timeframe}: {exc}")
+                    return
+                logger.info(
+                    f"[ModelResolver] loaded model_id={resolved_model.metadata.model_id} "
+                    f"status={resolved_model.deployment.status} "
+                    f"dataset_version={resolved_model.metadata.dataset_version} "
+                    f"schema_version={resolved_model.metadata.schema_version} "
+                    f"features_hash={resolved_model.metadata.features_hash} "
+                    f"model_hash={resolved_model.artifact_hash} path={resolved_model.artifact_path}"
+                )
                 # 1. Скачиваем свечи (всегда полезно иметь актуальную историю для ML)
                 if settings.LIVE_TRADING:
                     async with DataCollector(session) as collector:
@@ -370,18 +383,36 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                         .reset_index(drop=True)
                     )
 
-                    predictor = Predictor(model_path)
+                    predictor = Predictor(
+                        resolved_model.artifact_path,
+                        artifact=resolved_model.artifact,
+                    )
                     signal, probabilities = predictor.predict_detailed(df)
                     latest_close = df["close"].iloc[-1]
 
                     if probabilities is not None:
                         from src.crud.paper import TradeRepository
+                        # The legacy classifier returns class probabilities,
+                        # while the economic model returns EV diagnostics.
+                        # Persist both protocols without expanding arbitrary
+                        # predictor fields into the repository signature.
+                        prediction_reason = probabilities.get("reason")
+                        prediction_details = {
+                            key: value
+                            for key, value in probabilities.items()
+                            if key not in {"prob_short", "prob_hold", "prob_long", "reason"}
+                        }
                         prediction = await TradeRepository(session).log_prediction(
                             symbol=symbol, timeframe=timeframe,
                             candle_time=int(df["open_time"].iloc[-1]),
                             horizon=settings.TRADE_TIMEOUT_CANDLES,
                             model_id=predictor.model_id, price=float(latest_close),
-                            prediction=int(signal or 0), **probabilities,
+                            prediction=int(signal or 0),
+                            prob_short=float(probabilities.get("prob_short", 0.0)),
+                            prob_hold=float(probabilities.get("prob_hold", 0.0)),
+                            prob_long=float(probabilities.get("prob_long", 0.0)),
+                            reason=prediction_reason,
+                            details=prediction_details or None,
                         )
                     else:
                         prediction = None
@@ -925,11 +956,11 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
 
                     registry = ModelRegistryRepository(session)
                     await registry.register(
-                        model_id=lgbm_result.get("model_id", f"{symbol}:{timeframe}:{dataset_metadata['version']}"),
+                        model_id=artifact["model_id"],
                         symbol=symbol, timeframe=timeframe, target=settings.TARGET_COL,
                         status="challenger", artifact_uri=lgbm_result["model_path"],
                         parameters=lgbm_result.get("parameters"),
-                        feature_schema=dataset_metadata["features"],
+                        feature_schema=artifact["features"],
                         dataset_fingerprint=dataset_metadata["dataset_fingerprint"],
                         offline_metrics=lgbm_result.get("metrics"),
                         trading_metrics=new_backtest_metrics,

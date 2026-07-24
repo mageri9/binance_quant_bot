@@ -10,6 +10,7 @@ from sqlalchemy import select
 from src.db.models import Experiment
 from src.models.train import run_lgbm_experiment
 from src.models.predictor import Predictor
+from src.models.artifacts import MODEL_ARTIFACT_SCHEMA_VERSION, feature_hash
 from src.utils.artifact_paths import get_oos_path
 
 
@@ -144,11 +145,17 @@ class _FakeMetaModel:
 
 
 def _build_artifact(meta_model, meta_features):
+    features = ["rsi", "macd", "macd_signal", "macd_hist", "volatility", "volume_ratio"]
     return {
-        "model": _FakePrimaryModel(),
+        "model": _FakeEconomicModel(0.0, 0.0),
         "scaler": None,
-        "features": ["rsi", "macd", "macd_signal", "macd_hist", "volatility", "volume_ratio"],
-        "target_col": "target_binary",
+        "model_id": "test-model",
+        "dataset_version": "test-dataset",
+        "schema_version": MODEL_ARTIFACT_SCHEMA_VERSION,
+        "model_type": "economic_return_regression",
+        "features": features,
+        "features_hash": feature_hash(features),
+        "target_col": "expected_return",
         "meta_model": meta_model,
         "meta_features": meta_features,
     }

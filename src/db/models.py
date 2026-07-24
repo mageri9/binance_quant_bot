@@ -395,6 +395,10 @@ class PredictionLog(Base):
     outcome_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     true_label: Mapped[int | None] = mapped_column(nullable=True)
     realized_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Prediction protocols may carry a rejection reason or EV diagnostics in
+    # addition to the legacy three-class probabilities.
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     def __repr__(self) -> str:
         return f"<PredictionLog symbol={self.symbol} pred={self.prediction} model={self.model_id}>"
