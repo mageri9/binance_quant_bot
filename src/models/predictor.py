@@ -158,12 +158,9 @@ class Predictor:
 
             if meta_ok:
                 meta_X = pd.DataFrame([meta_row])[self.meta_features]
-                meta_proba = self.meta_model.predict_proba(meta_X)[0]
-                classes = list(self.meta_model.classes_)
-                success_idx = classes.index(1) if 1 in classes else 1
-                meta_success_prob = meta_proba[success_idx]
+                meta_expected_return = float(self.meta_model.predict(meta_X)[0])
 
-                if meta_success_prob < self.meta_threshold:
+                if meta_expected_return < self.meta_threshold:
                     signal = 0
 
         return signal, prob_dict

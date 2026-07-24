@@ -758,6 +758,7 @@ async def run_lgbm_experiment(
                 meta_df,
                 candidate_features,
                 settings.META_LABELING_MIN_TRADES,
+                meta_threshold=settings.META_LABELING_THRESHOLD,
             )
             meta_metrics["cross_fitted_primary_oof"] = True
             meta_metrics["primary_oof_folds"] = int(

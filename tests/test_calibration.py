@@ -272,6 +272,8 @@ def test_perform_grid_search_atr_mode():
 async def test_get_best_calibration_applies_meta_gate(tmp_path):
     class RejectAllMeta:
         classes_ = [0, 1]
+        def predict(self, X):
+            return np.full(len(X), -0.01)
         def predict_proba(self, X):
             return np.tile([1.0, 0.0], (len(X), 1))  # всегда "низкая вероятность успеха"
 

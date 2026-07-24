@@ -137,11 +137,10 @@ class _FakeEconomicModel:
 
 
 class _FakeMetaModel:
-    classes_ = [0, 1]
-    def __init__(self, success_prob):
-        self.success_prob = success_prob
-    def predict_proba(self, X):
-        return np.array([[1 - self.success_prob, self.success_prob]])
+    def __init__(self, expected_return):
+        self.expected_return = expected_return
+    def predict(self, X):
+        return np.full(len(X), self.expected_return)
 
 
 def _build_artifact(meta_model, meta_features):
@@ -218,22 +217,22 @@ def test_predictor_holds_when_side_specific_expected_returns_are_equal(tmp_path)
 
 
 def test_predictor_meta_model_gates_low_confidence_signal(tmp_path):
-    artifact = _build_artifact(_FakeMetaModel(success_prob=0.1), ["adx", "atr_pct", "predicted_signal"])
+    artifact = _build_artifact(_FakeMetaModel(expected_return=-0.001), ["adx", "atr_pct", "predicted_signal"])
     model_path = str(tmp_path / "fake_meta_low.pkl")
     with open(model_path, "wb") as f:
         pickle.dump(artifact, f)
 
-    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
+    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.0)
     assert predictor.predict(_make_test_candles()) == 0
 
 
 def test_predictor_meta_model_allows_high_confidence_signal(tmp_path):
-    artifact = _build_artifact(_FakeMetaModel(success_prob=0.9), ["adx", "atr_pct", "predicted_signal"])
+    artifact = _build_artifact(_FakeMetaModel(expected_return=0.001), ["adx", "atr_pct", "predicted_signal"])
     model_path = str(tmp_path / "fake_meta_high.pkl")
     with open(model_path, "wb") as f:
         pickle.dump(artifact, f)
 
-    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
+    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.0)
     assert predictor.predict(_make_test_candles()) == 0
 
 
@@ -258,16 +257,14 @@ def test_predictor_uses_calibrated_artifact_edge_threshold(tmp_path):
     assert predictor.predict(_make_test_candles()) == 0
 
 class _FakeMetaModelWithDrift:
-    classes_ = [0, 1]
-    def predict_proba(self, X):
+    def predict(self, X):
         assert "regime_drift_pvalue" in X.columns
-        return np.array([[0.1, 0.9]])
+        return np.full(len(X), 0.01)
 
 
 class _FakeMetaModelRejectAll:
-    classes_ = [0, 1]
-    def predict_proba(self, X):
-        return np.array([[0.9, 0.1]])
+    def predict(self, X):
+        return np.full(len(X), -0.01)
 
 
 def test_predictor_meta_model_uses_stored_drift_pvalue(tmp_path):
@@ -279,7 +276,7 @@ def test_predictor_meta_model_uses_stored_drift_pvalue(tmp_path):
     with open(model_path, "wb") as f:
         pickle.dump(artifact, f)
 
-    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
+    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.0)
     assert predictor.predict(_make_test_candles()) == 0
 
 
@@ -294,5 +291,5 @@ def test_predictor_meta_model_skips_gate_when_drift_missing(tmp_path):
     with open(model_path, "wb") as f:
         pickle.dump(artifact, f)
 
-    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
+    predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.0)
     assert predictor.predict(_make_test_candles()) == 0

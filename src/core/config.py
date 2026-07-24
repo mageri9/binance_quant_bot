@@ -130,7 +130,8 @@ class Settings(BaseSettings):
     BINANCE_PROXY: str = ""
 
     META_LABELING_ENABLED: bool = True
-    META_LABELING_THRESHOLD: float = 0.5
+    # Minimum post-cost return predicted by the meta-model to keep a trade.
+    META_LABELING_THRESHOLD: float = 0.0
     META_LABELING_MIN_TRADES: int = 30
 
     ATR_RISK_MODEL_ENABLED: bool = True
