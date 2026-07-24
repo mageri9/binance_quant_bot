@@ -241,13 +241,13 @@ async def get_best_calibration(
         honest_metrics = await asyncio.to_thread(
             simulate_strategy,
             df_eval,
-            "predicted_signal",
-            int(best["horizon"]),
-            None,
-            None,
-            0.001,
-            float(best["sl_atr_mult"]),
-            float(best["tp_atr_mult"]),
+            predicted_col="predicted_signal",
+            horizon=int(best["horizon"]),
+            sl_pct=None,
+            tp_pct=None,
+            transaction_cost=0.001,
+            sl_atr_mult=float(best["sl_atr_mult"]),
+            tp_atr_mult=float(best["tp_atr_mult"]),
         )
 
         best_sl_value = float(best["sl_atr_mult"])
@@ -285,10 +285,10 @@ async def get_best_calibration(
         honest_metrics = await asyncio.to_thread(
             simulate_strategy,
             df_eval,
-            "predicted_signal",
-            int(best["horizon"]),
-            float(best["sl_pct"]),
-            float(best["tp_pct"]),
+            predicted_col="predicted_signal",
+            horizon=int(best["horizon"]),
+            sl_pct=float(best["sl_pct"]),
+            tp_pct=float(best["tp_pct"]),
         )
 
         best_sl_value = float(best["sl_pct"])
