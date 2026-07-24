@@ -1,6 +1,8 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import String
 
 from src.db.models import PredictionLog, TrainingState
 from src.ml.lifecycle import decide_retraining, record_training, resolve_predictions
@@ -74,6 +76,30 @@ async def test_rejected_evaluation_advances_retrain_cursor(temp_db_session):
     )
 
     assert not decision.should_train
+
+
+@pytest.mark.asyncio
+async def test_training_state_persists_full_sha256_fingerprint(temp_db_session):
+    fingerprint = hashlib.sha256(b"labelled training window").hexdigest()
+
+    await record_training(
+        temp_db_session,
+        symbol="SOL/USDT",
+        timeframe="1h",
+        target="expected_return",
+        last_trained_candle=1756108800000,
+        dataset_fingerprint=fingerprint,
+        trigger="economic_quality_rejected",
+    )
+
+    state = await temp_db_session.get(TrainingState, 1)
+    column_type = TrainingState.__table__.c.last_dataset_fingerprint.type
+
+    assert state is not None
+    assert state.last_dataset_fingerprint == fingerprint
+    assert len(fingerprint) == 64
+    assert isinstance(column_type, String)
+    assert column_type.length == 64
 
 
 @pytest.mark.asyncio
