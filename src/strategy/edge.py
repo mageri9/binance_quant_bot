@@ -1,4 +1,4 @@
-"""Selection of a confidence/edge gate without looking at the final OOS split."""
+"""Expected-value gates for trade selection."""
 
 from __future__ import annotations
 
@@ -13,16 +13,16 @@ def apply_edge_threshold(
     df: pd.DataFrame,
     threshold: float,
     signal_col: str = "predicted_signal",
-    confidence_col: str = "predicted_confidence",
+    expected_return_col: str = "predicted_expected_return",
 ) -> pd.DataFrame:
-    """Turn directional predictions below ``threshold`` into HOLD signals."""
-    if confidence_col not in df.columns:
-        raise ValueError(f"Missing required confidence column: {confidence_col}")
+    """Turn signals without positive predicted net return into HOLD signals."""
+    if expected_return_col not in df.columns:
+        raise ValueError(f"Missing required expected-return column: {expected_return_col}")
     if signal_col not in df.columns:
         raise ValueError(f"Missing required signal column: {signal_col}")
 
     filtered = df.copy()
-    keep = filtered[confidence_col].ge(threshold) & filtered[signal_col].ne(0)
+    keep = filtered[expected_return_col].gt(max(0.0, threshold)) & filtered[signal_col].ne(0)
     filtered[signal_col] = filtered[signal_col].where(keep, 0)
     return filtered
 
@@ -34,7 +34,7 @@ def sweep_edge_thresholds(
     min_trades: int,
     simulate_kwargs: dict | None = None,
 ) -> tuple[float, list[dict]]:
-    """Pick the most profitable sufficiently-covered confidence gate.
+    """Pick the most profitable sufficiently-covered expected-value gate.
 
     Candidates are ranked by expectancy, then profit factor, then coverage.
     The caller must pass the chronological calibration partition only; this
@@ -52,8 +52,8 @@ def sweep_edge_thresholds(
     kwargs = dict(simulate_kwargs or {})
     rows: list[dict] = []
     for threshold in sorted({float(value) for value in thresholds}):
-        if not 0 <= threshold <= 1:
-            raise ValueError("edge thresholds must be between 0 and 1.")
+        if threshold < 0:
+            raise ValueError("minimum expected returns must be non-negative.")
         filtered = apply_edge_threshold(df, threshold)
         coverage = float(filtered["predicted_signal"].ne(0).sum() / base_signals)
         metrics = simulate_strategy(filtered, **kwargs)

@@ -123,6 +123,15 @@ class _FakePrimaryModel:
         return np.array([[0.1, 0.9]])
 
 
+class _FakeEconomicModel:
+    def __init__(self, long_return, short_return):
+        self.long_return = long_return
+        self.short_return = short_return
+
+    def predict_returns(self, X):
+        return np.array([self.long_return]), np.array([self.short_return])
+
+
 class _FakeMetaModel:
     classes_ = [0, 1]
     def __init__(self, success_prob):
@@ -154,6 +163,24 @@ def _make_test_candles():
     })
 
 
+def test_predictor_only_enters_when_post_cost_expected_return_is_positive(tmp_path):
+    artifact = _build_artifact(None, None)
+    artifact.update({
+        "model_type": "economic_return_regression",
+        "model": _FakeEconomicModel(long_return=0.0, short_return=-0.01),
+        "min_expected_return": -0.02,
+    })
+    model_path = str(tmp_path / "zero_ev.pkl")
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    signal, details = Predictor(model_path).predict_detailed(_make_test_candles())
+
+    assert signal == 0
+    assert details["expected_return"] == 0.0
+    assert details["min_expected_return"] == 0.0
+
+
 def test_predictor_meta_model_gates_low_confidence_signal(tmp_path):
     artifact = _build_artifact(_FakeMetaModel(success_prob=0.1), ["adx", "atr_pct", "predicted_signal"])
     model_path = str(tmp_path / "fake_meta_low.pkl")
@@ -171,7 +198,7 @@ def test_predictor_meta_model_allows_high_confidence_signal(tmp_path):
         pickle.dump(artifact, f)
 
     predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
-    assert predictor.predict(_make_test_candles()) == 1
+    assert predictor.predict(_make_test_candles()) == 0
 
 
 def test_predictor_without_meta_model_unaffected(tmp_path):
@@ -181,7 +208,7 @@ def test_predictor_without_meta_model_unaffected(tmp_path):
         pickle.dump(artifact, f)
 
     predictor = Predictor(model_path, confidence_threshold=0.5)
-    assert predictor.predict(_make_test_candles()) == 1
+    assert predictor.predict(_make_test_candles()) == 0
 
 
 def test_predictor_uses_calibrated_artifact_edge_threshold(tmp_path):
@@ -217,7 +244,7 @@ def test_predictor_meta_model_uses_stored_drift_pvalue(tmp_path):
         pickle.dump(artifact, f)
 
     predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
-    assert predictor.predict(_make_test_candles()) == 1
+    assert predictor.predict(_make_test_candles()) == 0
 
 
 def test_predictor_meta_model_skips_gate_when_drift_missing(tmp_path):
@@ -232,4 +259,4 @@ def test_predictor_meta_model_skips_gate_when_drift_missing(tmp_path):
         pickle.dump(artifact, f)
 
     predictor = Predictor(model_path, confidence_threshold=0.5, meta_threshold=0.5)
-    assert predictor.predict(_make_test_candles()) == 1  # гейт пропущен, сигнал не погашен
+    assert predictor.predict(_make_test_candles()) == 0

@@ -35,4 +35,5 @@ class EconomicReturnRegressor:
     def signals(self, X: pd.DataFrame, min_expected_return: float = 0.0) -> np.ndarray:
         long_return, short_return = self.predict_returns(X)
         best = np.maximum(long_return, short_return)
-        return np.where(best <= min_expected_return, 0, np.where(long_return >= short_return, 1, -1))
+        minimum_ev = max(0.0, min_expected_return)
+        return np.where(best <= minimum_ev, 0, np.where(long_return >= short_return, 1, -1))

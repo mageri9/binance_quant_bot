@@ -23,10 +23,9 @@ class Predictor:
             saved_data = pickle.load(f)
 
         if confidence_threshold is None:
-            from src.core.config import get_settings
-            confidence_threshold = saved_data.get(
-                "edge_threshold", get_settings().PREDICTION_CONFIDENCE_THRESHOLD,
-            )
+            # Retained only for backwards-compatible construction. Probability
+            # is not a trade edge and is never used to authorize a trade.
+            confidence_threshold = None
         self.confidence_threshold = confidence_threshold
 
         if meta_threshold is None:
@@ -89,15 +88,20 @@ class Predictor:
             expected_long = float(long_return[0])
             expected_short = float(short_return[0])
             expected_return = max(expected_long, expected_short)
-            signal = 0 if expected_return <= self.min_expected_return else (
+            minimum_ev = max(0.0, self.min_expected_return)
+            signal = 0 if expected_return <= minimum_ev else (
                 1 if expected_long >= expected_short else -1
             )
             return signal, {
                 "expected_long_return": expected_long,
                 "expected_short_return": expected_short,
                 "expected_return": expected_return,
-                "min_expected_return": self.min_expected_return,
+                "min_expected_return": minimum_ev,
             }
+
+        # Class probabilities do not include payoff magnitude or costs. Legacy
+        # classifier artifacts must be retrained as economic return regressors.
+        return 0, {"reason": "expected_return_unavailable", "model_type": self.model_type}
 
         # Вычисляем сырые вероятности классов
         pred = self.model.predict(X)[0]

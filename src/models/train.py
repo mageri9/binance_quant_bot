@@ -23,7 +23,6 @@ from src.core.config import get_settings
 from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 from datetime import datetime, timezone
 from src.strategy.signals import simulate_strategy
-from src.strategy.edge import apply_edge_threshold, sweep_edge_thresholds
 from src.execution.kernel import ExecutionKernel, costs_from_settings
 from src.models.economic import EconomicReturnRegressor, ECONOMIC_TARGETS
 from src.models.economic_quality import economic_quality_failure
@@ -49,7 +48,7 @@ async def _run_economic_return_experiment(
     expected_pred = np.maximum(long_pred, short_pred)
     actual_expected = test_df["expected_return"].to_numpy()
     predicted_side = np.where(long_pred >= short_pred, 1, -1)
-    predicted_side[expected_pred <= settings.MIN_EXPECTED_RETURN] = 0
+    predicted_side[expected_pred <= max(0.0, settings.MIN_EXPECTED_RETURN)] = 0
     actual_side = np.where(
         test_df["long_net_return"].to_numpy() >= test_df["short_net_return"].to_numpy(), 1, -1
     )
@@ -408,8 +407,14 @@ async def run_lgbm_experiment(
 
     target_col = getattr(settings, "TARGET_COL", "target_triple") or "target_triple"
 
-    if target_col not in df.columns and "target_binary" in df.columns:
-        target_col = "target_binary"
+    if target_col != "expected_return":
+        raise ValueError(
+            "Classification targets cannot authorize trades. Set TARGET_COL=expected_return "
+            "and rebuild the dataset with post-cost economic targets."
+        )
+    required_economic_targets = {"expected_return", *ECONOMIC_TARGETS}
+    if missing := required_economic_targets.difference(df.columns):
+        raise ValueError(f"Dataset is missing economic targets: {sorted(missing)}")
 
     feature_cols = metadata["features"]
 

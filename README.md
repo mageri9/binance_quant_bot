@@ -131,7 +131,7 @@ python -m scripts.compare_side_models datasets/BTCUSDT_1h_vYOUR_VERSION.parquet 
 | `DATABASE_URL` | PostgreSQL URL; пустое значение включает SQLite | пусто |
 | `REDIS_HOST`, `REDIS_PORT` | подключение к Redis | `localhost:6379` |
 | `RETRAIN_POLL_SECONDS` | период проверки переобучения | `900` |
-| `PREDICTION_CONFIDENCE_THRESHOLD` | минимальная уверенность прогноза | `0.55` |
+| `MIN_EXPECTED_RETURN` | минимальная ожидаемая чистая доходность после издержек (не может быть ниже 0) | `0.0` |
 
 Секреты не коммитьте в Git. Файл `.env` должен оставаться локальным.
 
