@@ -14,6 +14,10 @@ from src.core.db import Base
 from src.crud.kline import KlineRepository
 from scripts.calibrate import get_best_calibration
 from src.utils.artifact_paths import get_oos_path
+from src.models.economic_backtest import (
+    economic_backtest_contract_from_settings,
+    evaluate_artifact_economic_oos,
+)
 
 def test_perform_grid_search_success():
     # Создадим фиктивную валидную выборку, где сигнал на покупку возникает на индексе 2 (вход по 102)
@@ -128,32 +132,13 @@ async def test_get_best_calibration_decodes_triple_model_classes():
                 return_value=fake_grid_result,
             ) as mock_grid_search,
         ):
-            sl, tp, hz, report, honest_metrics = await get_best_calibration("BTC/USDT", "1h")
+            with pytest.raises(ValueError, match="oos_split"):
+                await get_best_calibration("BTC/USDT", "1h")
 
         await engine.dispose()
 
-        # 4. Проверяем, что в perform_grid_search попал декодированный сигнал
-        assert mock_grid_search.called
-        captured_df = mock_grid_search.call_args[0][0]
-
-        assert "predicted_signal" in captured_df.columns
-
-        assert set(captured_df["predicted_signal"].unique()).issubset({-1.0, 0.0, 1.0})
-
-        expected = pd.Series(
-            np.arange(len(captured_df)) % 3,
-            index=captured_df.index,
-        ).map({0: -1.0, 1: 0.0, 2: 1.0})
-
-        pd.testing.assert_series_equal(
-            captured_df["predicted_signal"].astype(float),
-            expected.astype(float),
-            check_names=False,
-        )
-
-        assert sl == 0.02
-        assert tp == 0.04
-        assert hz == 5
+        # Artifacts without explicit OOS partitions are no longer calibrated.
+        assert not mock_grid_search.called
 
 def test_perform_grid_search_filters_low_trade_count():
     df_valid = pd.DataFrame({
@@ -186,6 +171,7 @@ async def test_get_best_calibration_prefers_sibling_oos_parquet(tmp_path):
         "high": [100.5, 101.5, 105.5, 103.5, 104.5, 105.5],
         "low": [99.5, 100.5, 101.5, 102.5, 103.5, 104.5],
         "predicted_signal": [0, 1, 0, 0, 0, 0],
+        "oos_split": ["calibration"] * 3 + ["economic_test"] * 3,
     })
     df_oos.to_parquet(oos_path, index=False)
 
@@ -223,7 +209,7 @@ async def test_nested_wfo_calibration_never_searches_economic_test(tmp_path):
         "high": [101.0] * 12,
         "low": [99.0] * 12,
         "predicted_signal": [1] * 12,
-        "wfo_split": ["calibration"] * 6 + ["economic_test"] * 6,
+        "oos_split": ["calibration"] * 6 + ["economic_test"] * 6,
     })
     df_oos.to_parquet(oos_path, index=False)
     with open(model_path, "wb") as f:
@@ -245,12 +231,56 @@ async def test_nested_wfo_calibration_never_searches_economic_test(tmp_path):
     with (
         patch("scripts.calibrate.get_settings", return_value=settings),
         patch("scripts.calibrate.perform_grid_search", return_value=grid_result) as grid_search,
-        patch("scripts.calibrate.simulate_strategy", return_value=economic_metrics),
+        patch("scripts.calibrate.simulate_economic_backtest", return_value=economic_metrics),
     ):
         await get_best_calibration("BTC/USDT", "1h", custom_model_path=model_path)
 
     searched = grid_search.call_args.args[0]
-    assert set(searched["wfo_split"]) == {"calibration"}
+    assert set(searched["oos_split"]) == {"calibration"}
+
+
+@pytest.mark.asyncio
+async def test_train_calibration_and_promotion_share_economic_expectancy(tmp_path):
+    """One artifact and OOS dataset must replay identically in all three paths."""
+    model_path = str(tmp_path / "lgbm_BTCUSDT_1h.pkl")
+    oos_path = get_oos_path(model_path)
+    oos = pd.DataFrame({
+        "open_time": np.arange(12),
+        "open": [100.0] * 12,
+        "close": [100.0] * 12,
+        "high": [105.0] * 12,
+        "low": [99.0] * 12,
+        "predicted_signal": [1, 0, 0, 0, 0, 0] * 2,
+        "oos_split": ["calibration"] * 6 + ["economic_test"] * 6,
+    })
+    oos.to_parquet(oos_path, index=False)
+    settings = MagicMock()
+    settings.CALIBRATION_MIN_TRADES = 1
+    artifact = {
+        "model": "dummy", "features": [], "scaler": None,
+        "economic_backtest_contract": economic_backtest_contract_from_settings(settings),
+        "calibration": {"sl_pct": 0.02, "tp_pct": 0.04, "horizon": 3},
+    }
+    with open(model_path, "wb") as f:
+        pickle.dump(artifact, f)
+
+    # Train and promotion both replay the artifact's persisted contract.
+    train_metrics = evaluate_artifact_economic_oos(artifact, oos)
+    grid_result = [{
+        "sl_pct": 0.02, "tp_pct": 0.04, "horizon": 3,
+        "total_trades": 1, "sharpe_ratio": 1.0, "expectancy": 0.01,
+    }]
+    with (
+        patch("scripts.calibrate.get_settings", return_value=settings),
+        patch("scripts.calibrate.perform_grid_search", return_value=grid_result),
+    ):
+        _, _, _, _, calibration_metrics = await get_best_calibration(
+            "BTC/USDT", "1h", custom_model_path=model_path,
+        )
+    promotion_metrics = evaluate_artifact_economic_oos(artifact, oos)
+
+    assert calibration_metrics["expectancy"] == pytest.approx(train_metrics["expectancy"])
+    assert promotion_metrics["expectancy"] == pytest.approx(train_metrics["expectancy"])
 
 def test_perform_grid_search_atr_mode():
     df_valid = pd.DataFrame({
@@ -286,6 +316,7 @@ async def test_get_best_calibration_applies_meta_gate(tmp_path):
         "close": [100.0] * n, "high": [100.5] * n, "low": [99.5] * n,
         "adx": [25.0] * n, "atr_pct": [0.01] * n, "volume_ratio": [1.0] * n, "volatility": [0.02] * n,
         "predicted_signal": ([1, 0, -1, 0] * (n // 4)),
+        "oos_split": ["calibration"] * (n // 2) + ["economic_test"] * (n // 2),
     })
     df_oos.to_parquet(oos_path, index=False)
 

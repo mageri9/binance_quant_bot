@@ -793,7 +793,31 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         calibration_update["tp_pct"] = best_tp
 
                     artifact.setdefault("calibration", {}).update(calibration_update)
-                    artifact["backtest_metrics"] = honest_metrics
+                    from src.models.economic_backtest import (
+                        contract_with_risk,
+                        evaluate_artifact_economic_oos,
+                    )
+
+                    contract = artifact.get("economic_backtest_contract")
+                    if contract is None:
+                        # Compatibility for an old artifact; every new training
+                        # artifact has the persisted contract and takes the path below.
+                        artifact["backtest_metrics"] = honest_metrics
+                    else:
+                        artifact["economic_backtest_contract"] = contract_with_risk(
+                            contract,
+                            horizon=best_hz,
+                            sl_pct=None if settings.ATR_RISK_MODEL_ENABLED else best_sl,
+                            tp_pct=None if settings.ATR_RISK_MODEL_ENABLED else best_tp,
+                        )
+                        df_new_oos = await asyncio.to_thread(
+                            pd.read_parquet, get_oos_path(lgbm_result["model_path"]),
+                        )
+                        # Promotion deliberately replays the persisted artifact, rather
+                        # than trusting a separately configured calibration simulator.
+                        artifact["backtest_metrics"] = await asyncio.to_thread(
+                            evaluate_artifact_economic_oos, artifact, df_new_oos,
+                        )
 
                     with open(lgbm_result["model_path"], "wb") as f:
                         pickle.dump(artifact, f)

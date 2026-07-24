@@ -23,6 +23,11 @@ from src.core.config import get_settings
 from src.labels.generator import MAX_ADAPTIVE_HORIZON_CANDLES
 from datetime import datetime, timezone
 from src.strategy.signals import simulate_strategy
+from src.models.economic_backtest import (
+    OOS_SPLIT_COLUMN,
+    economic_backtest_contract_from_settings,
+    simulate_economic_backtest,
+)
 from src.execution.trade import trade_spec_from_settings
 from src.models.economic import EconomicReturnRegressor, ECONOMIC_TARGETS
 from src.models.economic_quality import economic_quality_failure
@@ -75,6 +80,7 @@ async def _run_economic_return_experiment(
         "target_volatility": settings.BACKTEST_TARGET_VOLATILITY,
         "max_position_pct": settings.BACKTEST_MAX_POSITION_PCT,
     }
+    economic_backtest_contract = economic_backtest_contract_from_settings(settings)
     minimum_ev = max(0.0, float(settings.MIN_EXPECTED_RETURN))
     edge_sweep: list[dict] = []
     if settings.EDGE_THRESHOLD_SWEEP_ENABLED and not calibration_oos.empty:
@@ -83,7 +89,7 @@ async def _run_economic_return_experiment(
             settings.EDGE_MIN_COVERAGE, settings.CALIBRATION_MIN_TRADES, simulate_kwargs,
         )
     test_oos = apply_edge_threshold(test_oos, minimum_ev)
-    economic_backtest = simulate_strategy(test_oos, **simulate_kwargs)
+    economic_backtest = simulate_economic_backtest(test_oos, economic_backtest_contract)
     if not bypass_quality_gates:
         rejection = economic_quality_failure(
             economic_backtest, min_trades=settings.ECONOMIC_GATE_MIN_TRADES,
@@ -128,6 +134,7 @@ async def _run_economic_return_experiment(
         "edge_threshold_sweep": edge_sweep,
         "calibration": {"sl_pct": settings.TRADE_SL_PCT, "tp_pct": settings.TRADE_TP_PCT,
                         "horizon": settings.TRADE_TIMEOUT_CANDLES},
+        "economic_backtest_contract": economic_backtest_contract,
         "backtest_metrics": economic_backtest,
     }
     with open(model_path, "wb") as f:
@@ -146,7 +153,7 @@ async def _run_economic_return_experiment(
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 SIGNAL_MAP_TRIPLE = {0: -1.0, 1: 0.0, 2: 1.0}
-WFO_SPLIT_COLUMN = "wfo_split"
+WFO_SPLIT_COLUMN = OOS_SPLIT_COLUMN
 
 
 def split_nested_wfo_data(
@@ -684,12 +691,9 @@ async def run_lgbm_experiment(
 
     calibration_oos = apply_edge_threshold(calibration_oos, edge_threshold)
     economic_test_oos = apply_edge_threshold(economic_test_oos, edge_threshold)
-    economic_backtest_metrics = simulate_strategy(
-        economic_test_oos,
-        trade_spec=trade_spec_from_settings(settings),
-        stop_risk_pct=settings.BACKTEST_STOP_RISK_PCT,
-        target_volatility=settings.BACKTEST_TARGET_VOLATILITY,
-        max_position_pct=settings.BACKTEST_MAX_POSITION_PCT,
+    economic_backtest_contract = economic_backtest_contract_from_settings(settings)
+    economic_backtest_metrics = simulate_economic_backtest(
+        economic_test_oos, economic_backtest_contract,
     )
     if not bypass_quality_gates:
         rejection = economic_quality_failure(
@@ -853,6 +857,7 @@ async def run_lgbm_experiment(
         },
         "edge_threshold": edge_threshold,
         "edge_threshold_sweep": edge_sweep,
+        "economic_backtest_contract": economic_backtest_contract,
         "backtest_metrics": economic_backtest_metrics,
         "evaluation_protocol": {
             "name": "nested_wfo",

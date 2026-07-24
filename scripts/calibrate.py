@@ -14,7 +14,12 @@ from src.core.db import AsyncSessionFactory
 from src.core.config import get_settings
 from src.crud.kline import KlineRepository
 from src.features.engineering import add_features
-from src.strategy.signals import simulate_strategy
+from src.models.economic_backtest import (
+    contract_with_risk,
+    economic_backtest_contract_from_settings,
+    simulate_economic_backtest,
+    split_oos_partitions,
+)
 from src.utils.artifact_paths import get_oos_path
 
 
@@ -26,17 +31,20 @@ def perform_grid_search(
     min_trades: int = 10,
     k_sl_grid: list[float] | None = None,
     k_tp_grid: list[float] | None = None,
+    backtest_contract: dict | None = None,
 ) -> list[dict]:
     results = []
+    if backtest_contract is None:
+        backtest_contract = economic_backtest_contract_from_settings(get_settings())
     use_atr_mode = k_sl_grid is not None and k_tp_grid is not None
 
     if use_atr_mode:
         for k_sl in k_sl_grid:
             for k_tp in k_tp_grid:
                 for hz in horizon_grid:
-                    metrics = simulate_strategy(
-                        df_valid, predicted_col="predicted_signal",
-                        horizon=hz, sl_pct=None, tp_pct=None,
+                    metrics = simulate_economic_backtest(
+                        df_valid, contract_with_risk(backtest_contract, horizon=hz),
+                        sl_pct=None, tp_pct=None,
                         sl_atr_mult=k_sl, tp_atr_mult=k_tp,
                     )
                     if metrics["total_trades"] >= min_trades:
@@ -57,9 +65,10 @@ def perform_grid_search(
     for sl in sl_grid:
         for tp in tp_grid:
             for hz in horizon_grid:
-                metrics = simulate_strategy(
-                    df_valid, predicted_col="predicted_signal",
-                    horizon=hz, sl_pct=sl, tp_pct=tp,
+                metrics = simulate_economic_backtest(
+                    df_valid, contract_with_risk(
+                        backtest_contract, horizon=hz, sl_pct=sl, tp_pct=tp,
+                    ),
                 )
                 if metrics["total_trades"] >= min_trades:
                     results.append({
@@ -102,6 +111,9 @@ async def get_best_calibration(
 
     with open(model_path, "rb") as f:
         saved_data = pickle.load(f)
+    backtest_contract = saved_data.get("economic_backtest_contract")
+    if backtest_contract is None:
+        backtest_contract = economic_backtest_contract_from_settings(settings)
 
     oos_path = get_oos_path(model_path)
     df_valid = None
@@ -190,17 +202,7 @@ async def get_best_calibration(
         )
         logger.info(f"[Calibration] Meta-gate применён к сигналам перед калибровкой ({symbol}).")
 
-    if "wfo_split" in df_valid.columns and {"calibration", "economic_test"}.issubset(
-        set(df_valid["wfo_split"])
-    ):
-        # The final segment is only evaluated after the risk parameters are set.
-        df_calib = df_valid.loc[df_valid["wfo_split"] == "calibration"].reset_index(drop=True)
-        df_eval = df_valid.loc[df_valid["wfo_split"] == "economic_test"].reset_index(drop=True)
-    else:
-        # Artifacts created before nested WFO retain the previous 70/30 behavior.
-        calib_split_idx = int(len(df_valid) * 0.7)
-        df_calib = df_valid.iloc[:calib_split_idx].reset_index(drop=True)
-        df_eval = df_valid.iloc[calib_split_idx:].reset_index(drop=True)
+    df_calib, df_eval = split_oos_partitions(df_valid)
 
     if df_calib.empty or df_eval.empty:
         raise ValueError("Calibration and economic evaluation partitions must both be non-empty.")
@@ -224,6 +226,7 @@ async def get_best_calibration(
             k_tp_grid=k_tp_grid,
             horizon_grid=horizon_grid,
             min_trades=settings.CALIBRATION_MIN_TRADES,
+            backtest_contract=backtest_contract,
         )
 
         if not results:
@@ -239,13 +242,10 @@ async def get_best_calibration(
         best = res_df.iloc[0]
 
         honest_metrics = await asyncio.to_thread(
-            simulate_strategy,
+            simulate_economic_backtest,
             df_eval,
-            predicted_col="predicted_signal",
-            horizon=int(best["horizon"]),
-            sl_pct=None,
-            tp_pct=None,
-            transaction_cost=0.001,
+            contract_with_risk(backtest_contract, horizon=int(best["horizon"])),
+            sl_pct=None, tp_pct=None,
             sl_atr_mult=float(best["sl_atr_mult"]),
             tp_atr_mult=float(best["tp_atr_mult"]),
         )
@@ -270,6 +270,7 @@ async def get_best_calibration(
             tp_grid,
             horizon_grid=horizon_grid,
             min_trades=settings.CALIBRATION_MIN_TRADES,
+            backtest_contract=backtest_contract,
         )
 
         if not results:
@@ -283,12 +284,12 @@ async def get_best_calibration(
         best = res_df.iloc[0]
 
         honest_metrics = await asyncio.to_thread(
-            simulate_strategy,
+            simulate_economic_backtest,
             df_eval,
-            predicted_col="predicted_signal",
-            horizon=int(best["horizon"]),
-            sl_pct=float(best["sl_pct"]),
-            tp_pct=float(best["tp_pct"]),
+            contract_with_risk(
+                backtest_contract, horizon=int(best["horizon"]),
+                sl_pct=float(best["sl_pct"]), tp_pct=float(best["tp_pct"]),
+            ),
         )
 
         best_sl_value = float(best["sl_pct"])
