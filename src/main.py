@@ -313,8 +313,12 @@ async def paper_trading_loop(bot: Bot, symbol: str, timeframe: str):
                 try:
                     resolved_model = await ModelResolver(session).resolve(symbol, timeframe, settings.TARGET_COL)
                 except ModelResolutionError as exc:
-                    logger.critical(f"[ModelResolver] trading loop stopped for {symbol} {timeframe}: {exc}")
-                    return
+                    # A cold deployment can need its first training cycle.  Keep
+                    # this worker alive so it resumes as soon as a valid champion
+                    # is registered instead of requiring a process restart.
+                    logger.error(f"[ModelResolver] trading paused for {symbol} {timeframe}: {exc}")
+                    await asyncio.sleep(60)
+                    continue
                 logger.info(
                     f"[ModelResolver] loaded model_id={resolved_model.metadata.model_id} "
                     f"status={resolved_model.deployment.status} "
@@ -596,8 +600,20 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
             return
 
         latest_resolved_candle = getattr(klines[-(settings.TRADE_TIMEOUT_CANDLES + 2)], "open_time", None)
+        bootstrap_required = False
         if isinstance(latest_resolved_candle, int):
             from src.ml.lifecycle import decide_retraining, resolve_predictions
+            from src.models.resolver import ModelResolver, ModelResolutionError
+
+            try:
+                await ModelResolver(session).resolve(symbol, timeframe, settings.TARGET_COL)
+            except ModelResolutionError as exc:
+                # Do not let the normal "new labels" threshold deadlock a fresh
+                # deployment (or one with a legacy/incompatible champion).
+                bootstrap_required = True
+                logger.warning(
+                    f"[Retrain - {symbol}] bootstrap required: no valid champion ({exc})"
+                )
 
             await resolve_predictions(
                 session, symbol=symbol, timeframe=timeframe,
@@ -612,12 +628,16 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 min_new_labels=min_labels if isinstance(min_labels, int) else 200,
                 max_age_hours=max_age if isinstance(max_age, int) else 168,
             )
-            if not decision.should_train:
+            if not decision.should_train and not bootstrap_required:
                 logger.debug(
                     f"[Retrain - {symbol}] skipped: {decision.new_labels} new resolved labels"
                 )
                 return
-            retrain_trigger = ",".join(decision.triggers)
+            retrain_trigger = (
+                "bootstrap_invalid_or_missing_champion"
+                if bootstrap_required
+                else ",".join(decision.triggers)
+            )
         else:
             # Compatibility for imported legacy/test candle objects.
             retrain_trigger = "scheduled_control"
@@ -937,7 +957,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                 if drift_warning:
                     msg += f"\n{drift_warning}"
 
-                if legacy_promote and os.path.exists(model_path):
+                promote_to_champion = legacy_promote or bootstrap_required
+                if promote_to_champion and os.path.exists(model_path):
                     clean_symbol = symbol.replace("/", "").replace(":", "")
                     clean_tf = timeframe.replace("/", "")
                     backup_filename = (
@@ -958,14 +979,14 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                             f"Не удалось скопировать бэкап для {symbol}: {copy_err}"
                         )
 
-                if legacy_promote:
+                if promote_to_champion:
                     _atomic_copy(lgbm_result["model_path"], model_path)
                     logger.info(
                         f"[Retrain - {symbol}] Новая модель успешно скопирована в продакшн: {model_path}"
                     )
 
                 staging_oos_path = get_oos_path(lgbm_result["model_path"])
-                if legacy_promote and os.path.exists(staging_oos_path):
+                if promote_to_champion and os.path.exists(staging_oos_path):
                     production_oos_path = get_oos_path(model_path)
                     try:
                         _atomic_copy(staging_oos_path, production_oos_path)
@@ -982,7 +1003,8 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                     await registry.register(
                         model_id=artifact["model_id"],
                         symbol=symbol, timeframe=timeframe, target=settings.TARGET_COL,
-                        status="challenger", artifact_uri=lgbm_result["model_path"],
+                        status="challenger",
+                        artifact_uri=model_path if promote_to_champion else lgbm_result["model_path"],
                         parameters=lgbm_result.get("parameters"),
                         feature_schema=artifact["features"],
                         dataset_fingerprint=dataset_metadata["dataset_fingerprint"],
@@ -991,6 +1013,11 @@ async def _run_retrain_cycle(bot: Bot, symbol: str, timeframe: str) -> None:
                         trained_at=datetime.now(timezone.utc),
                         reason=f"offline gates passed; shadow evaluation required ({retrain_trigger})",
                     )
+                    if bootstrap_required:
+                        await registry.promote(
+                            artifact["model_id"], symbol, timeframe, settings.TARGET_COL,
+                            "bootstrap promotion after invalid or missing champion",
+                        )
                     await record_training(
                         session, symbol=symbol, timeframe=timeframe, target=settings.TARGET_COL,
                         last_trained_candle=latest_resolved_candle,
