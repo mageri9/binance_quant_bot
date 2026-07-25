@@ -158,6 +158,16 @@ class Settings(BaseSettings):
             return json.loads(v)
         return v
 
+    @field_validator(
+        "BACKTEST_STOP_RISK_PCT", "BACKTEST_TARGET_VOLATILITY", mode="before"
+    )
+    @classmethod
+    def parse_optional_backtest_risk_values(cls, v):
+        # Docker secrets often render optional values as empty strings.
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     @model_validator(mode="after")
     def validate_live_api_keys(self):
         if self.TRADING_MODE in {"testnet", "mainnet"}:

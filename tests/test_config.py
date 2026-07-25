@@ -39,3 +39,16 @@ def test_db_url_sqlite_default():
         BINANCE_API_SECRET="fake_secret"
     )
     assert settings_default.db_url.startswith("sqlite+aiosqlite:///")
+
+
+def test_blank_backtest_risk_values_disable_dynamic_sizing():
+    settings = Settings(
+        BOT_TOKEN="test_token",
+        ADMIN_IDS=[123],
+        TRADING_MODE="paper",
+        BACKTEST_STOP_RISK_PCT="",
+        BACKTEST_TARGET_VOLATILITY="   ",
+    )
+
+    assert settings.BACKTEST_STOP_RISK_PCT is None
+    assert settings.BACKTEST_TARGET_VOLATILITY is None

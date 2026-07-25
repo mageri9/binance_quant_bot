@@ -10,6 +10,7 @@ services:
       - ./src/db/db.db:/app/src/db/db.db
       - ./logs:/app/logs
       - ./models/saved_models:/app/models/saved_models
+      - ./models/staging:/app/models/staging
     depends_on:
       redis:
         condition: service_healthy
