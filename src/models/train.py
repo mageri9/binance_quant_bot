@@ -90,6 +90,7 @@ async def _run_economic_return_experiment(
         )
     test_oos = apply_edge_threshold(test_oos, minimum_ev)
     economic_backtest = simulate_economic_backtest(test_oos, economic_backtest_contract)
+    logger.info(f"[EconGate Debug] {metadata['symbol']}: {economic_backtest}")
     if not bypass_quality_gates:
         rejection = economic_quality_failure(
             economic_backtest, min_trades=settings.ECONOMIC_GATE_MIN_TRADES,
