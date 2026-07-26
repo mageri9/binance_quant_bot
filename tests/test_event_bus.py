@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from src.event_bus import AsyncEventBus, Event, ErrorEvent
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CustomTestEvent(Event):
     msg: str
 

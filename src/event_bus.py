@@ -7,12 +7,12 @@ from loguru import logger
 
 # --- ДАТАКЛАССЫ СОБЫТИЙ (Event Contracts) ---
 
-@dataclass
+@dataclass(kw_only=True)
 class Event:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CandleClosedEvent(Event):
     """Событие: закрылась новая свеча на бирже."""
     symbol: str
@@ -25,7 +25,7 @@ class CandleClosedEvent(Event):
     volume: float
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SignalEmittedEvent(Event):
     """Событие: стратегия сгенерировала торговый сигнал."""
     symbol: str
@@ -36,7 +36,7 @@ class SignalEmittedEvent(Event):
     open_time: int
 
 
-@dataclass
+@dataclass(kw_only=True)
 class OrderApprovedEvent(Event):
     """Событие: RiskEngine одобрил и рассчитал параметры ордера."""
     symbol: str
@@ -48,7 +48,7 @@ class OrderApprovedEvent(Event):
     reason: str
 
 
-@dataclass
+@dataclass(kw_only=True)
 class OrderExecutedEvent(Event):
     """Событие: ордер успешно исполнен (в Paper, Testnet или Mainnet)."""
     symbol: str
@@ -61,7 +61,7 @@ class OrderExecutedEvent(Event):
     mode: str
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TradeClosedEvent(Event):
     """Событие: позиция закрыта (по TP/SL или сигналу)."""
     symbol: str
@@ -73,7 +73,7 @@ class TradeClosedEvent(Event):
     reason: str
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ErrorEvent(Event):
     """Событие: критическая ошибка в одном из сервисов."""
     source: str
@@ -104,7 +104,6 @@ class AsyncEventBus:
         if not handlers:
             return
 
-        # Запускаем обработчики параллельно
         tasks = [self._safe_execute(handler, event) for handler in handlers]
         await asyncio.gather(*tasks)
 

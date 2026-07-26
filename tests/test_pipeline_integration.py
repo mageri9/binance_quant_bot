@@ -1,4 +1,5 @@
 import pytest
+from src.db import init_db
 from src.event_bus import AsyncEventBus, SignalEmittedEvent, OrderApprovedEvent
 from src.exchange.paper import PaperExchange
 from src.services.risk_service import RiskService
@@ -6,6 +7,7 @@ from src.services.risk_service import RiskService
 
 @pytest.mark.asyncio
 async def test_full_pipeline_event_flow():
+    await init_db()
     bus = AsyncEventBus()
     exchange = PaperExchange(initial_balance=10000.0)
 
