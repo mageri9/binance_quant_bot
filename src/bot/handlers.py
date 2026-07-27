@@ -1,10 +1,11 @@
+from html import escape
+
 from aiogram import Router
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message
-from sqlalchemy import select
 
 from src.config import get_settings
-from src.db import AsyncSessionFactory, Trade
+from src.db import get_open_trades, get_recent_closed_trades
 from src.bot.keyboards import main_keyboard
 from src.exchange.base import BaseExchange
 
@@ -29,10 +30,13 @@ async def status_cmd(message: Message, exchange: BaseExchange):
     try:
         balance = await exchange.get_balance()
         bal_text = f"💵 Свободно: <code>${balance['free']:.2f}</code> | Всего: <code>${balance['total']:.2f}</code>"
-    except Exception as e:
-        bal_text = f"⚠️ Ошибка баланса: {e}"
+    except Exception as error:
+        bal_text = f"⚠️ Ошибка баланса: {escape(str(error))}"
 
-    configs = ", ".join([f"{s} ({tf})" for s, tf in settings.ACTIVE_CONFIGS])
+    configs = ", ".join(
+        f"{escape(symbol)} ({escape(timeframe)})"
+        for symbol, timeframe in settings.ACTIVE_CONFIGS
+    )
     await message.answer(
         f"📊 <b>Статус Системы</b>\n\n"
         f"Режим: <code>{settings.TRADING_MODE.upper()}</code>\n"
@@ -44,44 +48,44 @@ async def status_cmd(message: Message, exchange: BaseExchange):
 
 @router.message(Command("positions"))
 async def positions_cmd(message: Message):
-    async with AsyncSessionFactory() as session:
-        trades = (await session.execute(
-            select(Trade).where(Trade.status == "OPEN")
-        )).scalars().all()
+    trades = await get_open_trades()
 
-        if not trades:
-            await message.answer("📭 Активных открытых позиций нет.")
-            return
+    if not trades:
+        await message.answer(
+            "📭 Активных открытых позиций нет.",
+            parse_mode="HTML",
+        )
+        return
 
-        lines = ["🚀 <b>Открытые Позиции:</b>\n"]
-        for t in trades:
-            lines.append(
-                f"• <b>{t.symbol}</b> ({t.side})\n"
-                f"  Объем: <code>{t.amount}</code> @ <code>${t.entry_price:.2f}</code>\n"
-                f"  SL: <code>${t.sl_price or 0:.2f}</code> | TP: <code>${t.tp_price or 0:.2f}</code>"
-            )
-        await message.answer("\n\n".join(lines), parse_mode="HTML")
+    lines = ["🚀 <b>Открытые Позиции:</b>\n"]
+    for trade in trades:
+        lines.append(
+            f"• <b>{escape(trade.symbol)}</b> ({escape(trade.side)})\n"
+            f"  Объем: <code>{trade.amount}</code> @ <code>${trade.entry_price:.2f}</code>\n"
+            f"  SL: <code>${trade.sl_price or 0:.2f}</code> | TP: <code>${trade.tp_price or 0:.2f}</code>"
+        )
+    await message.answer("\n\n".join(lines), parse_mode="HTML")
 
 
 @router.message(Command("trades"))
 async def trades_cmd(message: Message):
-    async with AsyncSessionFactory() as session:
-        trades = (await session.execute(
-            select(Trade).where(Trade.status == "CLOSED").order_by(Trade.closed_at.desc()).limit(10)
-        )).scalars().all()
+    trades = await get_recent_closed_trades()
 
-        if not trades:
-            await message.answer("📭 История закрытых сделок пуста.")
-            return
+    if not trades:
+        await message.answer(
+            "📭 История закрытых сделок пуста.",
+            parse_mode="HTML",
+        )
+        return
 
-        total_pnl = sum(t.pnl or 0.0 for t in trades)
-        lines = [f"📈 <b>Последние 10 сделок (PnL: ${total_pnl:+.2f}):</b>\n"]
-        for t in trades:
-            pnl_str = f"${t.pnl:+.2f}" if t.pnl is not None else "N/A"
-            lines.append(
-                f"• <b>{t.symbol}</b> ({t.side}) | PnL: <code>{pnl_str}</code>"
-            )
-        await message.answer("\n".join(lines), parse_mode="HTML")
+    total_pnl = sum(trade.pnl or 0.0 for trade in trades)
+    lines = [f"📈 <b>Последние 10 сделок (PnL: ${total_pnl:+.2f}):</b>\n"]
+    for trade in trades:
+        pnl_str = f"${trade.pnl:+.2f}" if trade.pnl is not None else "N/A"
+        lines.append(
+            f"• <b>{escape(trade.symbol)}</b> ({escape(trade.side)}) | PnL: <code>{pnl_str}</code>"
+        )
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(Command("risk"))

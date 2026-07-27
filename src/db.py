@@ -86,6 +86,26 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
+async def get_open_trades() -> list[Trade]:
+    """Возвращает открытые сделки."""
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(Trade).where(Trade.status == "OPEN"))
+        return list(result.scalars())
+
+
+async def get_recent_closed_trades(limit: int = 10) -> list[Trade]:
+    """Возвращает последние закрытые сделки."""
+    async with AsyncSessionFactory() as session:
+        statement = (
+            select(Trade)
+            .where(Trade.status == "CLOSED")
+            .order_by(Trade.closed_at.desc())
+            .limit(limit)
+        )
+        result = await session.execute(statement)
+        return list(result.scalars())
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionFactory() as session:
         yield session
