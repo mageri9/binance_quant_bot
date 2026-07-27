@@ -25,6 +25,11 @@ def test_add_features_dataframe():
     df_feat = add_features(df)
     assert "rsi" in df_feat.columns
     assert "macd_pct" in df_feat.columns
+    assert "bb_middle_pct" in df_feat.columns
+    assert np.isclose(
+        df_feat["bb_middle_pct"].iloc[-1],
+        (prices[-1] - prices[-20:].mean()) / prices[-1],
+    )
     assert "atr" in df_feat.columns
     assert all(dtype == np.dtype(np.float32) for dtype in df_feat.select_dtypes(include=[np.floating]).dtypes)
     assert df_feat["open_time"].dtype == np.dtype(np.int64)
@@ -49,6 +54,7 @@ def test_predictor_reloads_changed_model(tmp_path):
     write_model(0.002)
     predictor = Predictor(str(model_path))
     assert predictor.predict(pd.DataFrame({"feature": [1.0]})) == (1, 0.002)
+    assert predictor.predict(pd.DataFrame({"other_feature": [1.0]})) == (0, 0.0)
 
     write_model(-0.001)
     updated_mtime = model_path.stat().st_mtime + 1

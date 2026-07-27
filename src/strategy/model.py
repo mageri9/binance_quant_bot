@@ -52,6 +52,8 @@ class Predictor:
         """Возвращает (сигнал: 1 | -1 | 0, expected_return: float)."""
         self._reload_if_changed()
         latest = df_features.iloc[[-1]]
+        if any(feature not in latest.columns for feature in self.features):
+            return 0, 0.0
         if latest[self.features].isna().any().any():
             return 0, 0.0
 

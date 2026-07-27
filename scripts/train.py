@@ -17,7 +17,7 @@ from src.strategy.model import EconomicReturnRegressor
 
 FEATURE_COLS = [
     "rsi", "macd_pct", "macd_signal_pct", "macd_hist_pct",
-    "bb_upper_pct", "bb_lower_pct", "atr_pct", "adx",
+    "bb_upper_pct", "bb_middle_pct", "bb_lower_pct", "atr_pct", "adx",
     "volatility", "volume_ratio", "return_1", "return_3"
 ]
 def calculate_post_cost_targets(

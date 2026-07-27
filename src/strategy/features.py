@@ -58,6 +58,7 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
 
     bb_mid = close.rolling(20).mean()
     bb_std = close.rolling(20).std()
+    df_out["bb_middle_pct"] = (close - bb_mid) / close
     df_out["bb_upper_pct"] = (bb_mid + 2 * bb_std - close) / close
     df_out["bb_lower_pct"] = (close - (bb_mid - 2 * bb_std)) / close
 
