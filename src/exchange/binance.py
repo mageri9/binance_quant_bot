@@ -63,7 +63,7 @@ class BinanceExchange(BaseExchange):
     async def create_stop_orders(
         self, symbol: str, side: str, amount: float, sl_price: float, tp_price: float
     ) -> dict:
-        """Установка условных стоп-ордеров через новый Algo Order API Binance."""
+        """Установка условных стоп-ордеров через Algo Order API Binance."""
         async def _place(order_type: str, trigger_price: float):
             market_sym = symbol.replace("/", "")
             params = {
@@ -75,8 +75,10 @@ class BinanceExchange(BaseExchange):
                 "quantity": str(amount),
                 "reduceOnly": "true",
             }
-            # Используем прямой метод Binance Algo API вместо стандартного create_order
-            return await self.exchange.fapiPrivatePostAlgoOrder(params)
+            # Используем универсальный метод request для полной совместимости с CCXT
+            if hasattr(self.exchange, "fapiPrivatePostAlgoOrder"):
+                return await self.exchange.fapiPrivatePostAlgoOrder(params)
+            return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
 
         sl_resp = await _place("STOP_MARKET", sl_price) if sl_price else None
         tp_resp = await _place("TAKE_PROFIT_MARKET", tp_price) if tp_price else None
