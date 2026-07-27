@@ -5,47 +5,15 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      OPTUNA_STORAGE_URL: ${OPTUNA_STORAGE_URL}
+      DATABASE_URL: sqlite+aiosqlite:////app/data/marketmind.db
     volumes:
-      - ./src/db/db.db:/app/src/db/db.db
+      - ./data:/app/data
       - ./logs:/app/logs
       - ./models/saved_models:/app/models/saved_models
       - ./models/staging:/app/models/staging
-    depends_on:
-      redis:
-        condition: service_healthy
     networks:
-      - bot_net
       - nexus_shared
-      - postgres_net
-
-  redis:
-    image: redis:7-alpine
-    container_name: bot-redis
-    restart: unless-stopped
-    command: >
-      redis-server
-      --save 60 1
-      --loglevel warning
-      ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD}
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - bot_net
-
-volumes:
-  redis_data:
 
 networks:
-  bot_net:
-    driver: bridge
   nexus_shared:
     external: true
-  postgres_net:
-    external: true
-    name: tarot_bot_tarot_bot_net

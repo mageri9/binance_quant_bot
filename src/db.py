@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import AsyncGenerator
-from sqlalchemy import BigInteger, DateTime, Float, String, UniqueConstraint, func
+
+from sqlalchemy import BigInteger, DateTime, Float, String, UniqueConstraint, event, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -10,6 +11,18 @@ settings = get_settings()
 
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
 AsyncSessionFactory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+
+if engine.dialect.name == "sqlite":
+    @event.listens_for(engine.sync_engine, "connect")
+    def configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+        """Configure WAL and a bounded lock wait for every SQLite connection."""
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA busy_timeout=5000;")
+        finally:
+            cursor.close()
 
 
 class Base(DeclarativeBase):

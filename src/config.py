@@ -1,11 +1,17 @@
 import functools
-
 from typing import Literal
+
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
     # Telegram Bot
     BOT_TOKEN: str
     ADMIN_IDS: list[int]
@@ -23,11 +29,8 @@ class Settings(BaseSettings):
     NEXUS_ENDPOINT_URL: str = "http://nexus-webhook:8000/events/app"
     NEXUS_PROJECT_NAME: str = "binance_quant_bot"
 
-    # Database & Redis
+    # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./marketmind.db"
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
-    REDIS_PASSWORD: str = ""
 
     # Risk Management
     RISK_MAX_ALLOCATION_PCT: float = 0.10
@@ -47,18 +50,12 @@ class Settings(BaseSettings):
         ("SOL/USDT", "1h"),
     ]
 
-    @field_validator("ADMIN_IDS", mode="before")
+    @field_validator("DATABASE_URL")
     @classmethod
-    def parse_admin_ids(cls, v):
-        if isinstance(v, str):
-            import json
-            return json.loads(v)
-        return v
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    def require_sqlite_database(cls, value: str) -> str:
+        if not value.startswith("sqlite+aiosqlite://"):
+            raise ValueError("DATABASE_URL must use the sqlite+aiosqlite driver")
+        return value
 
 
 @functools.lru_cache()
