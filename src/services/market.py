@@ -53,17 +53,16 @@ class MarketService:
                     )
                     session.add(kline)
                     await session.commit()
-
-            await self.bus.publish(CandleClosedEvent(
-                symbol=symbol,
-                timeframe=timeframe,
-                open_time=open_time,
-                open=float(latest["open"]),
-                high=float(latest["high"]),
-                low=float(latest["low"]),
-                close=float(latest["close"]),
-                volume=float(latest["volume"])
-            ))
+                    await self.bus.publish(CandleClosedEvent(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        open_time=open_time,
+                        open=float(latest["open"]),
+                        high=float(latest["high"]),
+                        low=float(latest["low"]),
+                        close=float(latest["close"]),
+                        volume=float(latest["volume"])
+                    ))
         except Exception as e:
             logger.error(f"[MarketService] Ошибка скачивания свечей {symbol}: {e}")
 

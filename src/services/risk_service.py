@@ -75,6 +75,11 @@ class RiskService:
             )
             is_closing = closing_trade is not None
 
+            already_open = any(t.symbol == event.symbol for t in open_positions)
+            if already_open and not is_closing:
+                logger.warning(f"[RiskService] Position for {event.symbol} is already open. Rejecting signal.")
+                return None
+
             balance = await self.exchange.get_balance()
 
             approved, reason = self.guard.validate_order(

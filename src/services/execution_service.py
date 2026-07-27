@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from src.config import get_settings
 from src.db import AsyncSessionFactory, Trade
-from src.event_bus import AsyncEventBus, OrderApprovedEvent, OrderExecutedEvent, TradeClosedEvent
+from src.event_bus import AsyncEventBus, ErrorEvent, OrderApprovedEvent, OrderExecutedEvent, TradeClosedEvent
 from src.exchange.base import BaseExchange
 
 
@@ -29,16 +29,6 @@ class ExecutionService:
 
             fill_price = order.get("price", event.price)
             order_id = order.get("order_id", "simulated")
-
-            if not event.is_closing and hasattr(self.exchange, "create_stop_orders"):
-                close_side = "sell" if event.side == "buy" else "buy"
-                await self.exchange.create_stop_orders(
-                    symbol=event.symbol,
-                    side=close_side,
-                    amount=event.amount,
-                    sl_price=event.sl_price,
-                    tp_price=event.tp_price
-                )
 
             async with AsyncSessionFactory() as session:
                 if event.is_closing:
@@ -72,6 +62,28 @@ class ExecutionService:
                         order_id=order_id,
                     ))
                 await session.commit()
+
+            if not event.is_closing and hasattr(self.exchange, "create_stop_orders"):
+                close_side = "sell" if event.side == "buy" else "buy"
+                try:
+                    await self.exchange.create_stop_orders(
+                        symbol=event.symbol,
+                        side=close_side,
+                        amount=event.amount,
+                        sl_price=event.sl_price,
+                        tp_price=event.tp_price
+                    )
+                except Exception as exc:
+                    logger.exception(f"[ExecutionService] Failed to create stop orders for {event.symbol}")
+                    await self.bus.publish(ErrorEvent(
+                        source="ExecutionService",
+                        exception=exc,
+                        context=(
+                            f"Stop orders were not created for {event.symbol}; "
+                            f"trade {order_id} is recorded in the database."
+                        ),
+                    ))
+                    return
 
             logger.info(f"[ExecutionService] Исполнено: {event.symbol} {event.side} {event.amount} @ ${fill_price}")
             await self.bus.publish(OrderExecutedEvent(
