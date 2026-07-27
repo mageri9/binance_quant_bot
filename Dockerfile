@@ -11,6 +11,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p src/db logs
+RUN mkdir -p data logs models
 
 CMD ["python", "-m", "src.main"]

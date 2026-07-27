@@ -9,8 +9,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./models/saved_models:/app/models/saved_models
-      - ./models/staging:/app/models/staging
+      - ./models:/app/models
     networks:
       - nexus_shared
 
