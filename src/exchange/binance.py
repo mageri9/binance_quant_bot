@@ -33,9 +33,11 @@ class BinanceExchange(BaseExchange):
 
     async def get_position(self, symbol: str) -> dict | None:
         positions = await self.exchange.fetch_positions([symbol])
+        clean_target = symbol.replace("/", "").replace(":", "").upper()
         for pos in positions:
-            contracts = float(pos.get("contracts", 0.0))
-            if pos.get("symbol") == symbol and contracts > 0:
+            pos_sym = str(pos.get("symbol", "")).replace("/", "").replace(":", "").upper()
+            contracts = abs(float(pos.get("contracts") or pos.get("info", {}).get("positionAmt") or 0.0))
+            if pos_sym == clean_target and contracts > 0:
                 return {
                     "symbol": symbol,
                     "side": pos.get("side", "").upper(),
