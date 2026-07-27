@@ -1,79 +1,82 @@
-
 ```markdown
-
 # 📂 Структура Проекта MarketMind v1.0
 
-Дерево каталогов и файлов проекта, соответствующее Стандарту Архитектуры v1.0 (2 ГБ RAM, Event-Driven Core + Изолированный Retrain Lab).
-
 ```text
-MarketMind/
-├── .github/
-│   └── workflows/
-│       └── deploy.yml            # CI/CD: pytest, сборка Docker и SSH-деплой на VPS
+MarketMind
+├── .github
+│   └── workflows
+│       └── deploy.yml            # CICD pytest, сборка Docker и SSH-деплой
 │
-├── models/                       # Директория артефактов моделей (не коммитится)
-│   ├── active.pkl                # Текущая Production-модель в инференсе
-│   ├── candidate.pkl             # Обученный кандидат (до прохождения Quality Gate)
-│   └── metadata.json             # Метаданные активной модели (версия, OOS метрики)
+├── artifacts                    # Неизменяемый архив экспериментов (в .gitignore)
+│   └── experiments
+│       └── exp_0001             # Артефакты конкретного эксперимента
+│           ├── config.yaml
+│           ├── metrics.json
+│           ├── model.pkl
+│           ├── predictions.parquet
+│           ├── trades.parquet
+│           └── report.md
 │
-├── nexus_sdk/                    # SRE Мониторинг SDK
+├── models                       # Директория активной боевой модели
+│   └── active.pkl                # Модель, используемая Trading Core в реальном времени
+│
+├── nexus_sdk                    # SRE Мониторинг SDK
 │   ├── __init__.py
-│   └── error_handler.py          # Heartbeat, HMAC подпись, перехват исключений
+│   └── error_handler.py          # Heartbeat, HMAC подпись, перехват ошибок
 │
-├── scripts/                      # Изолированные CLI-скрипты (Retrain Lab)
-│   ├── backfill.py               # Выкачивание исторической истории свечей с Binance
-│   └── train.py                  # Изолированный Retrain Lab (LightGBM, Quality Gate, Hot-Reload)
+├── research                     # ИССЛЕДОВАТЕЛЬСКАЯ ЛАБОРАТОРИЯ (Research Lab)
+│   ├── backtest.py               # Симулятор OOS-торговли с учетом издержек
+│   ├── dataset.py                # Загрузка, очистка klines + импорт srcstrategyfeatures.py
+│   ├── experiment.py             # Создатель атомарной папки эксперимента
+│   ├── labeling.py               # Генерация целевых переменных (таргетов)
+│   ├── report.py                 # Генератор отчетности (report.md, графики)
+│   ├── train.py                  # Адаптер ML-моделей (LightGBM, CatBoost)
+│   └── validation.py             # Purged Walk-Forward Cross-Validation
 │
-├── src/                          # Торговый Движок (Trading Core — 24/7)
-│   ├── bot/                      # Telegram-интерфейс (Aiogram 3, MemoryStorage)
-│   │   ├── handlers.py           # Команды /status, /positions, /trades, /risk
-│   │   └── keyboards.py          # Интерактивное меню
+├── scripts                      # CLI скрипты управления
+│   ├── backfill.py               # Выкачивание истории свечей с Binance в SQLite
+│   ├── promote_candidate.py      # DEPLOYMENT GATE проверка Quality Gate и замена active.pkl
+│   └── run_experiment.py         # Единый запуск исследования
+│
+├── src                          # ТОРГОВЫЙ ДВИЖОК (Trading Core — 247)
+│   ├── bot                      # Telegram-интерфейс (Aiogram 3)
+│   │   ├── handlers.py
+│   │   └── keyboards.py
 │   │
-│   ├── exchange/                 # Адаптеры биржевого исполнения (Изоляция CCXT)
-│   │   ├── base.py               # Абстрактный интерфейс BaseExchange
-│   │   ├── binance.py            # Коннектор Binance Futures (Testnet/Mainnet + Algo Orders API)
-│   │   └── paper.py              # Локальный эмулятор симуляции исполнения
+│   ├── exchange                 # Адаптеры биржи (CCXT Изоляция)
+│   │   ├── base.py
+│   │   ├── binance.py
+│   │   └── paper.py
 │   │
-│   ├── risk/                     # Модуль Управления Рисками
-│   │   ├── guards.py             # RiskGuard (Circuit Breaker, Daily Loss, Max Positions)
-│   │   └── sizer.py              # Position Sizer (Расчет размера лота и ATR/pct стопов)
+│   ├── risk                     # Модуль Управления Рисками
+│   │   ├── guards.py             # RiskGuard (Circuit Breaker, Daily Loss)
+│   │   └── sizer.py              # Position Sizer и ATRpct стопы
 │   │
-│   ├── services/                 # Исполнители событий (Event Handlers)
-│   │   ├── execution_service.py  # Исполнение ордеров на бирже + постановка Algo Стопов
-│   │   ├── market_service.py     # Поллинг свечей -> Сохранение в SQLite -> CandleClosedEvent
-│   │   ├── notifier_service.py   # Отправка алертов в Telegram и ошибок в Nexus SRE
-│   │   ├── reconciliation_service.py # Сверка реальных позиций Binance с БД (раз в 60с)
-│   │   ├── risk_service.py       # Валидация сигналов через RiskGuard + Sizer
-│   │   └── strategy_service.py   # Генерация сигналов (Inference .pkl + PredictionLog)
+│   ├── services                 # Исполнители событий (Event Handlers)
+│   │   ├── execution_service.py
+│   │   ├── market.py
+│   │   ├── notifier_service.py
+│   │   ├── risk_service.py
+│   │   └── strategy_service.py
 │   │
-│   ├── strategy/                 # Математика стратегии и ИИ Инференс
-│   │   ├── features.py           # Расчет технических индикаторов (float32)
-│   │   ├── generator.py          # SignalGenerator (Свечи -> Фичи -> Модель -> Сигнал)
+│   ├── strategy                 # Математика и Инференс
+│   │   ├── features.py           # ⚠️ ЕДИНСТВЕННЫЙ ИСТОЧНИК ПРАВДЫ ДЛЯ ФИЧЕЙ
+│   │   ├── generator.py
 │   │   └── model.py              # Predictor (Легкий инференс active.pkl)
 │   │
-│   ├── config.py                 # Настройки Pydantic Settings (без Redis)
-│   ├── db.py                     # SQLAlchemy 2.0 Async + SQLite WAL (Kline, Trade, PredictionLog)
-│   ├── event_bus.py              # Легковесный AsyncEventBus (in-memory)
-│   └── main.py                   # Точка входа, инициализация шины и фоновые задачи
+│   ├── config.py
+│   ├── db.py                     # SQLAlchemy 2.0 Async + SQLite WAL
+│   ├── event_bus.py              # Легковесный AsyncEventBus
+│   └── main.py                   # Точка входа боевого бота
 │
-├── tests/                        # Набор Pytest тестов
-│   ├── conftest.py               # Фикстура чистого SQLite в памяти (:memory:)
-│   ├── test_event_bus.py         # Тесты шины событий
-│   ├── test_exchange.py          # Тесты биржевых адаптеров
-│   ├── test_pipeline.py          # Интеграционный тест торговой цепочки
-│   ├── test_risk.py              # Тесты RiskGuard и Sizer
-│   └── test_strategy.py          # Тесты индикаторов и генерации сигналов
-│
-├── .dockerignore
-├── .env.example                  # Шаблон переменных окружения
-├── .gitignore
-├── ARCHITECTURE.md               # Общая документация
-├── DEPENDENCY_RULES.md           # Матрица запрещенных связей компонентов
-├── Dockerfile                    # Сборка python:3.12-slim с libgomp1
-├── docker-compose.yml            # Запуск бота в Docker
-├── PROJECT_TREE.md               # Данный файл структуры проекта
+├── tests                        # Pytest тесты
+├── Dockerfile
+├── docker-compose.yml
+├── ARCHITECTURE.md
+├── DEPENDENCY_RULES.md
+├── PROJECT_TREE.md
 ├── README.md
-├── ROADMAP.md                    # Пошаговый план разработки (Фазы 1-5)
-├── STANDART.md                   # Фиксированный Стандарт Архитектуры v1.0
-└── requirements.txt              # Зависимости Python
+├── ROADMAP.md
+└── STANDARD.md
+```
 ```
