@@ -3,7 +3,6 @@ import pandas as pd
 from loguru import logger
 from src.exchange.base import BaseExchange
 
-
 class BinanceExchange(BaseExchange):
     """Binance Futures коннектор (Testnet & Mainnet)."""
     def __init__(self, api_key: str, secret: str, testnet: bool = True, proxy: str = ""):
@@ -15,10 +14,14 @@ class BinanceExchange(BaseExchange):
         }
         if proxy:
             config["proxies"] = {"http": proxy, "https": proxy}
-
         self.exchange = ccxt.binance(config)
         if testnet:
             self.exchange.set_sandbox_mode(True)
+
+    async def _ensure_markets(self):
+        """Загружает рынки Binance, если они еще не загружены в память."""
+        if not self.exchange.markets:
+            await self.exchange.load_markets()
 
     async def close(self):
         await self.exchange.close()
@@ -44,18 +47,21 @@ class BinanceExchange(BaseExchange):
     async def create_order(
         self, symbol: str, side: str, order_type: str, amount: float, price: float | None = None, reduce_only: bool = False
     ) -> dict:
+        await self._ensure_markets()
+        formatted_amount = float(self.exchange.amount_to_precision(symbol, amount))
+        formatted_price = float(self.exchange.price_to_precision(symbol, price)) if price else None
+
         params = {}
         if reduce_only:
             params["reduceOnly"] = True
-
         order = await self.exchange.create_order(
-            symbol=symbol, type=order_type.lower(), side=side.lower(), amount=amount, price=price, params=params
+            symbol=symbol, type=order_type.lower(), side=side.lower(), amount=formatted_amount, price=formatted_price, params=params
         )
         return {
             "order_id": str(order.get("id")),
             "symbol": symbol,
             "side": side,
-            "amount": float(order.get("amount", amount)),
+            "amount": float(order.get("amount", formatted_amount)),
             "price": float(order.get("average") or order.get("price") or 0.0),
             "status": str(order.get("status")).upper()
         }
@@ -63,19 +69,22 @@ class BinanceExchange(BaseExchange):
     async def create_stop_orders(
         self, symbol: str, side: str, amount: float, sl_price: float, tp_price: float
     ) -> dict:
-        """Установка условных стоп-ордеров через Algo Order API Binance."""
+        """Установка условных стоп-ордеров через Algo Order API Binance с форматированием точности."""
+        await self._ensure_markets()
+        formatted_amount = self.exchange.amount_to_precision(symbol, amount)
+
         async def _place(order_type: str, trigger_price: float):
             market_sym = symbol.replace("/", "")
+            formatted_price = self.exchange.price_to_precision(symbol, trigger_price)
             params = {
                 "symbol": market_sym,
                 "side": side.upper(),
                 "type": order_type,
                 "algoType": "CONDITIONAL",
-                "triggerPrice": str(trigger_price),
-                "quantity": str(amount),
+                "triggerPrice": str(formatted_price),
+                "quantity": str(formatted_amount),
                 "reduceOnly": "true",
             }
-            # Используем универсальный метод request для полной совместимости с CCXT
             if hasattr(self.exchange, "fapiPrivatePostAlgoOrder"):
                 return await self.exchange.fapiPrivatePostAlgoOrder(params)
             return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
