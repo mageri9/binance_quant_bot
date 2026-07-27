@@ -65,14 +65,18 @@ class BinanceExchange(BaseExchange):
     ) -> dict:
         """Установка условных стоп-ордеров через новый Algo Order API Binance."""
         async def _place(order_type: str, trigger_price: float):
-            return await self.exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                price=None,
-                params={"stopPrice": trigger_price, "reduceOnly": True},
-            )
+            market_sym = symbol.replace("/", "")
+            params = {
+                "symbol": market_sym,
+                "side": side.upper(),
+                "type": order_type,
+                "algoType": "CONDITIONAL",
+                "triggerPrice": str(trigger_price),
+                "quantity": str(amount),
+                "reduceOnly": "true",
+            }
+            # Используем прямой метод Binance Algo API вместо стандартного create_order
+            return await self.exchange.fapiPrivatePostAlgoOrder(params)
 
         sl_resp = await _place("STOP_MARKET", sl_price) if sl_price else None
         tp_resp = await _place("TAKE_PROFIT_MARKET", tp_price) if tp_price else None
