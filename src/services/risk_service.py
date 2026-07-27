@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone, timedelta
 from loguru import logger
 from sqlalchemy import select
@@ -20,9 +21,27 @@ class RiskService:
             max_daily_loss_pct=self.settings.RISK_MAX_DAILY_LOSS_PCT,
             consecutive_losses_limit=self.settings.RISK_CONSECUTIVE_LOSSES_LIMIT
         )
+        self._pending_symbols: set[str] = set()
+        self._pending_symbols_lock = asyncio.Lock()
         self.bus.subscribe(SignalEmittedEvent, self.on_signal)
 
     async def on_signal(self, event: SignalEmittedEvent):
+        async with self._pending_symbols_lock:
+            if event.symbol in self._pending_symbols:
+                logger.warning(f"[RiskService] Signal {event.symbol} rejected: order is pending")
+                return
+            order = await self._approve_signal(event)
+            if order is None:
+                return
+            self._pending_symbols.add(event.symbol)
+
+        try:
+            await self.bus.publish(order)
+        finally:
+            async with self._pending_symbols_lock:
+                self._pending_symbols.discard(event.symbol)
+
+    async def _approve_signal(self, event: SignalEmittedEvent) -> OrderApprovedEvent | None:
         async with AsyncSessionFactory() as session:
             since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
             closed_res = await session.execute(
@@ -93,7 +112,7 @@ class RiskService:
             )
 
             logger.info(f"[RiskService] Ордер ОДОБРЕН {event.symbol}: {side.upper()} {amount} @ {event.close_price}")
-            await self.bus.publish(OrderApprovedEvent(
+            return OrderApprovedEvent(
                 symbol=event.symbol,
                 side=side,
                 amount=amount,
@@ -102,4 +121,4 @@ class RiskService:
                 tp_price=tp_price,
                 reason=reason,
                 is_closing=is_closing,
-            ))
+            )

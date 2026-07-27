@@ -109,7 +109,7 @@ class ExecutionService:
                 if pos is None or float(pos.get("amount", 0.0)) == 0.0:
                     trade.status = "CLOSED"
                     trade.closed_at = datetime.now(timezone.utc)
-                    trade.exit_price = trade.tp_price or trade.entry_price
+                    trade.exit_price = await self._get_exit_price(trade)
                     pnl = (trade.exit_price - trade.entry_price) * trade.amount if trade.side == "LONG" else (trade.entry_price - trade.exit_price) * trade.amount
                     trade.pnl = pnl
                     await session.commit()
@@ -123,3 +123,16 @@ class ExecutionService:
                         pnl=pnl,
                         reason="Сработка SL/TP на бирже"
                     ))
+
+    async def _get_exit_price(self, trade: Trade) -> float:
+        klines = await self.exchange.get_klines(trade.symbol, "1m", limit=1)
+        if klines.empty:
+            return trade.sl_price or trade.entry_price
+
+        current_price = float(klines.iloc[-1]["close"])
+        is_profitable = (
+            current_price >= trade.entry_price
+            if trade.side == "LONG"
+            else current_price <= trade.entry_price
+        )
+        return (trade.tp_price if is_profitable else trade.sl_price) or trade.entry_price

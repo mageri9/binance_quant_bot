@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 from loguru import logger
 from sqlalchemy import select
 
@@ -18,6 +19,13 @@ class MarketService:
     async def fetch_and_publish_klines(self, symbol: str, timeframe: str):
         try:
             df = await self.exchange.get_klines(symbol, timeframe, limit=5)
+            if df.empty:
+                return
+
+            timeframe_ms = self._timeframe_to_milliseconds(timeframe)
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            if int(df.iloc[-1]["open_time"]) + timeframe_ms > now_ms:
+                df = df.iloc[:-1]
             if df.empty:
                 return
 
@@ -58,6 +66,14 @@ class MarketService:
             ))
         except Exception as e:
             logger.error(f"[MarketService] Ошибка скачивания свечей {symbol}: {e}")
+
+    @staticmethod
+    def _timeframe_to_milliseconds(timeframe: str) -> int:
+        unit_multipliers = {"m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
+        try:
+            return int(timeframe[:-1]) * unit_multipliers[timeframe[-1]]
+        except (KeyError, ValueError, IndexError) as exc:
+            raise ValueError(f"Unsupported timeframe: {timeframe}") from exc
 
     async def start_polling(self, interval_seconds: int = 60):
         logger.info("[MarketService] Цикл опроса свечей запущен...")

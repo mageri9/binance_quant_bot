@@ -2,12 +2,16 @@ import os
 import pandas as pd
 import numpy as np
 import pickle
+import pytest
 
 from src.strategy.features import add_features
 from src.strategy.model import Predictor
 from src.strategy.generator import SignalGenerator
 from src.risk.sizer import calculate_position_size, calculate_protection_prices
 from src.risk.guards import RiskGuard
+from src.services.execution_service import ExecutionService
+from src.event_bus import AsyncEventBus
+from src.exchange.paper import PaperExchange
 
 
 def test_add_features_dataframe():
@@ -99,3 +103,14 @@ def test_risk_guard_circuit_breaker():
     ok, reason = guard.validate_order("BTC/USDT", 1000.0, 0.0, consecutive_losses=3, open_positions_count=0)
     assert not ok
     assert "Circuit Breaker" in reason
+
+
+@pytest.mark.asyncio
+async def test_exit_price_uses_stop_loss_for_losing_long_trade():
+    class Exchange(PaperExchange):
+        async def get_klines(self, *_args, **_kwargs):
+            return pd.DataFrame([{"close": 95.0}])
+
+    service = ExecutionService(AsyncEventBus(), Exchange())
+    trade = type("Trade", (), {"symbol": "BTC/USDT", "entry_price": 100.0, "side": "LONG", "sl_price": 98.0, "tp_price": 104.0})()
+    assert await service._get_exit_price(trade) == 98.0

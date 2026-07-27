@@ -1,6 +1,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any, Coroutine
 from aiogram import Bot, Dispatcher
 from loguru import logger
 
@@ -18,11 +19,18 @@ from src.bot.handlers import router as bot_router
 
 # Nexus SRE SDK Интеграция
 nexus_sdk = None
+background_tasks: set[asyncio.Task[object]] = set()
 try:
     from nexus_sdk import NexusSDK
     NEXUS_AVAILABLE = True
 except ImportError:
     NEXUS_AVAILABLE = False
+
+
+def track_background_task(coroutine: Coroutine[Any, Any, object]) -> None:
+    task = asyncio.create_task(coroutine)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
 
 
 async def main():
@@ -76,14 +84,14 @@ async def main():
     notifier_service = NotifierService(bus, bot, nexus_sdk)
 
     # 6. Запуск фонового опроса свечей
-    asyncio.create_task(market_service.start_polling(interval_seconds=60))
+    track_background_task(market_service.start_polling(interval_seconds=60))
 
     async def monitor_open_trades() -> None:
         while True:
             await execution_service.monitor_open_trades()
             await asyncio.sleep(15)
 
-    asyncio.create_task(monitor_open_trades())
+    track_background_task(monitor_open_trades())
 
     logger.info("[Main] Бот запущен и готов к работе!")
 

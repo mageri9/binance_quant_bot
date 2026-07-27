@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import os
+import tempfile
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import pickle
@@ -119,8 +120,10 @@ async def train_model(symbol: str, timeframe: str):
         "timeframe": timeframe
     }
 
-    with open(model_path, "wb") as f:
-        pickle.dump(artifact, f)
+    with tempfile.NamedTemporaryFile(dir="models/saved_models", delete=False) as temp_file:
+        pickle.dump(artifact, temp_file)
+        temp_path = temp_file.name
+    os.replace(temp_path, model_path)
 
     logger.info(f"Модель сохранена: {model_path}")
 
