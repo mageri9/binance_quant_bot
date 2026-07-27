@@ -63,6 +63,8 @@ class NexusSDK:
 
     def start_heartbeat(self, interval_seconds: int = 15) -> asyncio.Task:
         """Запускает фоновую задачу периодической отправки Heartbeat в Nexus"""
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(interval_seconds))
         return self._heartbeat_task
 
@@ -115,14 +117,3 @@ class NexusSDK:
             )
             await self.report_error(exception, context=update_ctx)
             raise exception
-
-    def register_ptb_error_handler(self, app) -> None:
-        """Интегрирует глобальный перехватчик исключений в python-telegram-bot Application"""
-
-        async def ptb_error_handler(update: object, context) -> None:
-            exception = context.error
-            update_ctx = str(update.to_dict()) if hasattr(update, "to_dict") else str(update)
-            await self.report_error(exception, context=update_ctx)
-            raise exception
-
-        app.add_error_handler(ptb_error_handler)

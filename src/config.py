@@ -1,3 +1,5 @@
+import functools
+
 from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
@@ -59,5 +61,6 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
+@functools.lru_cache()
 def get_settings() -> Settings:
     return Settings()

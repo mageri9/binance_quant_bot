@@ -44,9 +44,17 @@ class RiskService:
                 select(Trade).where(Trade.status == "OPEN")
             )).scalars().all()
 
-            is_closing = any(t.symbol == event.symbol and (
-                (event.signal == -1 and t.side == "LONG") or (event.signal == 1 and t.side == "SHORT")
-            ) for t in open_positions)
+            closing_trade = next(
+                (
+                    trade for trade in open_positions
+                    if trade.symbol == event.symbol and (
+                        (event.signal == -1 and trade.side == "LONG")
+                        or (event.signal == 1 and trade.side == "SHORT")
+                    )
+                ),
+                None,
+            )
+            is_closing = closing_trade is not None
 
             balance = await self.exchange.get_balance()
 
@@ -64,10 +72,14 @@ class RiskService:
                 return
 
             side = "buy" if event.signal == 1 else "sell"
-            amount = calculate_position_size(
-                balance=balance["free"],
-                current_price=event.close_price,
-                max_allocation_pct=self.settings.RISK_MAX_ALLOCATION_PCT
+            amount = (
+                closing_trade.amount
+                if closing_trade is not None
+                else calculate_position_size(
+                    balance=balance["free"],
+                    current_price=event.close_price,
+                    max_allocation_pct=self.settings.RISK_MAX_ALLOCATION_PCT,
+                )
             )
 
             if amount <= 0:
@@ -88,5 +100,6 @@ class RiskService:
                 price=event.close_price,
                 sl_price=sl_price,
                 tp_price=tp_price,
-                reason=reason
+                reason=reason,
+                is_closing=is_closing,
             ))

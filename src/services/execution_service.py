@@ -23,13 +23,14 @@ class ExecutionService:
                 side=event.side,
                 order_type="market",
                 amount=event.amount,
-                price=event.price
+                price=event.price,
+                reduce_only=event.is_closing,
             )
 
             fill_price = order.get("price", event.price)
             order_id = order.get("order_id", "simulated")
 
-            if hasattr(self.exchange, "create_stop_orders"):
+            if not event.is_closing and hasattr(self.exchange, "create_stop_orders"):
                 close_side = "sell" if event.side == "buy" else "buy"
                 await self.exchange.create_stop_orders(
                     symbol=event.symbol,
@@ -40,18 +41,36 @@ class ExecutionService:
                 )
 
             async with AsyncSessionFactory() as session:
-                trade = Trade(
-                    symbol=event.symbol,
-                    status="OPEN",
-                    side="LONG" if event.side.lower() == "buy" else "SHORT",
-                    entry_price=fill_price,
-                    amount=event.amount,
-                    sl_price=event.sl_price,
-                    tp_price=event.tp_price,
-                    mode=self.settings.TRADING_MODE,
-                    order_id=order_id
-                )
-                session.add(trade)
+                if event.is_closing:
+                    open_trade = (await session.execute(
+                        select(Trade).where(
+                            Trade.symbol == event.symbol,
+                            Trade.status == "OPEN",
+                            Trade.side == ("SHORT" if event.side.lower() == "buy" else "LONG"),
+                        ).order_by(Trade.created_at.desc()).limit(1)
+                    )).scalar_one_or_none()
+                    if open_trade is None:
+                        raise RuntimeError(f"No open trade to close for {event.symbol}")
+                    open_trade.status = "CLOSED"
+                    open_trade.closed_at = datetime.now(timezone.utc)
+                    open_trade.exit_price = fill_price
+                    open_trade.pnl = (
+                        (fill_price - open_trade.entry_price) * open_trade.amount
+                        if open_trade.side == "LONG"
+                        else (open_trade.entry_price - fill_price) * open_trade.amount
+                    )
+                else:
+                    session.add(Trade(
+                        symbol=event.symbol,
+                        status="OPEN",
+                        side="LONG" if event.side.lower() == "buy" else "SHORT",
+                        entry_price=fill_price,
+                        amount=event.amount,
+                        sl_price=event.sl_price,
+                        tp_price=event.tp_price,
+                        mode=self.settings.TRADING_MODE,
+                        order_id=order_id,
+                    ))
                 await session.commit()
 
             logger.info(f"[ExecutionService] Исполнено: {event.symbol} {event.side} {event.amount} @ ${fill_price}")
@@ -65,6 +84,16 @@ class ExecutionService:
                 tp_price=event.tp_price,
                 mode=self.settings.TRADING_MODE
             ))
+            if event.is_closing:
+                await self.bus.publish(TradeClosedEvent(
+                    symbol=event.symbol,
+                    side=open_trade.side,
+                    amount=open_trade.amount,
+                    entry_price=open_trade.entry_price,
+                    exit_price=fill_price,
+                    pnl=open_trade.pnl,
+                    reason="Opposite signal",
+                ))
         except Exception as exc:
             logger.exception(f"[ExecutionService] Ошибка исполнения {event.symbol}: {exc}")
 

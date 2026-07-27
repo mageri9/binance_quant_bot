@@ -107,7 +107,5 @@ jobs:
             docker compose stop bot || true
 
             # ПРИМЕНЯЕМ МИГРАЦИИ БАЗЫ ДАННЫХ (уже на новом образе, без живого bot)
-            docker compose run --rm bot alembic upgrade head
-
             # Поднимаем контейнеры заново
             docker compose up -d --force-recreate

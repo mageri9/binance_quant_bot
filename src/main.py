@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from pathlib import Path
 from aiogram import Bot, Dispatcher
 from loguru import logger
 
@@ -68,13 +69,21 @@ async def main():
 
     # 5. Инициализация Сервисов-Обработчиков событий
     market_service = MarketService(bus, exchange)
-    strategy_service = StrategyService(bus)
+    model_path = Path("models/saved_models/lgbm_BTCUSDT_1h.pkl")
+    strategy_service = StrategyService(bus, model_path=str(model_path))
     risk_service = RiskService(bus, exchange)
     execution_service = ExecutionService(bus, exchange)
     notifier_service = NotifierService(bus, bot, nexus_sdk)
 
     # 6. Запуск фонового опроса свечей
     asyncio.create_task(market_service.start_polling(interval_seconds=60))
+
+    async def monitor_open_trades() -> None:
+        while True:
+            await execution_service.monitor_open_trades()
+            await asyncio.sleep(15)
+
+    asyncio.create_task(monitor_open_trades())
 
     logger.info("[Main] Бот запущен и готов к работе!")
 

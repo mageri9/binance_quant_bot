@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 from src.strategy.features import add_features
 from src.strategy.model import Predictor

@@ -1,4 +1,7 @@
 import pandas as pd
+from sqlalchemy import select
+
+from src.db import AsyncSessionFactory, Kline
 from src.exchange.base import BaseExchange
 
 
@@ -45,4 +48,23 @@ class PaperExchange(BaseExchange):
         }
 
     async def get_klines(self, symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame:
-        return pd.DataFrame()
+        async with AsyncSessionFactory() as session:
+            result = await session.execute(
+                select(Kline)
+                .where(Kline.symbol == symbol, Kline.timeframe == timeframe)
+                .order_by(Kline.open_time.desc())
+                .limit(limit)
+            )
+            klines = list(reversed(result.scalars().all()))
+
+        return pd.DataFrame([
+            {
+                "open_time": kline.open_time,
+                "open": kline.open,
+                "high": kline.high,
+                "low": kline.low,
+                "close": kline.close,
+                "volume": kline.volume,
+            }
+            for kline in klines
+        ])

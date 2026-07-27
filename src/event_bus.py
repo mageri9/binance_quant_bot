@@ -46,6 +46,7 @@ class OrderApprovedEvent(Event):
     sl_price: float
     tp_price: float
     reason: str
+    is_closing: bool = False
 
 
 @dataclass(kw_only=True)

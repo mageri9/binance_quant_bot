@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import AsyncGenerator
-from sqlalchemy import BigInteger, DateTime, Float, String, func
+from sqlalchemy import BigInteger, DateTime, Float, String, UniqueConstraint, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -19,6 +19,9 @@ class Base(DeclarativeBase):
 class Kline(Base):
     """Исторические свечи."""
     __tablename__ = "klines"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "open_time", name="uq_kline_symbol_tf_time"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
