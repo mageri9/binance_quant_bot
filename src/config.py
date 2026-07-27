@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     DEFAULT_SL_PCT: float = 0.02
     DEFAULT_TP_PCT: float = 0.04
     DEFAULT_TIMEOUT_CANDLES: int = 5
+    DEFAULT_COMMISSION_RATE: float = 0.0004
     MIN_EXPECTED_RETURN: float = 0.001
 
     # Торговые пары и таймфреймы

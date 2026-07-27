@@ -1,7 +1,10 @@
 import argparse
 import asyncio
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import pickle
+import numpy as np
 import pandas as pd
 from loguru import logger
 from sqlalchemy import select
@@ -16,6 +19,51 @@ FEATURE_COLS = [
     "bb_upper_pct", "bb_lower_pct", "atr_pct", "adx",
     "volatility", "volume_ratio", "return_1", "return_3"
 ]
+def calculate_post_cost_targets(
+    df: pd.DataFrame,
+    horizon: int,
+    sl_pct: float,
+    tp_pct: float,
+    commission_rate: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Рассчитывает доходности с комиссиями; при касании обоих уровней выбирает SL."""
+    long_returns: list[float] = []
+    short_returns: list[float] = []
+
+    for idx in range(len(df) - horizon):
+        entry_price = float(df.iloc[idx + 1]["open"])
+        candles = df.iloc[idx + 1 : idx + 1 + horizon]
+        long_exit = float(candles["close"].iloc[-1])
+        short_exit = long_exit
+
+        for _, candle in candles.iterrows():
+            if candle["low"] <= entry_price * (1 - sl_pct):
+                long_exit = entry_price * (1 - sl_pct)
+                break
+            if candle["high"] >= entry_price * (1 + tp_pct):
+                long_exit = entry_price * (1 + tp_pct)
+                break
+
+        for _, candle in candles.iterrows():
+            if candle["high"] >= entry_price * (1 + sl_pct):
+                short_exit = entry_price * (1 + sl_pct)
+                break
+            if candle["low"] <= entry_price * (1 - tp_pct):
+                short_exit = entry_price * (1 - tp_pct)
+                break
+
+        long_returns.append(
+            (long_exit * (1 - commission_rate) - entry_price * (1 + commission_rate))
+            / entry_price
+        )
+        short_returns.append(
+            (entry_price * (1 - commission_rate) - short_exit * (1 + commission_rate))
+            / entry_price
+        )
+
+    return np.asarray(long_returns, dtype=np.float32), np.asarray(
+        short_returns, dtype=np.float32
+    )
 
 
 async def train_model(symbol: str, timeframe: str):
@@ -45,34 +93,9 @@ async def train_model(symbol: str, timeframe: str):
     tp_pct = settings.DEFAULT_TP_PCT
     sl_pct = settings.DEFAULT_SL_PCT
 
-    long_returns, short_returns = [], []
-
-    for idx in range(len(df_feat) - horizon):
-        entry_p = df_feat.iloc[idx + 1]["open"]
-        sub = df_feat.iloc[idx + 1 : idx + 1 + horizon]
-
-        # LONG target
-        long_ret = (sub["close"].iloc[-1] - entry_p) / entry_p
-        for _, row in sub.iterrows():
-            if row["low"] <= entry_p * (1 - sl_pct):
-                long_ret = -sl_pct
-                break
-            elif row["high"] >= entry_p * (1 + tp_pct):
-                long_ret = tp_pct
-                break
-
-        # SHORT target
-        short_ret = (entry_p - sub["close"].iloc[-1]) / entry_p
-        for _, row in sub.iterrows():
-            if row["high"] >= entry_p * (1 + sl_pct):
-                short_ret = -sl_pct
-                break
-            elif row["low"] <= entry_p * (1 - tp_pct):
-                short_ret = tp_pct
-                break
-
-        long_returns.append(long_ret)
-        short_returns.append(short_ret)
+    long_returns, short_returns = calculate_post_cost_targets(
+        df_feat, horizon, sl_pct, tp_pct, settings.DEFAULT_COMMISSION_RATE
+    )
 
     df_train = df_feat.iloc[:len(long_returns)].copy()
     df_train["long_target"] = long_returns

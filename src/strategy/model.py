@@ -1,5 +1,7 @@
 import os
 import pickle
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from lightgbm import LGBMRegressor
@@ -7,11 +9,14 @@ from lightgbm import LGBMRegressor
 
 class EconomicReturnRegressor:
     """Оценка доходности направления LONG и SHORT через LightGBM."""
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["n_jobs"] = 1
         self.long_model = LGBMRegressor(**kwargs)
         self.short_model = LGBMRegressor(**kwargs)
 
-    def fit(self, X: pd.DataFrame, y_long: pd.Series, y_short: pd.Series):
+    def fit(
+        self, X: pd.DataFrame, y_long: pd.Series, y_short: pd.Series
+    ) -> None:
         self.long_model.fit(X, y_long)
         self.short_model.fit(X, y_short)
 
