@@ -56,8 +56,8 @@ def test_predictor_reloads_changed_model(tmp_path):
     assert predictor.predict(pd.DataFrame({"feature": [1.0]})) == (0, 0.0)
 
 
-def test_signal_generator_uses_fallback_without_model():
-    generator = SignalGenerator("missing.pkl")
+def test_signal_generator_uses_fallback_without_model(tmp_path):
+    generator = SignalGenerator(str(tmp_path))
     prices = np.concatenate([np.linspace(100, 70, 26), np.linspace(70, 74, 4)])
     candles = pd.DataFrame({
         "open": prices - 0.5,
@@ -70,11 +70,17 @@ def test_signal_generator_uses_fallback_without_model():
     assert generator.generate(candles) == (1, 0.002)
 
 
-def test_signal_generator_loads_model_created_after_startup(tmp_path):
-    model_path = tmp_path / "active.pkl"
-    generator = SignalGenerator(str(model_path))
-    with model_path.open("wb") as file:
+def test_signal_generator_resolves_models_per_symbol(tmp_path):
+    generator = SignalGenerator(str(tmp_path))
+    btc_model_path = tmp_path / "lgbm_BTCUSDT_1h.pkl"
+    eth_model_path = tmp_path / "lgbm_ETHUSDT_1h.pkl"
+    futures_model_path = tmp_path / "lgbm_BTCUSDTUSDT_1h.pkl"
+    with btc_model_path.open("wb") as file:
         pickle.dump({"model": StubModel(0.002, 0.0), "features": ["rsi"]}, file)
+    with eth_model_path.open("wb") as file:
+        pickle.dump({"model": StubModel(0.0, 0.003), "features": ["rsi"]}, file)
+    with futures_model_path.open("wb") as file:
+        pickle.dump({"model": StubModel(0.004, 0.0), "features": ["rsi"]}, file)
 
     candles = pd.DataFrame({
         "open": np.arange(1, 31, dtype=float),
@@ -84,7 +90,41 @@ def test_signal_generator_loads_model_created_after_startup(tmp_path):
         "volume": np.full(30, 1000.0),
     })
 
-    assert generator.generate(candles) == (1, 0.002)
+    assert generator.generate(candles, symbol="BTC/USDT", timeframe="1h") == (1, 0.002)
+    assert generator.generate(candles, symbol="ETH/USDT", timeframe="1h") == (-1, 0.003)
+    assert generator.generate(candles, symbol="BTC/USDT:USDT", timeframe="1h") == (1, 0.004)
+    assert set(generator.predictors) == {
+        ("BTC/USDT", "1h"),
+        ("ETH/USDT", "1h"),
+        ("BTC/USDT:USDT", "1h"),
+    }
+
+
+def test_signal_generator_loads_model_created_after_startup(tmp_path):
+    generator = SignalGenerator(str(tmp_path))
+    prices = np.concatenate([np.linspace(100, 70, 26), np.linspace(70, 74, 4)])
+    candles = pd.DataFrame({
+        "open": prices - 0.5,
+        "high": prices + 1.0,
+        "low": prices - 1.0,
+        "close": prices,
+        "volume": np.full(30, 1000.0),
+    })
+
+    # A missing ETH model must use its own fallback even after another key is cached.
+    btc_model_path = tmp_path / "lgbm_BTCUSDT_1h.pkl"
+    with btc_model_path.open("wb") as file:
+        pickle.dump({"model": StubModel(0.0, 0.003), "features": ["rsi"]}, file)
+    assert generator.generate(candles, symbol="BTC/USDT", timeframe="1h") == (-1, 0.003)
+    assert generator.generate(candles, symbol="ETH/USDT", timeframe="1h") == (1, 0.002)
+    assert ("ETH/USDT", "1h") not in generator.predictors
+
+    eth_model_path = tmp_path / "lgbm_ETHUSDT_1h.pkl"
+    with eth_model_path.open("wb") as file:
+        pickle.dump({"model": StubModel(0.0, 0.003), "features": ["rsi"]}, file)
+
+    assert generator.generate(candles, symbol="ETH/USDT", timeframe="1h") == (-1, 0.003)
+    assert ("ETH/USDT", "1h") in generator.predictors
 
 
 def test_calculate_position_size():

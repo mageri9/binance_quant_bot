@@ -9,9 +9,9 @@ from src.strategy.generator import SignalGenerator
 
 class StrategyService:
     """Слушает CandleClosedEvent -> Запускает ML -> Публикует SignalEmittedEvent."""
-    def __init__(self, bus: AsyncEventBus, model_path: str | None = None):
+    def __init__(self, bus: AsyncEventBus, model_dir: str = "models/saved_models"):
         self.bus = bus
-        self.generator = SignalGenerator(model_path)
+        self.generator = SignalGenerator(model_dir)
         self.bus.subscribe(CandleClosedEvent, self.on_candle_closed)
 
     async def on_candle_closed(self, event: CandleClosedEvent):
@@ -32,7 +32,9 @@ class StrategyService:
                 "low": k.low, "close": k.close, "volume": k.volume
             } for k in klines])
 
-            signal, expected_return = self.generator.generate(df)
+            signal, expected_return = self.generator.generate(
+                df, symbol=event.symbol, timeframe=event.timeframe
+            )
 
             # Логируем прогноз в БД
             log = PredictionLog(

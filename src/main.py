@@ -1,6 +1,5 @@
 import asyncio
 import sys
-from pathlib import Path
 from typing import Any, Coroutine
 from aiogram import Bot, Dispatcher
 from loguru import logger
@@ -77,8 +76,7 @@ async def main():
 
     # 5. Инициализация Сервисов-Обработчиков событий
     market_service = MarketService(bus, exchange)
-    model_path = Path("models/saved_models/lgbm_BTCUSDT_1h.pkl")
-    strategy_service = StrategyService(bus, model_path=str(model_path))
+    strategy_service = StrategyService(bus, model_dir="models/saved_models")
     risk_service = RiskService(bus, exchange)
     execution_service = ExecutionService(bus, exchange)
     notifier_service = NotifierService(bus, bot, nexus_sdk)
