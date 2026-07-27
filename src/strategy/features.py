@@ -71,4 +71,6 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     df_out["return_1"] = close.pct_change(1)
     df_out["return_3"] = close.pct_change(3)
 
+    float_columns = df_out.select_dtypes(include=[np.floating]).columns
+    df_out[float_columns] = df_out[float_columns].astype(np.float32)
     return df_out

@@ -21,18 +21,31 @@ class EconomicReturnRegressor:
 
 class Predictor:
     """Предиктор для сохраненного артефакта модели."""
-    def __init__(self, model_path: str):
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Файл модели {model_path} не найден.")
-        with open(model_path, "rb") as f:
-            artifact = pickle.load(f)
+    def __init__(self, model_path: str = "models/active.pkl") -> None:
+        self.model_path = model_path
+        self.model_mtime = 0.0
+        self._load_model()
+
+    def _load_model(self) -> None:
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Файл модели {self.model_path} не найден.")
+
+        model_mtime = os.path.getmtime(self.model_path)
+        with open(self.model_path, "rb") as file:
+            artifact = pickle.load(file)
 
         self.model = artifact["model"]
         self.features = artifact.get("features", [])
         self.min_expected_return = artifact.get("min_expected_return", 0.001)
+        self.model_mtime = model_mtime
+
+    def _reload_if_changed(self) -> None:
+        if os.path.getmtime(self.model_path) != self.model_mtime:
+            self._load_model()
 
     def predict(self, df_features: pd.DataFrame) -> tuple[int, float]:
         """Возвращает (сигнал: 1 | -1 | 0, expected_return: float)."""
+        self._reload_if_changed()
         latest = df_features.iloc[[-1]]
         if latest[self.features].isna().any().any():
             return 0, 0.0
@@ -44,7 +57,7 @@ class Predictor:
 
         if exp_long > exp_short and exp_long >= self.min_expected_return:
             return 1, exp_long
-        elif exp_short > exp_long and exp_short >= self.min_expected_return:
+        if exp_short > exp_long and exp_short >= self.min_expected_return:
             return -1, exp_short
 
         return 0, max(exp_long, exp_short)
