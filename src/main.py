@@ -79,7 +79,8 @@ async def main():
     strategy_service = StrategyService(bus, model_dir="models/saved_models")
     risk_service = RiskService(bus, exchange)
     execution_service = ExecutionService(bus, exchange)
-    notifier_service = NotifierService(bus, bot, nexus_sdk)
+    notifier_service = NotifierService(bus, bot, exchange, nexus_sdk)
+    dp["notifier_service"] = notifier_service
 
     # 6. Запуск фонового опроса свечей
     track_background_task(market_service.start_polling(interval_seconds=60))
@@ -90,6 +91,16 @@ async def main():
             await asyncio.sleep(15)
 
     track_background_task(monitor_open_trades())
+
+    async def periodic_digest() -> None:
+        while True:
+            await asyncio.sleep(settings.DIGEST_INTERVAL_SECONDS)
+            try:
+                await notifier_service.send_periodic_digest()
+            except Exception:
+                logger.exception("[Main] Не удалось отправить периодический дайджест")
+
+    track_background_task(periodic_digest())
 
     logger.info("[Main] Бот запущен и готов к работе!")
 

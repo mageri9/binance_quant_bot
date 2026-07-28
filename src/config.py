@@ -44,11 +44,12 @@ class Settings(BaseSettings):
     DEFAULT_COMMISSION_RATE: float = 0.0004
     MIN_EXPECTED_RETURN: float = 0.0025
 
+    # Periodic Telegram digest
+    DIGEST_INTERVAL_SECONDS: int = 86400
+
     # Торговые пары и таймфреймы
     ACTIVE_CONFIGS: list[tuple[str, str]] = [
         ("BTC/USDT", "1h"),
-        ("ETH/USDT", "1h"),
-        ("SOL/USDT", "1h"),
     ]
 
     @field_validator("DATABASE_URL")
@@ -56,6 +57,13 @@ class Settings(BaseSettings):
     def require_sqlite_database(cls, value: str) -> str:
         if not value.startswith("sqlite+aiosqlite://"):
             raise ValueError("DATABASE_URL must use the sqlite+aiosqlite driver")
+        return value
+
+    @field_validator("DIGEST_INTERVAL_SECONDS")
+    @classmethod
+    def require_positive_digest_interval(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("DIGEST_INTERVAL_SECONDS must be positive")
         return value
 
 

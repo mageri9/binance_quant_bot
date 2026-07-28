@@ -8,6 +8,7 @@ from src.config import get_settings
 from src.db import get_open_trades, get_recent_closed_trades
 from src.bot.keyboards import main_keyboard
 from src.exchange.base import BaseExchange
+from src.services.notifier_service import NotifierService
 
 router = Router()
 
@@ -99,3 +100,11 @@ async def risk_cmd(message: Message):
         f"Дефолтный SL / TP: <code>{settings.DEFAULT_SL_PCT * 100}% / {settings.DEFAULT_TP_PCT * 100}%</code>",
         parse_mode="HTML"
     )
+
+
+@router.message(Command("report"))
+async def report_cmd(message: Message, notifier_service: NotifierService):
+    settings = get_settings()
+    if message.from_user is None or message.from_user.id not in settings.ADMIN_IDS:
+        return
+    await notifier_service.send_periodic_digest()
