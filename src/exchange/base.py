@@ -23,6 +23,12 @@ class BaseExchange(ABC):
     ) -> dict:
         pass
 
+    async def create_stop_orders(
+        self, symbol: str, position_side: str, amount: float, sl_price: float, tp_price: float
+    ) -> dict | None:
+        """Create native protective orders when the exchange supports them."""
+        return None
+
     @abstractmethod
     async def get_klines(self, symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame:
         pass

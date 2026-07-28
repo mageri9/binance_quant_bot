@@ -63,16 +63,20 @@ class ExecutionService:
                     ))
                 await session.commit()
 
-            if not event.is_closing and hasattr(self.exchange, "create_stop_orders"):
-                close_side = "sell" if event.side == "buy" else "buy"
+            if not event.is_closing:
                 try:
-                    await self.exchange.create_stop_orders(
+                    stop_orders = await self.exchange.create_stop_orders(
                         symbol=event.symbol,
-                        side=close_side,
+                        position_side=event.side,
                         amount=event.amount,
                         sl_price=event.sl_price,
                         tp_price=event.tp_price
                     )
+                    if stop_orders is not None and (
+                        (event.sl_price and stop_orders.get("sl_order") is None)
+                        or (event.tp_price and stop_orders.get("tp_order") is None)
+                    ):
+                        raise RuntimeError(f"Protective Algo orders were not created for {event.symbol}")
                 except Exception as exc:
                     logger.exception(f"[ExecutionService] Failed to create stop orders for {event.symbol}")
                     await self.bus.publish(ErrorEvent(

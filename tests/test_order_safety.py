@@ -14,6 +14,7 @@ from src.event_bus import (
     OrderExecutedEvent,
     SignalEmittedEvent,
 )
+from src.exchange.binance import BinanceExchange
 from src.exchange.paper import PaperExchange
 from src.services.execution_service import ExecutionService
 from src.services.market import MarketService
@@ -85,7 +86,7 @@ async def test_risk_service_rejects_entry_for_open_position():
 async def test_execution_records_trade_and_emits_error_when_stop_orders_fail():
     class StopOrderFailureExchange(PaperExchange):
         async def create_stop_orders(self, **_kwargs):
-            raise RuntimeError("stop order creation failed")
+            return {"sl_order": None, "tp_order": None}
 
     await init_db()
     async with AsyncSessionFactory() as session:
@@ -127,3 +128,59 @@ async def test_execution_records_trade_and_emits_error_when_stop_orders_fail():
     async with AsyncSessionFactory() as session:
         await session.execute(delete(Trade))
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_binance_stop_orders_keep_processing_when_one_algo_order_fails():
+    class AlgoClient:
+        def __init__(self):
+            self.calls = []
+
+        def amount_to_precision(self, symbol, amount):
+            assert symbol == "BTC/USDT"
+            assert amount == 0.01234
+            return "0.012"
+
+        def price_to_precision(self, symbol, price):
+            assert symbol == "BTC/USDT"
+            return f"{price:.1f}"
+
+        async def fapiPrivatePostAlgoOrder(self, params):
+            self.calls.append(params)
+            if params["type"] == "STOP_MARKET":
+                raise RuntimeError("testnet Algo API unavailable")
+            return {"orderId": "tp-1"}
+
+    exchange = BinanceExchange.__new__(BinanceExchange)
+    exchange.exchange = AlgoClient()
+    exchange._ensure_markets = AsyncMock()
+
+    result = await exchange.create_stop_orders(
+        symbol="BTC/USDT",
+        position_side="LONG",
+        amount=0.01234,
+        sl_price=50_000.01,
+        tp_price=52_000.09,
+    )
+
+    assert result == {"sl_order": None, "tp_order": {"orderId": "tp-1"}}
+    assert exchange.exchange.calls == [
+        {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "STOP_MARKET",
+            "algoType": "CONDITIONAL",
+            "triggerPrice": "50000.0",
+            "quantity": "0.012",
+            "reduceOnly": "true",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "type": "TAKE_PROFIT_MARKET",
+            "algoType": "CONDITIONAL",
+            "triggerPrice": "52000.1",
+            "quantity": "0.012",
+            "reduceOnly": "true",
+        },
+    ]

@@ -10,7 +10,7 @@ import pandas as pd
 from loguru import logger
 from sqlalchemy import select
 
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.db import AsyncSessionFactory, Kline, init_db
 from src.strategy.features import add_features
 from src.strategy.model import EconomicReturnRegressor
@@ -67,6 +67,90 @@ def calculate_post_cost_targets(
     )
 
 
+def evaluate_oos(
+    model: EconomicReturnRegressor, test_df: pd.DataFrame, min_expected_return: float
+) -> tuple[int, float]:
+    """Return the number and realized mean return of threshold-passing OOS signals."""
+    pred_long, pred_short = model.predict_returns(test_df[FEATURE_COLS])
+    pred_long = np.asarray(pred_long)
+    pred_short = np.asarray(pred_short)
+    long_returns = test_df.loc[
+        (pred_long > pred_short) & (pred_long >= min_expected_return), "long_target"
+    ].to_numpy()
+    short_returns = test_df.loc[
+        (pred_short > pred_long) & (pred_short >= min_expected_return), "short_target"
+    ].to_numpy()
+    realized_returns = np.concatenate((long_returns, short_returns))
+
+    n_trades = len(realized_returns)
+    mean_return = float(realized_returns.mean()) if n_trades else 0.0
+    return n_trades, mean_return
+
+
+def save_model_artifact(artifact: dict, model_path: str) -> None:
+    """Atomically replace the active artifact only after it passed validation."""
+    model_dir = os.path.dirname(model_path)
+    os.makedirs(model_dir, exist_ok=True)
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=model_dir, delete=False) as temp_file:
+            temp_path = temp_file.name
+            pickle.dump(artifact, temp_file)
+        os.replace(temp_path, model_path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+def train_and_save_model(
+    df_clean: pd.DataFrame, settings: Settings, symbol: str, timeframe: str, horizon: int
+) -> bool:
+    """Train, validate on the chronological OOS tail, and save only approved models."""
+    split_idx = int(len(df_clean) * 0.7)
+    train_df = df_clean.iloc[:split_idx]
+    test_df = df_clean.iloc[split_idx:]
+    purged_train_df = train_df.iloc[:-horizon] if horizon else train_df
+
+    if purged_train_df.empty or test_df.empty:
+        logger.warning("Quality Gate FAILED: insufficient data after chronological split.")
+        return False
+
+    model = EconomicReturnRegressor(
+        n_estimators=100, learning_rate=0.05, random_state=42, verbosity=-1
+    )
+    model.fit(
+        purged_train_df[FEATURE_COLS],
+        purged_train_df["long_target"],
+        purged_train_df["short_target"],
+    )
+    n_trades, mean_return = evaluate_oos(
+        model, test_df, settings.MIN_EXPECTED_RETURN
+    )
+    if mean_return <= 0 or n_trades < 30:
+        logger.warning(
+            f"Quality Gate FAILED: n_trades={n_trades} (min 30), "
+            f"mean_return={mean_return:.5f} (min > 0). Модель не сохранена."
+        )
+        return False
+
+    # Refit on every clean row only after the independent OOS gate succeeds.
+    model.fit(df_clean[FEATURE_COLS], df_clean["long_target"], df_clean["short_target"])
+    clean_sym = symbol.replace("/", "").replace(":", "")
+    model_path = f"models/saved_models/lgbm_{clean_sym}_{timeframe}.pkl"
+    artifact = {
+        "model": model,
+        "features": FEATURE_COLS,
+        "min_expected_return": settings.MIN_EXPECTED_RETURN,
+        "symbol": symbol,
+        "timeframe": timeframe,
+    }
+    save_model_artifact(artifact, model_path)
+    logger.info(
+        f"Quality Gate PASSED: n_trades={n_trades}, mean_return={mean_return:.5f}"
+    )
+    return True
+
+
 async def train_model(symbol: str, timeframe: str):
     await init_db()
     settings = get_settings()
@@ -105,27 +189,8 @@ async def train_model(symbol: str, timeframe: str):
     df_clean = df_train.dropna(subset=FEATURE_COLS).reset_index(drop=True)
 
     # 3. Обучение LightGBM
-    model = EconomicReturnRegressor(n_estimators=100, learning_rate=0.05, random_state=42, verbosity=-1)
-    model.fit(df_clean[FEATURE_COLS], df_clean["long_target"], df_clean["short_target"])
+    train_and_save_model(df_clean, settings, symbol, timeframe, horizon)
 
-    clean_sym = symbol.replace("/", "").replace(":", "")
-    os.makedirs("models/saved_models", exist_ok=True)
-    model_path = f"models/saved_models/lgbm_{clean_sym}_{timeframe}.pkl"
-
-    artifact = {
-        "model": model,
-        "features": FEATURE_COLS,
-        "min_expected_return": settings.MIN_EXPECTED_RETURN,
-        "symbol": symbol,
-        "timeframe": timeframe
-    }
-
-    with tempfile.NamedTemporaryFile(dir="models/saved_models", delete=False) as temp_file:
-        pickle.dump(artifact, temp_file)
-        temp_path = temp_file.name
-    os.replace(temp_path, model_path)
-
-    logger.info(f"Модель сохранена: {model_path}")
 
 
 if __name__ == "__main__":

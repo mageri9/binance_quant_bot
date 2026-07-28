@@ -69,27 +69,39 @@ class BinanceExchange(BaseExchange):
         }
 
     async def create_stop_orders(
-        self, symbol: str, side: str, amount: float, sl_price: float, tp_price: float
+        self, symbol: str, position_side: str, amount: float, sl_price: float, tp_price: float
     ) -> dict:
         """Установка условных стоп-ордеров через Algo Order API Binance с форматированием точности."""
         await self._ensure_markets()
         formatted_amount = self.exchange.amount_to_precision(symbol, amount)
+        position_sides = {"LONG": "SELL", "SHORT": "BUY", "BUY": "SELL", "SELL": "BUY"}
+        try:
+            close_side = position_sides[position_side.upper()]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported position side: {position_side}") from exc
 
         async def _place(order_type: str, trigger_price: float):
             market_sym = symbol.replace("/", "")
             formatted_price = self.exchange.price_to_precision(symbol, trigger_price)
             params = {
                 "symbol": market_sym,
-                "side": side.upper(),
+                "side": close_side,
                 "type": order_type,
                 "algoType": "CONDITIONAL",
                 "triggerPrice": str(formatted_price),
                 "quantity": str(formatted_amount),
                 "reduceOnly": "true",
             }
-            if hasattr(self.exchange, "fapiPrivatePostAlgoOrder"):
-                return await self.exchange.fapiPrivatePostAlgoOrder(params)
-            return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
+            try:
+                if hasattr(self.exchange, "fapiPrivatePostAlgoOrder"):
+                    return await self.exchange.fapiPrivatePostAlgoOrder(params)
+                return await self.exchange.request("algoOrder", "fapiPrivate", "POST", params)
+            except Exception as exc:
+                logger.error(
+                    f"[BinanceExchange] Failed to create {order_type} Algo order "
+                    f"for {market_sym}: {exc}"
+                )
+                return None
 
         sl_resp = await _place("STOP_MARKET", sl_price) if sl_price else None
         tp_resp = await _place("TAKE_PROFIT_MARKET", tp_price) if tp_price else None
