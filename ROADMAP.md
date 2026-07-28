@@ -1,69 +1,79 @@
-```markdown
-# 🚀 Production Roadmap v1.0 (Experiment-Centric)
+# Roadmap: довести до ума и выйти в плюс
 
-План поэтапной реализации системы с упором на строгость исследовательского конвейера и изоляцию торгового ядра.
+Цель — не "полноценная ML-платформа", а минимальный набор правок, после
+которых можно честно сказать: бот либо торгует с небольшим плюсом, либо
+корректно бездействует (signal=0), но не сливает депозит и не врёт
+метриками. Шесть шагов, по порядку, каждый — небольшая правка кода.
 
----
+## 0. Починить SL/TP на бирже (сначала это, иначе всё остальное бессмысленно)
 
-### Фаза 1 Базовый каркас, БД и Биржа (Готово)
- Цель Изолированные адаптеры исполнения и база данных.
+`BinanceExchange.create_stop_orders` использует Algo Order API
+(`fapiPrivatePostAlgoOrder`), который требует спецдоступа и обычно не
+работает на testnet. Если он молча падает — позиция открывается **без
+защиты**. Заменить на обычный `create_order` с
+`type="STOP_MARKET"/"TAKE_PROFIT_MARKET"` и `params={"stopPrice": ...,
+"reduceOnly": True}`. Проверить режим аккаунта (One-way vs Hedge Mode) —
+от этого зависит, нужен ли `positionSide` в параметрах ордера.
 
-- [x] 1.1. Конфигурация и БД (`srcconfig.py`, `srcdb.py`)
-  - Pydantic Settings, SQLAlchemy Async (SQLite WAL mode).
-  - Модели `Kline`, `Trade`, `PredictionLog`.
-- [x] 1.2. Биржевые Адаптеры (`srcexchange`)
-  - `BaseExchange`, `PaperExchange` и `BinanceExchange` (CCXT Futures + Algo Order API).
-- [x] 1.3. Шина Событий (`srcevent_bus.py`)
-  - Легковесный `AsyncEventBus` и типы событий.
+**Проверка:** открыть тестовую позицию на testnet, убедиться, что в списке
+открытых ордеров реально появились STOP_MARKET и TAKE_PROFIT_MARKET.
 
----
+## 1. Минимальный gate в `scripts/train.py`
 
-### Фаза 2 Торговый Движок (Trading Core 247) (Готово)
- Цель Линейный пайплайн обработки рыночных событий.
+Без отдельного Research Lab. В существующем скрипте:
+- хронологический сплит 70/30 (train/test), без перемешивания;
+- после `model.fit` посчитать на test-хвосте среднюю post-cost доходность
+  (long/short) и количество сделок, где `expected_return >= MIN_EXPECTED_RETURN`;
+- сохранять `.pkl` только если средняя доходность на test-хвосте > 0 и
+  сделок ≥ 30. Иначе — печать причины отказа и выход без сохранения.
 
-- [x] 2.1. Единый модуль индикаторов (`srcstrategyfeatures.py`)
-  - Расчет RSI, ATR, MACD, ADX, Bollinger Bands в `float32`.
-- [x] 2.2. Модуль Рисков (`srcrisk`)
-  - `RiskGuard` (Circuit Breaker, дневной лимит просадки, лимит позиций).
-  - `Position Sizer` (размер лота от депозита, расчет стопов).
-- [x] 2.3. Исполнительные сервисы (`srcservices`)
-  - `MarketService`, `StrategyService`, `RiskService`, `ExecutionService`.
+Это весь "gate". Не нужен отдельный YAML-конфиг, не нужен каталог
+экспериментов — одна проверка перед `os.replace`.
 
----
+## 2. Поднять порог входа в сделку
 
-### Фаза 3 Telegram Бот и SRE Мониторинг (Готово)
- Цель Управление, алерты и устойчивость.
+`MIN_EXPECTED_RETURN` сейчас 0.001 при комиссии за круг 0.08% — запас всего
+1.25x. Поднять минимум до 3–4x издержек (~0.0025–0.003 в `.env`). Меньше
+сделок, но каждая переживает реальные комиссии и проскальзывание.
 
-- [x] 3.1. Telegram Бот (`srcbot`)
-  - Aiogram 3.x с командами `status`, `positions`, `trades`, `risk`.
-- [x] 3.2. SRE Notifier (`srcservicesnotifier_service.py`, `nexus_sdk`)
-  - Telegram алерты + Nexus SDK (Heartbeat 15с, перехват ошибок).
+## 3. Включить уже написанные ATR-стопы
 
----
+`risk/sizer.py.calculate_protection_prices` уже принимает `atr_value`, но
+`RiskService._approve_signal` его не передаёт — использует только
+`DEFAULT_SL_PCT/TP_PCT`. Прокинуть ATR (уже считается в `features.py`) из
+последней свечи в вызов `calculate_protection_prices`. Один параметр,
+адаптивные стопы под волатильность вместо фиксированного процента.
 
-### Фаза 4 Исследовательский конвейер (Research Lab) (ТЕКУЩАЯ)
- Цель Модульная лаборатория экспериментов с гарантией отсутствия утечек данных.
+## 4. Сузить периметр до одной пары
 
-- [ ] 4.1. Модули конвейера (`research`)
-  - `dataset.py` Сбор OHLCV + очистка gapstz + подключение `srcstrategyfeatures.py`.
-  - `labeling.py` Изолированный расчет таргетов (Post-cost return, Triple Barrier).
-  - `validation.py` Purged Walk-Forward Splitter (зазор = `horizon`).
-  - `train.py` Адаптер моделей (LightGBM, CatBoost).
-  - `backtest.py` Экономический симулятор (комиссии 0.08%, проскальзывание 0.04%).
-  - `report.py` Генератор `report.md` и метрик.
-  - `experiment.py` Создатель неизменяемого каталога `artifactsexperimentsexp_XXXX`.
-- [ ] 4.2. Оркестратор (`scriptsrun_experiment.py`)
-  - CLI запуск эксперимента по `.yaml` конфигу.
+Оставить в `ACTIVE_CONFIGS` только `("BTC/USDT", "1h")`. Меньше шума,
+проще честно интерпретировать результат. ETH/SOL — после того как BTC
+покажет стабильный плюс, не раньше.
 
----
+## 5. Честный OOS через paper-режим — без нового фреймворка
 
-### Фаза 5 Deployment Gate и Деплой (Следующая)
- Цель Безопасное обновление моделей в продакшене и CICD.
+`PaperExchange` и `PredictionLog`/`Trade` в БД уже есть. Прогнать бота в
+`TRADING_MODE=paper` 1–2 недели без вмешательства. Затем посчитать сумму
+`pnl` по таблице `trades`. Это и есть честная out-of-sample проверка —
+никакого `backtest.py`/`report.md` отдельно писать не нужно, всё уже
+логируется штатными сервисами.
 
-- [ ] 5.1. Цензор промоушена (`scriptspromote_candidate.py`)
-  - Проверка `exp_XXXXmetrics.json` против Quality Gate ($PF ge 1.15$, $Expectancy  0.001$).
-  - Атомарная перезапись `modelsactive.pkl` и Hot-Reload в боте.
-- [ ] 5.2. Упаковка и CICD (`Dockerfile`, `.githubworkflowsdeploy.yml`)
-  - Docker сборка (`python3.12-slim` + `libgomp1`).
-  - Деплой на VPS с установкой флага обслуживания в Redis.
-```
+## Критерий перехода на mainnet
+
+Сумма PnL за paper-период положительна на 20+ закрытых сделках →
+переключить `TRADING_MODE=mainnet` с минимальным `RISK_MAX_ALLOCATION_PCT`
+(например 0.02–0.05). Если ноль/минус — не мучить модель Optuna и не
+строить конвейер экспериментов: пересмотреть набор фичей или признать, что
+на 1h/OHLCV-индикаторах edge для этой пары сейчас нет, и бот должен
+оставаться в paper.
+
+## Явно не делаем на этом этапе
+
+- Отдельный Research Lab (`dataset.py`, `labeling.py`, `validation.py`,
+  `experiment.py`, `promote_candidate.py`) — планы из старой документации,
+  которых нет в коде и которые не нужны для цели "закрыть галочку".
+- Optuna / тюнинг гиперпараметров — бессмысленно, пока не подтверждён сам
+  факт наличия сигнала (шаги 0–5). Тюнинг параметров не спасает модель без
+  edge, только маскирует переобучение.
+- Несколько пар/таймфреймов одновременно, каталоги версий моделей,
+  Redis/Kafka — не нужны на масштабе одного ВПС 2 ГБ RAM и одной пары.

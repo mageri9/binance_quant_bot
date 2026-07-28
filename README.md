@@ -1,41 +1,31 @@
-# 🧊 MarketMind [ЗАМОРОЖЕН / FROZEN]
+# MarketMind
 
-> **Статус проекта:** ❄️ **Архивирован / Заморожен**
-> 
-> Разработка и поддержка проекта приостановлены. Код, архитектурные стандарты и наработки исследовательского конвейера сохранены в репозитории как исторический архив.
+Асинхронный торговый бот для Binance Futures (Python 3.12, aiogram 3, LightGBM).
 
----
+## Статус
 
-## 📌 О проекте
+Прототип. Trading Core реализован и покрыт тестами. Модель торгового сигнала
+**ещё не доказала положительное мат. ожидание** — это следующий и единственный
+приоритет перед реальными деньгами. См. `ROADMAP.md`.
 
-**MarketMind** — исследовательская событийно-ориентированная платформа для алгоритмической торговли и машинного обучения на базе Python 3.12, LightGBM и Binance Futures.
+## Архитектура
 
-Проект спроектирован с чётким разделением на два контура:
-1. **Trading Core (24/7):** Легковесный асинхронный торговый движок на базе `AsyncEventBus`, `SQLite WAL` и `Aiogram 3`.
-2. **Research Lab:** Модульный конвейер исследований и экспериментов с защитой от утечек данных (Purged Walk-Forward Cross-Validation).
+Один процесс, событийная шина, три режима биржи: `paper` (симуляция в SQLite),
+`testnet`, `mainnet`. Подробности — `ARCHITECTURE.md`.
 
----
+## Быстрый старт
 
-## 🏗 Архитектура системы
+```bash
+cp .env.example .env        # заполнить BOT_TOKEN, ADMIN_IDS
+python -m pytest tests/     # тесты должны быть зелёными
+python -m scripts.backfill --symbol BTC/USDT --timeframe 1h --days 90
+python -m scripts.train --symbol BTC/USDT --timeframe 1h
+python -m src.main          # TRADING_MODE=paper в .env
+```
 
-```text
-[ Binance Futures API ]
-          │ (HTTP / Algo Orders)
-          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ TRADING CORE (Single Async Process, 24/7)                       │
-│                                                                 │
-│  MarketService ──► StrategyService ──► RiskService ──► Execution │
-│       │                 │                   │             │     │
-│       ▼                 ▼                   ▼             ▼     │
-│  [SQLite: Klines] [PredictionLog]      [RiskGuard]   [Trade/Ledger]
-└─────────────────────────────────────────────────────────────────┘
+## Правило перед mainnet
 
-┌─────────────────────────────────────────────────────────────────┐
-│ RESEARCH LAB (On-Demand / Experiment-Centric)                   │
-│                                                                 │
-│  dataset ──► labeling ──► validation ──► train ──► backtest     │
-│     │                                                 │         │
-│     ▼                                                 ▼         │
-│  src/strategy/features.py ──────────────► artifacts/exp_XXXX/   │
-└─────────────────────────────────────────────────────────────────┘
+Модель включается в боевой режим только если прошла gate в `scripts/train.py`
+(п. 1 в `ROADMAP.md`) **и** отработала в `paper`-режиме минимум 1–2 недели
+с положительным суммарным PnL по таблице `trades` на 20+ сделках.
+Без этого — TRADING_MODE остаётся `paper` или `testnet`.
