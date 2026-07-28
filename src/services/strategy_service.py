@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from src.db import AsyncSessionFactory, Kline, PredictionLog
 from src.event_bus import AsyncEventBus, CandleClosedEvent, SignalEmittedEvent
+from src.strategy.features import add_features
 from src.strategy.generator import SignalGenerator
 
 
@@ -32,8 +33,10 @@ class StrategyService:
                 "low": k.low, "close": k.close, "volume": k.volume
             } for k in klines])
 
-            signal, expected_return = self.generator.generate(
-                df, symbol=event.symbol, timeframe=event.timeframe
+            df_feat = add_features(df)
+            atr_val = float(df_feat.iloc[-1]["atr"])
+            signal, expected_return = self.generator.generate_from_features(
+                df_feat, symbol=event.symbol, timeframe=event.timeframe
             )
 
             # Логируем прогноз в БД
@@ -55,5 +58,6 @@ class StrategyService:
                     signal=signal,
                     expected_return=expected_return,
                     close_price=event.close,
-                    open_time=event.open_time
+                    open_time=event.open_time,
+                    atr=atr_val,
                 ))

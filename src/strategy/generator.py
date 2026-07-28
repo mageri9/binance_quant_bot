@@ -19,7 +19,14 @@ class SignalGenerator:
         if len(candles_df) < 30:
             return 0, 0.0
 
-        df_feat = add_features(candles_df)
+        return self.generate_from_features(add_features(candles_df), symbol, timeframe)
+
+    def generate_from_features(
+        self, df_feat: pd.DataFrame, symbol: str = "BTC/USDT", timeframe: str = "1h"
+    ) -> tuple[int, float]:
+        if len(df_feat) < 30:
+            return 0, 0.0
+
         key = (symbol, timeframe)
         clean_sym = symbol.replace("/", "").replace(":", "")
         model_path = os.path.join(self.model_dir, f"lgbm_{clean_sym}_{timeframe}.pkl")

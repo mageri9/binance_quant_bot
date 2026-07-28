@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     DEFAULT_TP_PCT: float = 0.04
     DEFAULT_TIMEOUT_CANDLES: int = 5
     DEFAULT_COMMISSION_RATE: float = 0.0004
-    MIN_EXPECTED_RETURN: float = 0.001
+    MIN_EXPECTED_RETURN: float = 0.0025
 
     # Торговые пары и таймфреймы
     ACTIVE_CONFIGS: list[tuple[str, str]] = [

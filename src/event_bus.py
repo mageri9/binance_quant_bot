@@ -34,6 +34,7 @@ class SignalEmittedEvent(Event):
     expected_return: float
     close_price: float
     open_time: int
+    atr: float | None = None
 
 
 @dataclass(kw_only=True)

@@ -113,7 +113,8 @@ class RiskService:
                 entry_price=event.close_price,
                 side=side,
                 sl_pct=self.settings.DEFAULT_SL_PCT,
-                tp_pct=self.settings.DEFAULT_TP_PCT
+                tp_pct=self.settings.DEFAULT_TP_PCT,
+                atr_value=event.atr,
             )
 
             logger.info(f"[RiskService] Ордер ОДОБРЕН {event.symbol}: {side.upper()} {amount} @ {event.close_price}")
