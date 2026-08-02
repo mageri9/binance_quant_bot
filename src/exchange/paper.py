@@ -1,3 +1,4 @@
+import ccxt.async_support as ccxt
 import pandas as pd
 from sqlalchemy import select
 
@@ -6,12 +7,20 @@ from src.exchange.base import BaseExchange
 
 
 class PaperExchange(BaseExchange):
-    """Локальный симулятор биржи."""
+    """Локальный симулятор биржи с получением реальных рыночных данных."""
     def __init__(self, initial_balance: float = 10000.0, commission_rate: float = 0.0004):
         self.balance_free = initial_balance
         self.balance_total = initial_balance
         self.positions: dict[str, dict] = {}
         self.commission_rate = commission_rate
+        # Публичный клиент без ключей для получения рыночной информации
+        self.public_exchange = ccxt.binance({
+            "enableRateLimit": True,
+            "options": {"defaultType": "future"},
+        })
+
+    async def close(self):
+        await self.public_exchange.close()
 
     async def get_balance(self) -> dict:
         return {"free": self.balance_free, "total": self.balance_total}
@@ -48,23 +57,10 @@ class PaperExchange(BaseExchange):
         }
 
     async def get_klines(self, symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame:
-        async with AsyncSessionFactory() as session:
-            result = await session.execute(
-                select(Kline)
-                .where(Kline.symbol == symbol, Kline.timeframe == timeframe)
-                .order_by(Kline.open_time.desc())
-                .limit(limit)
-            )
-            klines = list(reversed(result.scalars().all()))
-
-        return pd.DataFrame([
-            {
-                "open_time": kline.open_time,
-                "open": kline.open,
-                "high": kline.high,
-                "low": kline.low,
-                "close": kline.close,
-                "volume": kline.volume,
-            }
-            for kline in klines
-        ])
+        # Скачиваем реальные свечи с Binance Futures
+        ohlcv = await self.public_exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        data = [{
+            "open_time": int(c[0]), "open": float(c[1]), "high": float(c[2]),
+            "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])
+        } for c in ohlcv]
+        return pd.DataFrame(data)
