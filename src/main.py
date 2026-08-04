@@ -79,6 +79,7 @@ async def main():
     strategy_service = StrategyService(bus, model_dir="models/saved_models")
     risk_service = RiskService(bus, exchange)
     execution_service = ExecutionService(bus, exchange)
+    await execution_service.sync_paper_state()
     notifier_service = NotifierService(bus, bot, exchange, nexus_sdk)
     dp["notifier_service"] = notifier_service
 
