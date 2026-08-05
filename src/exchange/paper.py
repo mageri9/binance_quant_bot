@@ -4,7 +4,7 @@ from src.exchange.base import BaseExchange
 
 
 class PaperExchange(BaseExchange):
-    """Локальный симулятор биржи с получением реальных рыночных данных."""
+    """Локальный симулятор фьючерсной биржи с поддержкой LONG и SHORT."""
 
     def __init__(
         self, initial_balance: float = 10000.0, commission_rate: float = 0.0004
@@ -13,21 +13,22 @@ class PaperExchange(BaseExchange):
         self.balance_total = initial_balance
         self.positions: dict[str, dict] = {}
         self.commission_rate = commission_rate
-        # Публичный клиент без ключей для получения рыночной информации
-        self.public_exchange = ccxt.binance({
-            "enableRateLimit": True,
-            "options": {"defaultType": "future"},
-        })
+        self.public_exchange = ccxt.binance(
+            {
+                "enableRateLimit": True,
+                "options": {"defaultType": "future"},
+            }
+        )
 
     async def close(self):
         await self.public_exchange.close()
 
     async def get_balance(self) -> dict:
-        open_positions_value = sum(
-            pos["amount"] * pos["entry_price"]
-            for pos in self.positions.values()
+        # Для фьючерсов: Total = Free + Margin Locked (стоимость входа) + Unrealized PnL
+        locked_margin = sum(
+            pos["amount"] * pos["entry_price"] for pos in self.positions.values()
         )
-        self.balance_total = self.balance_free + open_positions_value
+        self.balance_total = self.balance_free + locked_margin
         return {
             "free": self.balance_free,
             "total": self.balance_total,
@@ -50,6 +51,7 @@ class PaperExchange(BaseExchange):
         comm = cost * self.commission_rate
 
         if not reduce_only:
+            # Открытие позиции: блокируем маржу (cost) и снимаем комиссию
             self.balance_free -= cost + comm
             self.positions[symbol] = {
                 "symbol": symbol,
@@ -58,11 +60,19 @@ class PaperExchange(BaseExchange):
                 "entry_price": price,
             }
         else:
-            self.positions.pop(symbol, None)
-            self.balance_free += cost - comm
+            # Закрытие позиции: возвращаем маржу + PnL - комиссия на выход
+            open_pos = self.positions.pop(symbol, None)
+            if open_pos:
+                entry_cost = open_pos["amount"] * open_pos["entry_price"]
+                if open_pos["side"] == "LONG":
+                    pnl = (price - open_pos["entry_price"]) * open_pos["amount"]
+                else:  # SHORT
+                    pnl = (open_pos["entry_price"] - price) * open_pos["amount"]
+
+                # Возврат маржи + чистый PnL с учетом комиссии выхода
+                self.balance_free += entry_cost + pnl - comm
 
         await self.get_balance()
-
         return {
             "order_id": f"paper_{int(price * 100)}",
             "symbol": symbol,
